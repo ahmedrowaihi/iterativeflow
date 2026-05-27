@@ -1,0 +1,26 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: lint
+      glob: "*.{ts,tsx,js,jsx}"
+      exclude:
+        - "dist/**"
+        - "node_modules/**"
+      run: npx oxlint {staged_files}
+    - name: format
+      glob: "*.{ts,tsx,js,jsx,md,json,yml,yaml}"
+      exclude:
+        - "package-lock.json"
+        - "**/package-lock.json"
+        - "dist/**"
+        - "node_modules/**"
+      run: npx oxfmt {staged_files}
+      stage_fixed: true
+
+pre-push:
+  parallel: false
+  jobs:
+    - name: typecheck
+      run: npm run typecheck
+    - name: test
+      run: npm test
