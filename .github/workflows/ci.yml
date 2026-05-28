@@ -65,3 +65,13 @@ jobs:
         run: npx changeset publish
         env:
           NPM_CONFIG_PROVENANCE: "true"
+
+      - name: push tags + github release
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          git push --tags
+          VERSION=$(node -p "require('./package.json').version")
+          awk "/^## ${VERSION}/{flag=1; next} /^## [0-9]/{flag=0} flag" CHANGELOG.md > /tmp/notes.md
+          gh release create "v${VERSION}" --title "v${VERSION}" --notes-file /tmp/notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
