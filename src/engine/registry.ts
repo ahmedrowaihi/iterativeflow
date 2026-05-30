@@ -1,33 +1,43 @@
 import type { FlowDefinition, FlowNode } from "../builder/types";
+import type { StandardSchemaV1 } from "../util/standard-schema";
 
-export interface RegisteredWorkflow {
+export interface RegisteredFlow {
   name: string;
   version: number;
-  run: FlowDefinition<unknown, unknown>["run"];
+  run: FlowDefinition<unknown, unknown>["body"];
   inputSchema?: FlowDefinition<unknown, unknown>["input"];
   nodes?: ReadonlyArray<FlowNode>;
+  signalSchemas?: ReadonlyMap<string, StandardSchemaV1<unknown, unknown>>;
 }
 
-export class WorkflowRegistry {
-  private readonly map = new Map<string, RegisteredWorkflow>();
+export class FlowRegistry {
+  private readonly map = new Map<string, RegisteredFlow>();
 
   private key(name: string, version: number): string {
     return `${name}@${version}`;
   }
 
-  register(def: RegisteredWorkflow): void {
+  register(def: RegisteredFlow): void {
     const k = this.key(def.name, def.version);
     if (this.map.has(k)) {
-      throw new Error(`Workflow ${k} is already registered`);
+      throw new Error(`Flow ${k} is already registered`);
     }
     this.map.set(k, def);
   }
 
-  get(name: string, version: number): RegisteredWorkflow | undefined {
+  get(name: string, version: number): RegisteredFlow | undefined {
     return this.map.get(this.key(name, version));
   }
 
-  list(): RegisteredWorkflow[] {
-    return Array.from(this.map.values());
+  /**
+   * Resolve the signal schema declared on `(name, version)`'s flow, if any.
+   * Used by the engine to validate signal payloads at delivery time.
+   */
+  signalSchema(
+    name: string,
+    version: number,
+    signalName: string,
+  ): StandardSchemaV1<unknown, unknown> | undefined {
+    return this.map.get(this.key(name, version))?.signalSchemas?.get(signalName);
   }
 }

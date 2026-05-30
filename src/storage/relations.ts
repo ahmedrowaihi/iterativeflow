@@ -1,11 +1,17 @@
 import { relations } from "drizzle-orm";
-import { events, hooks, runs, steps, timers } from "./schema";
+import { events, runs, signals, steps, timers } from "./schema";
 
-export const runsRelations = relations(runs, ({ many }) => ({
+export const runsRelations = relations(runs, ({ many, one }) => ({
   steps: many(steps),
   timers: many(timers),
-  hooks: many(hooks),
+  signals: many(signals),
   events: many(events),
+  parent: one(runs, {
+    fields: [runs.parentRunId],
+    references: [runs.id],
+    relationName: "parent",
+  }),
+  children: many(runs, { relationName: "parent" }),
 }));
 
 export const stepsRelations = relations(steps, ({ one }) => ({
@@ -16,8 +22,8 @@ export const timersRelations = relations(timers, ({ one }) => ({
   run: one(runs, { fields: [timers.runId], references: [runs.id] }),
 }));
 
-export const hooksRelations = relations(hooks, ({ one }) => ({
-  run: one(runs, { fields: [hooks.runId], references: [runs.id] }),
+export const signalsRelations = relations(signals, ({ one }) => ({
+  run: one(runs, { fields: [signals.runId], references: [runs.id] }),
 }));
 
 export const eventsRelations = relations(events, ({ one }) => ({

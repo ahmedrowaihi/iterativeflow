@@ -1,3 +1,10 @@
+/**
+ * Backoff curve for step retries.
+ * - `"exponential"` (default): `base * 2^(attempt - 1)` + 10% jitter, capped at `cap`.
+ * - `"linear"`: `base * attempt`, capped at `cap`.
+ * - `"fixed"`: always `base` (capped at `cap`).
+ * - function: caller-provided `attempt -> delay ms`.
+ */
 export type BackoffPolicy = "exponential" | "linear" | "fixed" | ((attempt: number) => number);
 
 export interface BackoffOpts {

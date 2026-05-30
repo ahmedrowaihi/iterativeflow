@@ -2,27 +2,23 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { RuntimeWorkflowContext } from "../engine/context";
-import { WorkflowRegistry } from "../engine/registry";
-import { executeRun } from "../engine/runner";
-import type { Logger, Storage } from "../engine/types";
+import { RuntimeFlowContext } from "../engine/context";
+import { FlowRegistry } from "../engine/registry";
+import { playRunAttempt } from "../engine/run-lifecycle";
+import { baseContextDeps, baseRunnerDeps, silentLogger } from "../engine/test-helpers";
+import type { Storage } from "../engine/types";
 import { createDrizzleStorage, noopEnqueue } from "../storage/drizzle";
 import type { WorkflowDb } from "../storage/db";
-import { applyWorkflowSchema } from "../storage/setup";
+import { applyFlowSchema } from "../storage/setup";
 import type { FlowDefinition } from "./types";
 import { flow } from "./flow";
 
-const silent: Logger = {
-  debug: () => undefined,
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-};
+const silent = silentLogger;
 
 interface Harness {
   storage: Storage;
-  registry: WorkflowRegistry;
-  ctxFor: (runId: string) => Promise<RuntimeWorkflowContext>;
+  registry: FlowRegistry;
+  ctxFor: (runId: string) => Promise<RuntimeFlowContext>;
   register: (def: FlowDefinition<unknown, unknown>) => void;
   run: (runId: string) => Promise<{ status: string }>;
   close: () => Promise<void>;
@@ -32,34 +28,34 @@ const setup = async (): Promise<Harness> => {
   const client = new PGlite();
   await client.waitReady;
   const db = drizzle({ client }) as unknown as WorkflowDb;
-  await applyWorkflowSchema(db);
+  await applyFlowSchema(db);
   const storage = createDrizzleStorage({
     db,
     logger: silent,
     enqueue: noopEnqueue,
   });
-  const registry = new WorkflowRegistry();
+  const registry = new FlowRegistry();
   return {
     storage,
     registry,
     ctxFor: async (runId) =>
-      new RuntimeWorkflowContext({
+      new RuntimeFlowContext({
+        ...baseContextDeps(),
         runId,
         attempt: 1,
         storage,
         snapshot: await storage.loadSnapshot(runId),
-        logger: silent,
       }),
     register: (def) =>
       registry.register({
         name: def.name,
         version: def.version,
-        run: def.run,
+        run: def.body,
         inputSchema: def.input,
         nodes: def.nodes,
       }),
     run: async (runId) => {
-      const r = await executeRun({ registry, storage, logger: silent }, runId);
+      const r = await playRunAttempt({ ...baseRunnerDeps(), registry, storage }, runId);
       return { status: r.status };
     },
     close: () => client.close(),
@@ -75,16 +71,39 @@ describe("flow builder", () => {
     await h.close();
   });
 
+  it("each chaining call returns a NEW builder — branches don't share state", () => {
+    const base = flow("branchy").step("seed", () => 1);
+    const branchA = base.step("a", () => "a").build();
+    const branchB = base
+      .step("b", () => "b")
+      .step("b2", () => "b2")
+      .build();
+
+    expect(branchA.nodes.map((n) => (n.kind === "step" ? n.name : n.kind))).toEqual(["seed", "a"]);
+    expect(branchB.nodes.map((n) => (n.kind === "step" ? n.name : n.kind))).toEqual([
+      "seed",
+      "b",
+      "b2",
+    ]);
+  });
+
+  it(".version rejects non-positive-integer and regression", () => {
+    expect(() => flow("v").version(0)).toThrow(/positive integer/);
+    expect(() => flow("v").version(-2)).toThrow(/positive integer/);
+    expect(() => flow("v").version(1.5)).toThrow(/positive integer/);
+    expect(() => flow("v").version(2).version(1)).toThrow(/regress/);
+  });
+
   it("build() captures the node graph", () => {
     const def = flow("g")
       .step("a", () => 1)
       .sleep("1h")
-      .hook("k")
+      .signal("k")
       .output(() => "done")
       .build();
     expect(def.name).toBe("g");
     expect(def.version).toBe(1);
-    expect(def.nodes.map((n) => n.kind)).toEqual(["step", "sleep", "hook"]);
+    expect(def.nodes.map((n) => n.kind)).toEqual(["step", "sleep", "signal"]);
   });
 
   it("threads the value channel through steps and runs each step once", async () => {
@@ -117,7 +136,7 @@ describe("flow builder", () => {
   it("sleep is transparent — the channel survives across it", async () => {
     const def = flow("sleepy")
       .step("a", () => "carried")
-      .sleep(-1000)
+      .sleep(new Date(0))
       .output(({ input }) => input)
       .build();
     h.register(def as FlowDefinition<unknown, unknown>);
@@ -134,7 +153,7 @@ describe("flow builder", () => {
   it("hook merge folds an earlier value past the hook", async () => {
     const def = flow("merge")
       .step("acct", () => ({ id: "x" }))
-      .hook(
+      .signal(
         "survey",
         { schema: z.object({ score: z.number() }) },
         (input: { id: string }, payload: { score: number }) => ({
@@ -151,7 +170,7 @@ describe("flow builder", () => {
       version: 1,
       input: {},
     });
-    await h.storage.preDeliverHook(runId, "hook:survey", { score: 9 });
+    await h.storage.preDeliverSignal(runId, "signal:survey", { score: 9 });
     await h.run(runId);
 
     expect((await h.storage.loadRun(runId))?.output).toEqual({
@@ -198,7 +217,7 @@ describe("flow builder", () => {
       });
       const r = await h.run(runId);
       expect(r.status).toBe("failed");
-      expect((await h.storage.loadRun(runId))?.error?.code).toBe("UNKNOWN_WORKFLOW");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("FLOW_UNKNOWN");
     });
   });
 
@@ -232,19 +251,20 @@ describe("flow builder", () => {
       });
     });
 
-    it("compat guard is bypassed when the graph contains a loop", async () => {
-      // record a step that wouldn't match a static graph
+    it("compat guard still flags renames inside loop bodies", async () => {
+      // record a step that wouldn't match the graph — even with loops in the
+      // graph, rename/kind drift is still detectable from the bases collected
+      // out of the loop body.
       const { runId } = await h.storage.createRun({
-        name: "loop-bypass",
+        name: "loop-rename",
         version: 1,
         input: {},
       });
       const ctx = await h.ctxFor(runId);
       await ctx.step("ghost", () => "x");
 
-      // a graph with a loop: compat should NOT flag the orphan "ghost" key
       h.register(
-        flow("loop-bypass")
+        flow("loop-rename")
           .version(1)
           .step("init", () => ({ count: 0 }))
           .loop({ until: (s: { count: number }) => s.count >= 1 }, (sub) =>
@@ -254,15 +274,39 @@ describe("flow builder", () => {
       );
 
       const r = await h.run(runId);
-      // We don't care about the run's final status here — just that compat
-      // didn't preemptively fail it with INCOMPATIBLE_VERSION
-      expect((await h.storage.loadRun(runId))?.error?.code).not.toBe("INCOMPATIBLE_VERSION");
+      expect(r.status).toBe("failed");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("REPLAY_INCOMPATIBLE_VERSION");
+    });
+
+    it("compat guard accepts dynamic loop-body keys when the base still matches", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "loop-dynamic",
+        version: 1,
+        input: {},
+      });
+      const ctx = await h.ctxFor(runId);
+      await ctx.step("tick", () => 1);
+      await ctx.step("tick", () => 2); // recorded as "tick:1"
+
+      h.register(
+        flow("loop-dynamic")
+          .version(1)
+          .step("seed", () => 0 as number)
+          .loop({ until: () => true }, (sub) => sub.step("tick", () => 0 as number))
+          .build() as FlowDefinition<unknown, unknown>,
+      );
+
+      const r = await h.run(runId);
+      // Loop "tick" base is in producible — recorded "tick" + "tick:1" both
+      // match. compat returns null; run can proceed (and will exit the loop
+      // immediately since until() is true).
+      expect((await h.storage.loadRun(runId))?.error?.code).not.toBe("REPLAY_INCOMPATIBLE_VERSION");
       expect(r.status).not.toBe("failed");
     });
   });
 
   describe("compat guard", () => {
-    it("INCOMPATIBLE_VERSION when a recorded step is gone from the graph", async () => {
+    it("REPLAY_INCOMPATIBLE_VERSION when a recorded step is gone from the graph", async () => {
       const { runId } = await h.storage.createRun({
         name: "drift",
         version: 1,
@@ -280,10 +324,10 @@ describe("flow builder", () => {
 
       const r = await h.run(runId);
       expect(r.status).toBe("failed");
-      expect((await h.storage.loadRun(runId))?.error?.code).toBe("INCOMPATIBLE_VERSION");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("REPLAY_INCOMPATIBLE_VERSION");
     });
 
-    it("NON_DETERMINISTIC when the occurrence count of a name shrinks", async () => {
+    it("REPLAY_NON_DETERMINISTIC when the occurrence count of a name shrinks", async () => {
       const { runId } = await h.storage.createRun({
         name: "loopy",
         version: 1,
@@ -304,7 +348,7 @@ describe("flow builder", () => {
 
       const r = await h.run(runId);
       expect(r.status).toBe("failed");
-      expect((await h.storage.loadRun(runId))?.error?.code).toBe("NON_DETERMINISTIC");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("REPLAY_NON_DETERMINISTIC");
     });
   });
 });
