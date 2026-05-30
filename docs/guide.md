@@ -188,13 +188,47 @@ flowchart TB
   scan -->|"pending past grace"| enq["enqueue"]
   scan -->|"sleeping + timer due"| enq
   scan -->|"awaiting_signal + delivered/expired"| enq
-  scan -->|"running + no heartbeat 10min"| enq
+  scan -->|"running + idle past runningStuckMs"| enq
   scan -->|"none"| nop["no-op"]
   enq --> dedupe["jobKey flow:runId, mode=replace<br/>dedupes against existing"]
 ```
 
 Tune with `EngineOpts.reconcilerGraceMs`, `runningStuckMs`, or disable via
 `disableReconciler`.
+
+### Restart behavior
+
+What's persisted vs in-process:
+
+| State                                   | Survives restart?                                       |
+| --------------------------------------- | ------------------------------------------------------- |
+| `running` runs                          | Yes — reconciler re-enqueues after `runningStuckMs`     |
+| `sleeping` runs                         | Yes — `run_at` is in `graphile_worker.jobs`             |
+| `awaiting_signal` runs                  | Yes — signal arrives via DB, NOTIFY fans cross-instance |
+| Idempotency keys                        | Yes — scoped by `(name, version, key)` in DB            |
+| Cron advisory locks (`overlap: "skip"`) | Yes — released on process exit; next tick re-acquires   |
+| `handle.result(runId)` waiters          | **No** — in-process Promise; caller must retry          |
+| `handle.wait(runId, ...)` waiters       | **No** — same as above                                  |
+| In-flight `AbortController`             | **No** — `engine.cancel` on a crashed run is harmless   |
+
+**Step semantics on restart are at-least-once.** A crash between step body
+completion and the `finishStep` commit re-runs the body on resume. Make
+step bodies idempotent if their side effects matter — `Idempotency-Key`
+header on external calls, `INSERT ... ON CONFLICT DO NOTHING` for inserts.
+
+**Crash recovery latency = `runningStuckMs`** (default 10 min). Lower it
+if your operations need faster recovery (`createEngine({ runningStuckMs:
+60_000 })`); the cost is a more aggressive reconciler that may re-enqueue
+a still-running but slow step. The engine warns at boot if
+`runningStuckMs < defaultStepTimeoutMs` — without that bound, the
+reconciler can resurrect a step that's still legitimately running,
+producing two concurrent attempts on the same run.
+
+**Multi-instance / rolling deploys.** Two engines on the same DB are
+safe: `claimRun` uses `FOR UPDATE` + `SKIP LOCKED` at the graphile layer,
+and `pg_notify('flow_terminal', ...)` reaches every subscribed engine.
+The new engine picks up the queue as soon as it calls `listen()`; the
+old engine drains on `stop()`.
 
 ## Versioning
 

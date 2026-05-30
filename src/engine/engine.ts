@@ -14,7 +14,12 @@ import { wrapMetrics } from "../util/safe-metrics";
 import type { StandardSchemaV1 } from "../util/standard-schema";
 import { withTaskSpan } from "../util/tracing";
 import type { InternalTables } from "../storage/drizzle";
-import { validateLogger, validateRetention, warnIfPoolUndersized } from "./boot-validators";
+import {
+  validateLogger,
+  validateRetention,
+  warnIfPoolUndersized,
+  warnIfStuckShorterThanStepTimeout,
+} from "./boot-validators";
 import { createCancelCascade } from "./cancel-cascade";
 import { createHandleFactory } from "./handle";
 import { createListenLoop, type ListenLoop } from "./listen-loop";
@@ -174,6 +179,11 @@ export const createEngine = (opt: EngineOpts): Engine => {
   } catch {
     // pg internal shape not available; skip silently
   }
+  warnIfStuckShorterThanStepTimeout(
+    opt.runningStuckMs ?? 10 * 60_000,
+    opt.defaultStepTimeoutMs,
+    logger,
+  );
 
   const registry = new FlowRegistry();
   const enqueue: TxEnqueue = opt.enqueue ?? createGraphileTxEnqueue(opt.workerSchema);
