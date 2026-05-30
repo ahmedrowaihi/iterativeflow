@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { ts } from "../../util/sql-params";
 import type { ListRunsOpts, ListRunsPage, RunDetail } from "../types";
 import type { StorageSliceDeps } from "./types";
 
@@ -53,7 +54,7 @@ export const listRuns =
     if (query.until) conds.push(lte(runs.createdAt, query.until));
     if (query.cursor) {
       conds.push(
-        sql`(${runs.createdAt}, ${runs.id}) < (${query.cursor.createdAt.toISOString()}::timestamptz, ${query.cursor.id}::uuid)` as unknown as ReturnType<
+        sql`(${runs.createdAt}, ${runs.id}) < (${ts(query.cursor.createdAt)}, ${query.cursor.id}::uuid)` as unknown as ReturnType<
           typeof eq
         >,
       );
