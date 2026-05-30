@@ -1,5 +1,50 @@
 # iterativeflow
 
+## 3.0.2
+
+### Patch Changes
+
+- 77b0f22: Fix JS `Date` binding in raw `sql\`\``fragments — caused runtime failures on`postgres-js`/`neon-serverless`drivers, which (unlike`node-postgres`) don't natively encode `Date` in positional params when drizzle hasn't propagated column type info.
+
+  Three sites affected:
+  - `reconcile.ts` — `${runs.updatedAt} < ${olderThan}` rewritten via drizzle's typed `lt(col, date)` so the column's `timestamptz` encoder runs. The `EXISTS` subqueries (no JS values, only `NOW()`) stay raw.
+  - `queries.ts` — cursor tuple compare `(createdAt, id) < (...)` casts the JS-Date param to `::timestamptz` in SQL. Tuple compare can't go through `lt`, so the cast is the cheapest correct fix.
+  - `adapters/graphile/index.ts` — `add_job(... run_at => ${opts.runAt} ...)` cast to `::timestamptz` for the same reason. Affected every delayed enqueue (sleeps, retries, `delay` start opt).
+
+  Consumers using postgres-js or neon-serverless no longer need to spin up a separate `node-postgres` handle for the engine's pool.
+
+  A single `ts(date)` helper in `src/util/sql-params.ts` centralizes the cast — every Date param in a raw `sql\`\`` fragment goes through it. Easier to grep for, easier to extend (uuid/bigint/etc.) if the next driver-portability footgun shows up.
+
+- fcc8f99: Three more boot-time footgun warnings + structural cleanup.
+
+  **Warnings** (operator-tunable defaults that silently bite under load):
+  - `flow.config.unbounded_step_timeout` — no `defaultStepTimeoutMs` set; a hung step pins a worker slot indefinitely. Set `defaultStepTimeoutMs` (or pass `StepOpts.timeoutMs` on every step).
+  - `flow.config.no_retention` — no `retention` configured; `workflow.events` and terminal `workflow.runs` grow forever. Set `EngineOpts.retention` or run your own prune cron.
+  - (already shipped last patch) `flow.config.stuck_shorter_than_step_timeout` — reconciler would resurrect a still-running step.
+
+  **Stderr fallback for warnings.** When `EngineOpts.logger` isn't provided, the engine now uses a logger that pipes `warn`/`error` to `process.stderr` (debug/info stay silent). Previously the default was a full noop — boot validators warned into the void. Consumers who genuinely want silence still get it by passing their own no-op logger.
+
+  **Internal restructure.** Extracted `src/engine/internal-crons.ts` (reconciler + retention cron builders) and `src/engine/loggers.ts` (fallback + console presets). `engine.ts` 464 → 413 lines; `createEngine` reads more linearly. Default magic numbers consolidated into named constants, using the existing `toMs("1m")` / `toMs("10m")` duration helpers for self-documenting time values.
+
+- 645bc2a: Boot validator + docs for restart behavior.
+
+  **Validator** — warns at engine boot when `runningStuckMs < defaultStepTimeoutMs`. The mismatch produces a real bug class: a step running between the two bounds is indistinguishable from a crashed process, so the reconciler resurrects it and you get two concurrent attempts of the same run.
+
+  ```ts
+  createEngine({
+    runningStuckMs: 60_000, // 1 min
+    defaultStepTimeoutMs: 30 * 60_000, // 30 min ← BAD: step can outlive stuck threshold
+  });
+  // warns: flow.config.stuck_shorter_than_step_timeout
+  ```
+
+  **Docs** — new "Restart behavior" section in `docs/guide.md` covers:
+  - What survives a restart (`running` runs → reconciler; `sleeping` runs → graphile; `awaiting_signal` runs → DB rows + NOTIFY; idempotency keys; cron advisory locks).
+  - What doesn't (`handle.result` / `handle.wait` in-process Promise waiters die on crash; caller must retry).
+  - At-least-once step semantics — make external calls idempotent.
+  - Crash-recovery latency = `runningStuckMs` (default 10 min); tune lower for tighter recovery, but respect the new validator.
+  - Multi-instance / rolling deploy safety (FOR UPDATE SKIP LOCKED + cross-instance NOTIFY).
+
 ## 3.0.1
 
 ### Patch Changes
