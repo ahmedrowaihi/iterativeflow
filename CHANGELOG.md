@@ -1,5 +1,61 @@
 # iterativeflow
 
+## 3.0.0
+
+### Major Changes
+
+- 30feb15: v3 — codegen + customizable tables (cross-version drizzle safety + naming flexibility).
+
+  ## Why
+
+  Two pain points v3 solves:
+  1. **Drizzle cross-version type breakage.** v2 exported table objects typed against drizzle-orm 0.45. Consumers on drizzle-orm 1.0-rc hit TS errors at `db.select().from(runs)` because the embedded `PgTable` shape didn't match their drizzle. v3 ships no drizzle-typed values; consumers generate their own via the CLI and use their drizzle's types throughout.
+
+  2. **No naming flexibility.** v2 hardcoded `workflow.runs`, `workflow.steps`, etc. Consumers couldn't rename tables, change the `pgSchema` name, or add custom columns. v3 lets you customize all of it.
+
+  ## What changed (breaking)
+  - **`iterativeflow/schema` subpath export removed.** Previously `import { runs } from "iterativeflow/schema"` worked; now run `npx iterativeflow generate-schema` and import from your own project file.
+  - **`iterativeflow/relations` subpath removed** (same reason).
+  - **`flowSchema`, `runs`, `steps`, `signals`, `timers`, `events`** are no longer exported anywhere on the public surface. They moved entirely into a generated file the consumer owns.
+
+  ## What's new
+  - **`npx iterativeflow generate-schema`** — emits `./iterativeflow-schema.ts` at the project root (override with `--out`). Typed against your `drizzle-orm`, so `db.select().from(flowTables.runs)` works on any drizzle version.
+  - **`createEngine({ tables })`** — optional. Pass `flowTables` from your generated file only if you customize (renamed tables, custom `pgSchema` name, added columns the engine should see). The default `createEngine({ db, pool })` works against the unmodified generated file.
+  - **`applyFlowSchema(db)` / `dropFlowSchema(db)`** are now re-exported from the main `iterativeflow` entry. Use `applyFlowSchema` to install the workflow tables programmatically without drizzle-kit; it reads the bundled `migrations/0000_init.sql` directly (no `drizzle-kit/api` runtime dependency).
+
+  ## What stayed the same
+  - The SQL — `migrations/0000_init.sql` is unchanged. `psql -f node_modules/iterativeflow/migrations/0000_init.sql` still works.
+  - Wire-level contracts — `pg_notify` channel names (`flow_terminal`, `flow_progress`), cursor key scheme, replay semantics — all unchanged.
+  - Constants and error vocabulary — `RUN_STATUSES`, `STEP_STATUSES`, `EVENT_TYPES`, `FLOW_ERROR_CODES`, the derived `RunStatus`/`StepStatus`/`EventType`/`FlowErrorCode` types, and the `FlowError` interface stay on the main `iterativeflow` entry.
+
+  ## Migration
+
+  ```bash
+  # 1. Generate the consumer-side schema file
+  npx iterativeflow generate-schema
+  # → wrote ./iterativeflow-schema.ts
+
+  # 2. Update your drizzle.config.ts
+  #    BEFORE:  schema: [require.resolve("iterativeflow/schema")]
+  #    AFTER:   schema: ["./iterativeflow-schema.ts"]
+
+  # 3. Replace any imports from "iterativeflow/schema"
+  #    BEFORE:  import { runs } from "iterativeflow/schema"
+  #    AFTER:   import { flowTables } from "./iterativeflow-schema"
+  #             // then: flowTables.runs
+
+  # 4. If you customize (renamed tables, custom pgSchema, added columns):
+  #    pass tables to createEngine:
+  #      createEngine({ db, pool, tables: flowTables })
+  #    Otherwise nothing to do — `createEngine({ db, pool })` works as-is.
+  ```
+
+  Same SQL, same column names by default, same wire shape.
+
+  ## Stability discipline
+
+  `etc/iterativeflow.api.md` (tracked via `npm run api:check`) gates every change to the public surface. The library's public TS is now ORM-type-free — constants, error types, plain interfaces, and the engine's runtime API only.
+
 ## 2.0.1
 
 ### Patch Changes
