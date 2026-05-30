@@ -53,7 +53,7 @@ export const listRuns =
     if (query.until) conds.push(lte(runs.createdAt, query.until));
     if (query.cursor) {
       conds.push(
-        sql`(${runs.createdAt}, ${runs.id}) < (${query.cursor.createdAt}, ${query.cursor.id}::uuid)` as unknown as ReturnType<
+        sql`(${runs.createdAt}, ${runs.id}) < (${query.cursor.createdAt.toISOString()}::timestamptz, ${query.cursor.id}::uuid)` as unknown as ReturnType<
           typeof eq
         >,
       );
