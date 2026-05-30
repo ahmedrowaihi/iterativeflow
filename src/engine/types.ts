@@ -1,21 +1,55 @@
 import type { BackoffPolicy } from "../util/backoff";
 import type { Duration } from "../util/duration";
 import type { StandardSchemaV1 } from "../util/standard-schema";
-import type { RunStatus } from "../storage/schema";
+import type { EventRow, RunRow, RunStatus, SignalRow, StepRow, TimerRow } from "../storage/schema";
 import type { SignalDeliveryResult } from "../storage/types";
 
 /**
- * The five workflow tables. Pass `flowTables` from your generated
- * `iterativeflow-schema.ts` into `createEngine({ tables })`. Field types are
- * intentionally `unknown` so the engine's `.d.ts` never embeds a specific
- * drizzle-orm version's `PgTable` shape.
+ * Extract a drizzle table's row shape via `$inferSelect`. Works for any
+ * drizzle-orm version because we only require the structural property,
+ * not a specific drizzle internal type.
+ */
+export type Row<T> = T extends { $inferSelect: infer R } ? R : never;
+
+/**
+ * The five workflow tables. Each must expose `$inferSelect` (every drizzle
+ * table does) so the engine can flow your row types through `engine.status()`
+ * / `engine.listRuns()` end-to-end — no casts at the consumer site.
+ *
+ * **Extension model.** Adding columns to a table is supported and round-trips
+ * through the engine: the storage layer's `db.select().from(tables.X)` runs
+ * against your actual table object, so extra columns land in the returned
+ * row and stay visible in `Row<T['X']>`. The engine internally types its
+ * SQL against its own column set (the InternalTables alias), but it never
+ * pretends your extra columns are absent — it just doesn't read them.
+ *
+ * What you can't change without `SCHEMA_MISMATCH`: the *names* of the
+ * columns the engine reads (`id`, `status`, `cursor_key`, etc.).
+ *
+ * Pass `flowTables` from your generated `iterativeflow-schema.ts` into
+ * `createEngine({ tables })` only when you customize names; the default
+ * uses the engine's internal table objects.
  */
 export interface FlowTables {
-  runs: unknown;
-  steps: unknown;
-  signals: unknown;
-  timers: unknown;
-  events: unknown;
+  runs: { $inferSelect: object };
+  steps: { $inferSelect: object };
+  signals: { $inferSelect: object };
+  timers: { $inferSelect: object };
+  events: { $inferSelect: object };
+}
+
+/**
+ * The engine's own table shape — used as the generic default when consumers
+ * don't pass `tables` to `createEngine`. Defined structurally over the
+ * exported row types so the public type surface doesn't leak the internal
+ * drizzle table objects.
+ */
+export interface DefaultFlowTables {
+  runs: { $inferSelect: RunRow };
+  steps: { $inferSelect: StepRow };
+  signals: { $inferSelect: SignalRow };
+  timers: { $inferSelect: TimerRow };
+  events: { $inferSelect: EventRow };
 }
 
 /** Argument passed to a step body. */
@@ -223,11 +257,36 @@ export type {
   ClaimedRun,
   EnqueueOpts,
   ListRunsOpts,
-  ListRunsPage,
-  RunDetail,
   RunSnapshot,
   SignalDeliveryResult,
   SignalIssue,
   Storage,
   StorageOps,
 } from "../storage/types";
+
+/**
+ * Full snapshot returned by `engine.status(runId)`. Generic over your
+ * {@link FlowTables} so consumer rows (including custom columns added to
+ * the generated schema) flow through with their drizzle-inferred types.
+ */
+export interface RunDetail<T extends FlowTables = DefaultFlowTables> {
+  /** Row from `workflow.runs` (or your customized runs table). */
+  run: Row<T["runs"]>;
+  /** Rows from `workflow.steps` for this run. */
+  steps: Row<T["steps"]>[];
+  /** Rows from `workflow.timers` for this run. */
+  timers: Row<T["timers"]>[];
+  /** Rows from `workflow.signals` for this run. */
+  signals: Row<T["signals"]>[];
+}
+
+/**
+ * One page returned by `engine.listRuns(...)`. Generic over your
+ * {@link FlowTables} so the row type reflects your schema.
+ */
+export interface ListRunsPage<T extends FlowTables = DefaultFlowTables> {
+  /** Rows for this page (most recent first). */
+  runs: Row<T["runs"]>[];
+  /** Cursor for the next page, or undefined when this is the last. */
+  next?: { createdAt: Date; id: string };
+}

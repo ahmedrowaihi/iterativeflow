@@ -41,6 +41,7 @@ import { createStartChild } from "./start-child";
 import { createTerminalWaiters } from "./terminal-waiters";
 import type {
   CronSpec,
+  DefaultFlowTables,
   DefineFlowOpts,
   FlowContext,
   FlowHandle,
@@ -57,8 +58,14 @@ import type {
 
 export type { HealthReport, MetricsRecorder } from "./types";
 
-/** Options for {@link createEngine}. `db`, `pool`, and `tables` are required. */
-export interface EngineOpts {
+/**
+ * Options for {@link createEngine}. `db` and `pool` are required; `tables`
+ * is optional and defaults to the internal `workflow.*` table objects.
+ *
+ * Pass `tables` to make `engine.status()` and `engine.listRuns()` return
+ * rows with your drizzle-inferred types (including custom columns).
+ */
+export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
   /** Drizzle handle bound to the Postgres database hosting the workflow tables. */
   db: WorkflowDb;
   /**
@@ -72,7 +79,7 @@ export interface EngineOpts {
    * customized table names, the `pgSchema` name, or added columns the
    * engine should see. Defaults to the internal `workflow.*` tables.
    */
-  tables?: FlowTables;
+  tables?: T;
   /** Structured logger; defaults to a noop. */
   logger?: Logger;
   /** Postgres schema name for graphile-worker. Default `"graphile_worker"`. */
@@ -124,8 +131,12 @@ export interface EngineOpts {
   metrics?: MetricsRecorder;
 }
 
-/** Runtime API surface returned by {@link createEngine}. */
-export interface Engine {
+/**
+ * Runtime API surface returned by {@link createEngine}. Generic over the
+ * caller's {@link FlowTables} so `status()` and `listRuns()` return rows
+ * with the consumer's drizzle-inferred row types.
+ */
+export interface Engine<T extends FlowTables = DefaultFlowTables> {
   /** Register a flow built with `flow(...)` or `defineFlow(...)`. */
   register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>;
   /** Register a cron task. Must be called before {@link Engine.listen}. */
@@ -144,11 +155,11 @@ export interface Engine {
   /** Mark a run canceled. Aborts the in-flight step's AbortSignal if running. */
   cancel(runId: string, reason?: string): Promise<void>;
   /** Snapshot of run + steps + timers + signals. */
-  status(runId: string): Promise<RunDetail | undefined>;
+  status(runId: string): Promise<RunDetail<T> | undefined>;
   /** Liveness ping. */
   health(): Promise<HealthReport>;
   /** Paginated list of runs filtered by name/status/tag/created-window. */
-  listRuns(opt?: ListRunsOpts): Promise<ListRunsPage>;
+  listRuns(opt?: ListRunsOpts): Promise<ListRunsPage<T>>;
   /** Delete event rows older than `olderThan`. Returns the count removed. */
   pruneEvents(opt: { olderThan: Date; batchSize?: number }): Promise<number>;
   /** Delete terminal-status run rows older than `olderThan`. Returns the count removed. */
@@ -169,8 +180,17 @@ const DEFAULT_MAX_CHILDREN_PER_RUN = 1000;
 
 export { consoleLogger } from "./loggers";
 
-/** Construct an engine. Wires the registry, storage, worker, and reconciler. */
-export const createEngine = (opt: EngineOpts): Engine => {
+/**
+ * Construct an engine. Wires the registry, storage, worker, and reconciler.
+ *
+ * Generic over `T extends FlowTables`: when you pass `tables`, the row
+ * types returned by `engine.status()` and `engine.listRuns()` reflect
+ * your drizzle schema (including columns you added). Without `tables`,
+ * `T` defaults to the engine's internal table objects.
+ */
+export const createEngine = <T extends FlowTables = DefaultFlowTables>(
+  opt: EngineOpts<T>,
+): Engine<T> => {
   const rawLogger = opt.logger ?? fallbackLogger;
   validateLogger(rawLogger);
   const logger = wrapLogger(rawLogger);
@@ -278,7 +298,7 @@ export const createEngine = (opt: EngineOpts): Engine => {
     return buildHandle<I, O>(name, version, inputSchema);
   };
 
-  const engine: Engine = {
+  const engine: Engine<T> = {
     register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O> {
       if ("body" in def && typeof def.body === "function" && !("nodes" in def)) {
         return registerDef<I, O>(def.name, def.version ?? 1, def.body, def.input);
@@ -381,9 +401,9 @@ export const createEngine = (opt: EngineOpts): Engine => {
 
     signal: (runId, signalName, payload) => routeSignal(runId, signalName, payload),
 
-    status: (runId) => storage.loadRunDetail(runId),
+    status: (runId) => storage.loadRunDetail(runId) as Promise<RunDetail<T> | undefined>,
 
-    listRuns: (o = {}) => storage.listRuns(o),
+    listRuns: (o = {}) => storage.listRuns(o) as Promise<ListRunsPage<T>>,
 
     cancel: (runId, reason) => cancelCascade(runId, reason),
 

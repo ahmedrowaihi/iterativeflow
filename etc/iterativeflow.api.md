@@ -21,7 +21,7 @@ export type BackoffPolicy = "exponential" | "linear" | "fixed" | ((attempt: numb
 export const consoleLogger: () => Logger;
 
 // @public
-export const createEngine: (opt: EngineOpts) => Engine;
+export const createEngine: <T extends FlowTables = DefaultFlowTables>(opt: EngineOpts<T>) => Engine<T>;
 
 // @public
 export interface CronSpec {
@@ -32,6 +32,30 @@ export interface CronSpec {
     run: () => Promise<unknown> | unknown;
     schedule: string;
     timezone?: string;
+}
+
+// @public
+export interface DefaultFlowTables {
+    // (undocumented)
+    events: {
+        $inferSelect: EventRow;
+    };
+    // (undocumented)
+    runs: {
+        $inferSelect: RunRow;
+    };
+    // (undocumented)
+    signals: {
+        $inferSelect: SignalRow;
+    };
+    // (undocumented)
+    steps: {
+        $inferSelect: StepRow;
+    };
+    // (undocumented)
+    timers: {
+        $inferSelect: TimerRow;
+    };
 }
 
 // @public
@@ -57,13 +81,13 @@ export type Duration = number | DurationString | Date;
 export type DurationString = `${number}${Unit}` | `${number} ${Unit}`;
 
 // @public
-export interface Engine {
+export interface Engine<T extends FlowTables = DefaultFlowTables> {
     attachShutdownSignals(signals?: ReadonlyArray<NodeJS.Signals>): () => void;
     cancel(runId: string, reason?: string): Promise<void>;
     defineCron(spec: CronSpec): void;
     health(): Promise<HealthReport>;
     listen(): Promise<void>;
-    listRuns(opt?: ListRunsOpts): Promise<ListRunsPage>;
+    listRuns(opt?: ListRunsOpts): Promise<ListRunsPage<T>>;
     pruneEvents(opt: {
         olderThan: Date;
         batchSize?: number;
@@ -75,12 +99,12 @@ export interface Engine {
     }): Promise<number>;
     register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>;
     signal(runId: string, signalName: string, payload?: unknown): Promise<SignalDeliveryResult>;
-    status(runId: string): Promise<RunDetail | undefined>;
+    status(runId: string): Promise<RunDetail<T> | undefined>;
     stop(): Promise<void>;
 }
 
 // @public
-export interface EngineOpts {
+export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
     concurrency?: number;
     db: WorkflowDb;
     defaultStepTimeoutMs?: number;
@@ -106,12 +130,17 @@ export interface EngineOpts {
         batchSize?: number;
     };
     runningStuckMs?: number;
-    tables?: FlowTables;
+    tables?: T;
     workerSchema?: string;
 }
 
 // @public
 export const EVENT_TYPES: readonly ["started", "step_started", "step_ok", "step_failed", "step_terminal", "sleep_scheduled", "sleep_fired", "signal_armed", "signal_delivered", "signal_timeout", "suspended", "resumed", "completed", "failed", "canceled"];
+
+// Warning: (ae-forgotten-export) The symbol "events" needs to be exported by the entry point index.d.ts
+//
+// @public (undocumented)
+export type EventRow = typeof events.$inferSelect;
 
 // @public
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -137,7 +166,7 @@ export class FlowBuilder<I, Channel> {
         input: Channel;
     }) => O): TerminalFlowBuilder<I, O>;
     signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T>;
-    signal<T, R>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R): FlowBuilder<I, R>;
+    signal<T, R$1>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R$1): FlowBuilder<I, R$1>;
     sleep(duration: Duration): FlowBuilder<I, Channel>;
     step<T>(name: string, fn: (arg: StepArg<Channel>) => T | Promise<T>, opts?: StepOpts): FlowBuilder<I, Awaited<T>>;
     version(version: number): FlowBuilder<I, Channel>;
@@ -213,15 +242,25 @@ export class FlowRuntimeError extends Error {
 // @public
 export interface FlowTables {
     // (undocumented)
-    events: unknown;
+    events: {
+        $inferSelect: object;
+    };
     // (undocumented)
-    runs: unknown;
+    runs: {
+        $inferSelect: object;
+    };
     // (undocumented)
-    signals: unknown;
+    signals: {
+        $inferSelect: object;
+    };
     // (undocumented)
-    steps: unknown;
+    steps: {
+        $inferSelect: object;
+    };
     // (undocumented)
-    timers: unknown;
+    timers: {
+        $inferSelect: object;
+    };
 }
 
 // @public
@@ -254,13 +293,12 @@ export interface ListRunsOpts {
 }
 
 // @public
-export interface ListRunsPage {
+export interface ListRunsPage<T extends FlowTables = DefaultFlowTables> {
     next?: {
         createdAt: Date;
         id: string;
     };
-    // Warning: (ae-forgotten-export) The symbol "RunRow" needs to be exported by the entry point index.d.ts
-    runs: RunRow[];
+    runs: Row<T["runs"]>[];
 }
 
 // @public
@@ -317,18 +355,25 @@ export interface MetricsRecorder {
 }
 
 // @public
+export type Row<T> = T extends {
+    $inferSelect: infer R;
+} ? R : never;
+
+// @public
 export const RUN_STATUSES: readonly ["pending", "running", "sleeping", "awaiting_signal", "retrying", "done", "failed", "canceled"];
 
 // @public
-export interface RunDetail {
-    run: RunRow;
-    // Warning: (ae-forgotten-export) The symbol "SignalRow" needs to be exported by the entry point index.d.ts
-    signals: SignalRow[];
-    // Warning: (ae-forgotten-export) The symbol "StepRow" needs to be exported by the entry point index.d.ts
-    steps: StepRow[];
-    // Warning: (ae-forgotten-export) The symbol "TimerRow" needs to be exported by the entry point index.d.ts
-    timers: TimerRow[];
+export interface RunDetail<T extends FlowTables = DefaultFlowTables> {
+    run: Row<T["runs"]>;
+    signals: Row<T["signals"]>[];
+    steps: Row<T["steps"]>[];
+    timers: Row<T["timers"]>[];
 }
+
+// Warning: (ae-forgotten-export) The symbol "runs" needs to be exported by the entry point index.d.ts
+//
+// @public (undocumented)
+export type RunRow = typeof runs.$inferSelect;
 
 // @public
 export type RunStatus = (typeof RUN_STATUSES)[number];
@@ -369,6 +414,11 @@ export interface SignalOpts<T> {
     schema?: StandardSchemaV1<unknown, T>;
     timeout?: Duration;
 }
+
+// Warning: (ae-forgotten-export) The symbol "signals" needs to be exported by the entry point index.d.ts
+//
+// @public (undocumented)
+export type SignalRow = typeof signals.$inferSelect;
 
 // @public
 export interface SleepNode {
@@ -412,6 +462,11 @@ export interface StepOpts {
     timeoutMs?: number;
 }
 
+// Warning: (ae-forgotten-export) The symbol "steps" needs to be exported by the entry point index.d.ts
+//
+// @public (undocumented)
+export type StepRow = typeof steps.$inferSelect;
+
 // @public
 export type StepStatus = (typeof STEP_STATUSES)[number];
 
@@ -424,6 +479,11 @@ export class TerminalFlowBuilder<I, O> {
     constructor(state: FlowState);
     build(): FlowDefinition<I, O>;
 }
+
+// Warning: (ae-forgotten-export) The symbol "timers" needs to be exported by the entry point index.d.ts
+//
+// @public (undocumented)
+export type TimerRow = typeof timers.$inferSelect;
 
 // @public
 export const toFlowError: (err: unknown) => FlowError;
