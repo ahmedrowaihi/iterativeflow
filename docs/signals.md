@@ -4,6 +4,8 @@ Signals are how external systems push named messages into a running flow. The fl
 
 ## The two sides
 
+<!-- doc-check: skip — illustrative inline snippet -->
+
 ```ts
 // Inside the flow body — the receiver
 const decision = await ctx.signal<{ approved: boolean }>("approve", {
@@ -18,6 +20,8 @@ const result = await engine.signal(runId, "approve", { approved: true });
 ## Why signals have a name
 
 A single flow body can await several different signals at different points:
+
+<!-- doc-check: skip — illustrative inline snippet -->
 
 ```ts
 const review = await ctx.signal("review");
@@ -40,6 +44,8 @@ If you need broadcast: query `engine.listRuns({ name, status: "awaiting_signal" 
 ## Delivery outcomes
 
 `engine.signal` returns a `SignalDeliveryResult`:
+
+<!-- doc-check: skip — illustrative inline snippet -->
 
 ```ts
 const result = await engine.signal(runId, "approve", payload);
@@ -67,6 +73,8 @@ switch (result.kind) {
 
 Two `ctx.signal("approve")` calls in the same flow body are distinguished by ordinal:
 
+<!-- doc-check: skip — illustrative inline snippet -->
+
 ```ts
 const first = await ctx.signal("approve"); // matches the 1st delivered "approve"
 const second = await ctx.signal("approve"); // matches the 2nd
@@ -87,6 +95,8 @@ There is no TTL on a buffered signal. If you need expiry, use the `timeout` on `
 
 ## Timeouts
 
+<!-- doc-check: skip — illustrative inline snippet -->
+
 ```ts
 try {
   const decision = await ctx.signal("approve", { timeout: "1h" });
@@ -106,6 +116,8 @@ The timeout is enforced when the workflow next resumes after `expiresAt`. The re
 A late `engine.signal` after expiry returns `{ kind: "expired" }`. The webhook caller should treat this as "rejected."
 
 ## Schema validation behavior
+
+<!-- doc-check: skip — illustrative inline snippet -->
 
 ```ts
 await ctx.signal("approve", { schema: z.object({ approved: z.boolean() }) });
@@ -129,6 +141,8 @@ await ctx.signal("approve", { schema: z.object({ approved: z.boolean() }) });
 
 ### Human-in-the-loop approval
 
+<!-- doc-check: skip — illustrative inline snippet -->
+
 ```ts
 const review = flow("review")
   .step("draft", ({ input }) => generateDraft(input))
@@ -143,6 +157,8 @@ const review = flow("review")
 The webhook handler validates the payload, then `await engine.signal(runId, "decision", body)`.
 
 ### Multi-signer
+
+<!-- doc-check: skip — illustrative inline snippet -->
 
 ```ts
 const sign = flow("multi-sign")

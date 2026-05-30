@@ -52,6 +52,8 @@
   "scripts": {
     "build": "tsdown",
     "migrations:generate": "tsx scripts/generate-migrations.ts",
+    "docs:check": "node scripts/extract-doc-examples.mjs && tsc -p tests/docs-examples",
+    "corpus:capture": "tsx scripts/capture-corpus.ts",
     "api:check": "api-extractor run --local && node scripts/normalize-api-report.mjs && git diff --exit-code --quiet -- etc/iterativeflow.api.md",
     "api:update": "api-extractor run --local && node scripts/normalize-api-report.mjs",
     "smoke:dist": "node scripts/smoke-dist.mjs",

@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "id": "611adece-cb38-4439-89c0-dbaea2274861",
+      "name": "corpus-signal",
+      "version": 1,
+      "status": "awaiting_signal",
+      "parent_run_id": null,
+      "parent_cursor_key": null,
+      "input": {},
+      "output": null,
+      "error": null,
+      "attempts": 1,
+      "idempotency_key": null,
+      "tags": null,
+      "created_at": "2026-05-30 14:57:30.62+00",
+      "started_at": "2026-05-30 14:57:30.62+00",
+      "completed_at": null,
+      "updated_at": "2026-05-30 14:57:30.628+00"
+    }
+  ],
+  "steps": [
+    {
+      "run_id": "611adece-cb38-4439-89c0-dbaea2274861",
+      "cursor_key": "compute",
+      "status": "ok",
+      "result": 42,
+      "error": null,
+      "attempts": 1,
+      "started_at": "2026-05-30 14:57:30.623+00",
+      "completed_at": "2026-05-30 14:57:30.624+00"
+    }
+  ],
+  "timers": [],
+  "signals": [
+    {
+      "run_id": "611adece-cb38-4439-89c0-dbaea2274861",
+      "cursor_key": "signal:approve",
+      "delivered": false,
+      "payload": null,
+      "expires_at": null,
+      "created_at": "2026-05-30 14:57:30.625+00",
+      "delivered_at": null
+    }
+  ]
+}

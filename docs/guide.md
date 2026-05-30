@@ -13,15 +13,17 @@ stateDiagram-v2
   [*] --> pending: handle.start
   pending --> running: worker picks up
   running --> sleeping: ctx.sleep
-  running --> waiting: ctx.hook
+  running --> awaiting_signal: ctx.signal
+  running --> retrying: step throws (transient)
   running --> done: return / output
   running --> failed: unhandled error
   sleeping --> running: timer fires
-  waiting --> running: engine.signal
+  awaiting_signal --> running: engine.signal
+  retrying --> running: backoff elapses
   pending --> canceled: engine.cancel
   running --> canceled: engine.cancel
   sleeping --> canceled
-  waiting --> canceled
+  awaiting_signal --> canceled
   done --> [*]
   failed --> [*]
   canceled --> [*]
@@ -32,7 +34,7 @@ them. The reconciler only re-drives non-terminal runs.
 
 ### Replay
 
-The workflow body re-executes from the top on every resume. Only `.step`
+The flow body re-executes from the top on every resume. Only `.step`
 results are persisted; on replay the engine returns the stored result without
 running the fn again.
 
@@ -45,7 +47,7 @@ sequenceDiagram
   W->>DB: startStep "a"
   W->>W: fn runs, returns A
   W->>DB: finishStep "a" ok
-  W->>W: ctx.sleep 1h throws WorkflowSuspend
+  W->>W: ctx.sleep 1h throws FlowSuspend
   W->>DB: markSleeping + add_job(runAt=+1h) (one txn)
   Note over W,DB: process crashes, 1h passes
   Note over W,DB: pass 2 — replay
@@ -62,15 +64,14 @@ makes that structural — there's no "between nodes" space.
 ### The single value channel
 
 ```
-input ──► step('a') ──► step('b') ──► sleep ──► hook ──► step('c') ──► output
-   I        I → A         A → B       B (pass)   B → P     P → C        C → O
+input ──► step('a') ──► step('b') ──► sleep ──► signal ──► step('c') ──► output
+   I        I → A         A → B       B (pass)   B → P       P → C        C → O
 ```
 
-Each step fn receives `{ ctx, input }` and returns the next `input`. `ctx`
-gives `runId`, `attempt`, `log()`. `sleep` is transparent (channel
-unchanged). `hook` replaces the channel with the signal payload, or with
-`merge(input, payload)` if you provide a merge fn — that's how to carry an
-earlier value past a hook.
+Each step fn receives `{ input, signal, attempt }` and returns the next channel
+value. `sleep` is transparent (channel unchanged). `signal` replaces the
+channel with the delivered payload, or with `merge(input, payload)` if you
+provide a merge fn — that's how to carry an earlier value past a signal.
 
 ### Loops
 
@@ -78,11 +79,13 @@ earlier value past a hook.
 current channel returns true. The body's start/end channel type must match
 (every iteration's first node sees what the last node returned).
 
+<!-- doc-check: skip — partial builder chain; shown for shape illustration -->
+
 ```ts
 .loop(
   { until: (state) => state.done },
   (sub) => sub
-    .hook("user-msg", { schema: msgSchema }, (state, msg) =>
+    .signal("user-msg", { schema: msgSchema }, (state, msg) =>
       msg.end
         ? { ...state, done: true }
         : { ...state, history: [...state.history, msg] },
@@ -97,28 +100,35 @@ current channel returns true. The body's start/end channel type must match
 ```
 
 Same-name nodes inside the body get the cursor's `:N` suffix per iteration —
-`hook:user-msg`, `hook:user-msg:1`, `hook:user-msg:2`, … and `engine.signal`
-targets whichever is currently armed.
+`signal:user-msg`, `signal:user-msg:1`, `signal:user-msg:2`, … and
+`engine.signal` targets whichever is currently armed.
 
-Trade-offs: **the compat guard is off** for graphs containing a `.loop`
-(iteration count is dynamic), and snapshot + replay cost grow linearly with
-iteration count. Good for sessions of dozens to thousands of turns; wrong
-shape for inner-loop reasoning.
+Trade-offs: **the compat guard is partial** for graphs containing a `.loop`
+(iteration count is dynamic; rename/kind drift inside the body IS still
+detected), and snapshot + replay cost grow linearly with iteration count. Good
+for sessions of dozens to thousands of turns; wrong shape for inner-loop
+reasoning.
 
-### Advanced: `defineWorkflow` (low-level)
+### Advanced: `defineFlow` (low-level)
 
-For workflows the builder can't express (dynamic step names, computed graphs,
+For flows the builder can't express (dynamic step names, computed graphs,
 exotic control flow), drop to the raw context:
 
+<!-- doc-check: skip — illustrative; assumes an `agent.respond` external -->
+
 ```ts
-const handle = engine.defineWorkflow({
+import { defineFlow } from "iterativeflow";
+
+declare const agent: { respond(history: unknown[]): Promise<string> };
+
+const flow = defineFlow({
   name: "chat",
   version: 1,
-  run: async (ctx, input) => {
-    const history = [];
+  body: async (ctx, _input: unknown) => {
+    const history: { from: string; text: string }[] = [];
     let i = 0;
     while (true) {
-      const msg = await ctx.hook<{ text: string; end?: boolean }>("user-msg");
+      const msg = await ctx.signal<{ text: string; end?: boolean }>("user-msg");
       if (msg.end) return history;
       history.push({ from: "user", text: msg.text });
       const reply = await ctx.step(`reply-${i}`, () => agent.respond(history));
@@ -129,10 +139,11 @@ const handle = engine.defineWorkflow({
 });
 ```
 
-You get `ctx.step` / `ctx.sleep` / `ctx.hook` / `ctx.log` and full JS control
-flow. The compat guard doesn't apply (no node graph to compare). All other
-guarantees (replay, durability, lock-order, reconciler) still hold. Prefer
-the builder when the shape fits; reach for this when it doesn't.
+You get `ctx.step` / `ctx.sleep` / `ctx.signal` / `ctx.invoke` / `ctx.log` and
+full JS control flow. The compat guard doesn't apply (no node graph to
+compare). All other guarantees (replay, durability, lock-order, reconciler)
+still hold. Prefer the builder when the shape fits; reach for this when it
+doesn't.
 
 ## Durability
 
@@ -147,7 +158,7 @@ sequenceDiagram
   participant PG as Postgres
   C->>PG: BEGIN
   C->>PG: SELECT runs FOR UPDATE
-  C->>PG: ...state writes (hooks / runs / events)...
+  C->>PG: ...state writes (signals / runs / events)...
   C->>PG: SELECT graphile_worker.add_job(...)
   C->>PG: COMMIT
   Note over PG: both land, or neither does
@@ -158,7 +169,7 @@ sequenceDiagram
 Every transaction acquires locks in one order:
 
 ```
-runs FOR UPDATE  →  hooks / timers / steps  →  graphile_worker.jobs
+runs FOR UPDATE  →  signals / timers / steps  →  graphile_worker.jobs
 ```
 
 Two concurrent parties serialize on the `runs` row; they can't cycle. **User
@@ -176,10 +187,10 @@ flowchart TB
   tick["cron: every minute"] --> scan{"stale runs?"}
   scan -->|"pending past grace"| enq["enqueue"]
   scan -->|"sleeping + timer due"| enq
-  scan -->|"waiting + hook delivered/expired"| enq
+  scan -->|"awaiting_signal + delivered/expired"| enq
   scan -->|"running + no heartbeat 10min"| enq
   scan -->|"none"| nop["no-op"]
-  enq --> dedupe["jobKey workflow:runId, mode=replace<br/>dedupes against existing"]
+  enq --> dedupe["jobKey flow:runId, mode=replace<br/>dedupes against existing"]
 ```
 
 Tune with `EngineOpts.reconcilerGraceMs`, `runningStuckMs`, or disable via
@@ -208,8 +219,8 @@ Register both versions side-by-side; old runs drain on v1, new runs use v2.
 If you forget and edit the graph in place, resumed runs of older history fail
 loudly:
 
-- `INCOMPATIBLE_VERSION` — a recorded step is no longer in the graph.
-- `NON_DETERMINISTIC` — a same-name step's occurrence count shifted.
+- `REPLAY_INCOMPATIBLE_VERSION` — a recorded step is no longer in the graph.
+- `REPLAY_NON_DETERMINISTIC` — a same-name step's occurrence count shifted.
 
 Never silent corruption.
 
@@ -219,12 +230,12 @@ What the engine **cannot enforce** and you must own.
 
 ### Determinism
 
-| Don't                                        | Do                                                  |
-| -------------------------------------------- | --------------------------------------------------- |
-| `crypto.randomUUID()` / `Date.now()` in glue | Compute inside a `.step()` fn                       |
-| Call an API / write a row outside a step     | It IS a `.step()` — no other place                  |
-| Non-pure `merge` / `output` fn               | Pure transforms only — they re-run on replay        |
-| `ctx.sleep` / `ctx.hook` inside a step fn    | Move to top-level (else `WORKFLOW_SUSPEND_IN_STEP`) |
+| Don't                                        | Do                                            |
+| -------------------------------------------- | --------------------------------------------- |
+| `crypto.randomUUID()` / `Date.now()` in glue | Compute inside a `.step()` fn                 |
+| Call an API / write a row outside a step     | It IS a `.step()` — no other place            |
+| Non-pure `merge` / `output` fn               | Pure transforms only — they re-run on replay  |
+| `ctx.sleep` / `ctx.signal` inside a step fn  | Move to top-level (else `STEP_INVALID_AWAIT`) |
 
 ### Per-step hygiene
 
@@ -238,41 +249,71 @@ What the engine **cannot enforce** and you must own.
 
 ### Engine lifecycle
 
-- Install `graphile_worker` schema before `engine.start()` (`await migrate({ pgPool })`).
-- Register all `defineCron` specs before `engine.start()` — late calls throw.
-- Pool size ≥ `concurrency × 5 + 10` headroom.
-- Run your own retention cron — see [retention](#retention).
+- Install `graphile_worker` schema before `engine.listen()` (`await migrate({ pgPool })`).
+- Register all `defineCron` specs before `engine.listen()` — late calls throw.
+- Pool size ≥ `concurrency + handles awaiting result() + reconciler headroom`.
+- Configure retention (or run your own retention cron) — see [retention](#retention).
 
 ## What you don't get
 
 - **Exactly-once.** At-least-once is the contract.
 - **Automatic whole-run retry.** Failed = terminal.
-- **Branching combinators in the builder.** Linear chains in v1; branch via a step's return.
-- **Subflows / nested workflows.** Compose at the app layer.
-- **Step cancellation mid-execution.** `cancel` flips status; the running fn finishes.
+- **Branching combinators in the builder.** Linear chains; branch via a step's return or via `defineFlow`.
 - **Per-flow concurrency limits.** One global `concurrency` on graphile-worker.
-- **Graceful drain on `engine.stop()`.**
+- **Graceful drain on `engine.stop()`.** It drains in-flight tasks via graphile-worker's stop semantics.
 
 ## Failure-mode reference
 
-| Symptom                             | Cause                                                        | Fix                                              |
-| ----------------------------------- | ------------------------------------------------------------ | ------------------------------------------------ |
-| Run stays `pending` after `start()` | `graphile_worker` schema missing OR no worker process        | Run `migrate({ pgPool })`; call `engine.start()` |
-| Run stays `sleeping` past wake      | Worker fleet was down; reconciler will recover within ~1 min | None — auto-heals                                |
-| `UNKNOWN_WORKFLOW` on resume        | Replica missing the `name@version`                           | Register on every replica                        |
-| `INCOMPATIBLE_VERSION`              | Graph edited without bumping version                         | Restore step OR publish v2 alongside             |
-| `NON_DETERMINISTIC`                 | Same-name step occurrence count changed                      | Same as above                                    |
-| `WORKFLOW_HOOK_TIMEOUT`             | Hook's `timeout` elapsed                                     | Operator decision; engine did its job            |
-| `WORKFLOW_SUSPEND_IN_STEP`          | `ctx.sleep` / `ctx.hook` inside a step fn                    | Move them to top-level                           |
-| `HOOK_PAYLOAD_INVALID`              | Stored payload fails current schema                          | Widen schema or accept                           |
-| Worker slot stuck forever           | Step fn hung without `timeoutMs`                             | Add `StepOpts.timeoutMs`                         |
-| `events` table growing unboundedly  | No retention cron                                            | Register `pruneEvents` / `pruneRuns` daily       |
+| Symptom                             | Cause                                                        | Fix                                               |
+| ----------------------------------- | ------------------------------------------------------------ | ------------------------------------------------- |
+| Run stays `pending` after `start()` | `graphile_worker` schema missing OR no worker process        | Run `migrate({ pgPool })`; call `engine.listen()` |
+| Run stays `sleeping` past wake      | Worker fleet was down; reconciler will recover within ~1 min | None — auto-heals                                 |
+| `FLOW_UNKNOWN` on resume            | Replica missing the `name@version`                           | Register on every replica                         |
+| `REPLAY_INCOMPATIBLE_VERSION`       | Graph edited without bumping version                         | Restore step OR publish v2 alongside              |
+| `REPLAY_NON_DETERMINISTIC`          | Same-name step occurrence count changed                      | Same as above                                     |
+| `SIGNAL_TIMEOUT`                    | Signal `timeout` elapsed                                     | Operator decision; engine did its job             |
+| `STEP_INVALID_AWAIT`                | `ctx.sleep` / `ctx.signal` / `ctx.invoke` inside a step fn   | Move them to top-level                            |
+| `SIGNAL_PAYLOAD_INVALID`            | Stored payload fails current schema                          | Widen schema or accept                            |
+| `SCHEMA_MISMATCH`                   | DB schema differs from engine's expected version             | `drizzle-kit generate && drizzle-kit migrate`     |
+| `INVOKE_DEPTH_EXCEEDED`             | `ctx.invoke` chain exceeded `maxInvokeDepth`                 | Restructure or raise the cap                      |
+| `INVOKE_FANOUT_EXCEEDED`            | Single run spawned > `maxChildrenPerRun` children            | Batch differently or raise the cap                |
+| Worker slot stuck forever           | Step fn hung without `timeoutMs`                             | Add `StepOpts.timeoutMs`                          |
+| `events` table growing unboundedly  | No retention configured                                      | Set `EngineOpts.retention` or register pruning    |
 
 ## Retention
 
-Nothing is pruned automatically. A typical setup:
+The engine ships a built-in retention cron — opt in via `EngineOpts`:
 
 ```ts
+import type { Pool } from "pg";
+import type { WorkflowDb } from "iterativeflow";
+import { createEngine } from "iterativeflow";
+
+declare const db: WorkflowDb;
+declare const pool: Pool;
+
+const engine = createEngine({
+  db,
+  pool,
+  retention: {
+    runsOlderThan: "30d",
+    eventsOlderThan: "14d",
+    schedule: "0 4 * * *",
+  },
+});
+```
+
+Or run your own:
+
+```ts
+import type { Pool } from "pg";
+import type { WorkflowDb } from "iterativeflow";
+import { createEngine } from "iterativeflow";
+
+declare const db: WorkflowDb;
+declare const pool: Pool;
+
+const engine = createEngine({ db, pool });
 engine.defineCron({
   name: "prune",
   schedule: "0 4 * * *",
@@ -285,24 +326,27 @@ engine.defineCron({
 ```
 
 `pruneRuns` only deletes terminal runs (`done` / `failed` / `canceled`) and
-cascades to steps / timers / hooks / events through FK.
+cascades to steps / timers / signals / events through FK.
 
 ## Reference
 
 ### `EngineOpts`
 
-| Field               | Type         | Default             | Note                                              |
-| ------------------- | ------------ | ------------------- | ------------------------------------------------- |
-| `db`                | `WorkflowDb` | required            | drizzle Postgres handle                           |
-| `pool`              | `pg.Pool`    | required            | shared with graphile-worker                       |
-| `logger`            | `Logger`     | required            | `{ debug, info, warn, error }`                    |
-| `workerSchema`      | `string`     | `"graphile_worker"` | graphile schema name                              |
-| `concurrency`       | `number`     | `5`                 | graphile-worker concurrency                       |
-| `pollInterval`      | `number`     | `1000`              | ms                                                |
-| `disableReconciler` | `boolean`    | `false`             | turn off the auto-cron                            |
-| `reconcilerGraceMs` | `number`     | `60_000`            | how stale before re-enqueue                       |
-| `runningStuckMs`    | `number`     | `600_000`           | running runs older than this are considered stuck |
-| `enqueue`           | `TxEnqueue`  | graphile `add_job`  | inject your own (tests)                           |
+| Field               | Type              | Default             | Note                                              |
+| ------------------- | ----------------- | ------------------- | ------------------------------------------------- |
+| `db`                | `WorkflowDb`      | required            | drizzle Postgres handle                           |
+| `pool`              | `pg.Pool`         | required            | shared with graphile-worker                       |
+| `logger`            | `Logger`          | noop                | `{ debug, info, warn, error }`                    |
+| `workerSchema`      | `string`          | `"graphile_worker"` | graphile schema name                              |
+| `concurrency`       | `number`          | `5`                 | graphile-worker concurrency                       |
+| `pollInterval`      | `number`          | `1000`              | ms                                                |
+| `disableReconciler` | `boolean`         | `false`             | turn off the auto-cron                            |
+| `reconcilerGraceMs` | `number`          | `60_000`            | how stale before re-enqueue                       |
+| `runningStuckMs`    | `number`          | `600_000`           | running runs older than this are considered stuck |
+| `retention`         | `object`          | —                   | auto-prune cron (opt-in)                          |
+| `limits`            | `object`          | —                   | byte caps + invoke depth/fanout caps              |
+| `metrics`           | `MetricsRecorder` | —                   | optional telemetry recorder                       |
+| `enqueue`           | `TxEnqueue`       | graphile `add_job`  | inject your own (tests)                           |
 
 ### `StepOpts`
 
@@ -311,11 +355,11 @@ cascades to steps / timers / hooks / events through FK.
 | `retries`       | `number`                              | `3`           | additional attempts after first failure    |
 | `baseBackoffMs` | `number`                              | —             | exponential backoff base                   |
 | `capBackoffMs`  | `number`                              | —             | cap                                        |
-| `backoff`       | `BackoffPolicy`                       | —             | full backoff policy override               |
+| `backoff`       | `BackoffPolicy`                       | `exponential` | full backoff policy override               |
 | `classify`      | `(err) => "transient" \| "permanent"` | `"transient"` | controls retry vs terminal                 |
 | `timeoutMs`     | `number`                              | —             | step fn timeout; expires → transient error |
 
-### `HookOpts<T>`
+### `SignalOpts<T>`
 
 | Field     | Type                           | Note                                                                                   |
 | --------- | ------------------------------ | -------------------------------------------------------------------------------------- |
@@ -324,34 +368,42 @@ cascades to steps / timers / hooks / events through FK.
 
 ### `StartOpts`
 
-| Field            | Type       | Note                                    |
-| ---------------- | ---------- | --------------------------------------- |
-| `idempotencyKey` | `string`   | same key → returns the existing `runId` |
-| `priority`       | `number`   | graphile-worker priority                |
-| `delay`          | `Duration` | wait before first execution             |
+| Field            | Type                    | Note                                    |
+| ---------------- | ----------------------- | --------------------------------------- |
+| `idempotencyKey` | `string`                | same key → returns the existing `runId` |
+| `priority`       | `number`                | graphile-worker priority                |
+| `delay`          | `Duration`              | wait before first execution             |
+| `tags`           | `ReadonlyArray<string>` | filter via `engine.listRuns({ tag })`   |
 
 ### `Engine`
 
+<!-- doc-check: skip — interface signature listing, not runnable -->
+
 ```ts
-register<I, O>(def: FlowDefinition<I, O>): WorkflowHandle<I, O>
-defineWorkflow<I, O>(opts: DefineWorkflowOpts<I, O>): WorkflowHandle<I, O>
+register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>
 defineCron(spec: CronSpec): void
-start(): Promise<void>
+listen(): Promise<void>
 stop(): Promise<void>
-signal(runId, hookName, payload?): Promise<void>
+signal(runId, signalName, payload?): Promise<SignalDeliveryResult>
 cancel(runId, reason?): Promise<void>
 status(runId): Promise<RunDetail | undefined>
+health(): Promise<HealthReport>
+listRuns(opt?): Promise<ListRunsPage>
 pruneEvents({ olderThan, batchSize? }): Promise<number>
 pruneRuns({ olderThan, status?, batchSize? }): Promise<number>
 ```
 
-### `WorkflowHandle<I, O>`
+### `FlowHandle<I, O>`
+
+<!-- doc-check: skip — interface signature listing, not runnable -->
 
 ```ts
 readonly name: string
 readonly version: number
 start(input: I, opts?: StartOpts): Promise<{ runId, status }>
 output(runId): Promise<O | undefined>
+result(runId, opt?: { timeoutMs? }): Promise<O>
+wait(runId, opts: { until: { step: string } | { signal: string }; timeoutMs? }): Promise<void>
 ```
 
 Everything runId-keyed lives on `Engine`; the handle carries only what's

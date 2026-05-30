@@ -1,0 +1,43 @@
+{
+  "runs": [
+    {
+      "id": "3d5bc5e8-eee3-4db2-9eed-b6e2c9cd42c9",
+      "name": "corpus-sleep",
+      "version": 1,
+      "status": "sleeping",
+      "parent_run_id": null,
+      "parent_cursor_key": null,
+      "input": {},
+      "output": null,
+      "error": null,
+      "attempts": 1,
+      "idempotency_key": null,
+      "tags": null,
+      "created_at": "2026-05-30 14:57:30.261+00",
+      "started_at": "2026-05-30 14:57:30.262+00",
+      "completed_at": null,
+      "updated_at": "2026-05-30 14:57:30.274+00"
+    }
+  ],
+  "steps": [
+    {
+      "run_id": "3d5bc5e8-eee3-4db2-9eed-b6e2c9cd42c9",
+      "cursor_key": "first",
+      "status": "ok",
+      "result": 1,
+      "error": null,
+      "attempts": 1,
+      "started_at": "2026-05-30 14:57:30.269+00",
+      "completed_at": "2026-05-30 14:57:30.271+00"
+    }
+  ],
+  "timers": [
+    {
+      "run_id": "3d5bc5e8-eee3-4db2-9eed-b6e2c9cd42c9",
+      "cursor_key": "sleep",
+      "fire_at": "2026-05-30 15:57:30.272+00",
+      "fired_at": null
+    }
+  ],
+  "signals": []
+}

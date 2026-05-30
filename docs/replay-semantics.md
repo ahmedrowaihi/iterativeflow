@@ -16,6 +16,8 @@ This is what makes a `.sleep("3d")` actually work. The body throws a `FlowSuspen
 
 **Step results are memoized by `(runId, cursor_key)`.** Once a step's `status = 'ok'` row exists, the step body is **never re-executed for that run**. Even if you deploy new code, the resumed run uses the OLD result.
 
+<!-- doc-check: skip — illustrative; assumes external `generateDraft`/`publish` -->
+
 ```ts
 flow("publish")
   .step("draft", () => generateDraft()) // memoized after first success
@@ -47,6 +49,8 @@ The rule: **wrap anything with side effects or non-determinism in `ctx.step`.**
 
 ## Non-determinism traps
 
+<!-- doc-check: skip — paired BAD/GOOD illustrative snippet, intentionally incomplete -->
+
 ```ts
 // BAD — Date.now() changes on every resume
 const def = flow("badge")
@@ -68,6 +72,8 @@ The cursor itself is deterministic — it counts occurrences of each base name. 
 
 A step that mutates outer state is replay-unsafe:
 
+<!-- doc-check: skip — illustrative BAD pattern; intentionally incomplete -->
+
 ```ts
 let total = 0;                            // outer state
 
@@ -81,6 +87,8 @@ const def = flow("sum")
 On the resumed run, `total` is whatever the new process's module-level value happens to be (probably `0`). The first step short-circuits via memoization, so the mutation doesn't re-fire. The "read" step sees `0`.
 
 Return the value instead of mutating outer state:
+
+<!-- doc-check: skip — illustrative GOOD pattern; intentionally incomplete -->
 
 ```ts
 const def = flow("sum")
@@ -96,6 +104,8 @@ Step functions receive `{ input, signal, attempt }`. The `signal` is wired to:
 
 - `StepOpts.timeoutMs` (or `EngineOpts.defaultStepTimeoutMs` as fallback)
 - `engine.cancel(runId)` (which propagates through `cancelCascade` to any in-flight descendants)
+
+<!-- doc-check: skip — partial builder chain -->
 
 ```ts
 .step("fetch", async ({ signal }) => {
@@ -134,6 +144,8 @@ User-defined codes are free-form strings. The engine doesn't validate them; they
 But: `Promise.all([ctx.step("X", fn), ctx.step("X", fn)])` is **order-dependent**. The first synchronous call to `ctx.step("X", ...)` claims key `X`; the second claims `X:1`. Which one wins depends on synchronous call order, NOT on which promise resolves first. As long as the workflow body itself is deterministic about ORDER of calls, the result is consistent.
 
 The safe pattern: **unique names per parallel branch.**
+
+<!-- doc-check: skip — inside-body snippet (no surrounding ctx / httpGet binding) -->
 
 ```ts
 // SAFE

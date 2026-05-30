@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "iterativeflow": ["../../src/index.ts"],
+      "iterativeflow/schema": ["../../src/storage/schema.ts"],
+      "iterativeflow/relations": ["../../src/storage/relations.ts"]
+    }
+  },
+  "include": ["*.ts", "globals.d.ts"]
+}
