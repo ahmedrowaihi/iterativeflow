@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { ts } from "../../util/sql-params";
 import {
   parseCronItems,
   run,
@@ -17,7 +18,7 @@ export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"
   const schema = sql.identifier(workerSchema);
   return async (tx, runId, opts) => {
     const jobKey = `flow:${runId}`;
-    const runAt = opts?.runAt ? sql`${opts.runAt.toISOString()}::timestamptz` : sql`NULL`;
+    const runAt = opts?.runAt ? ts(opts.runAt) : sql`NULL`;
     await tx.execute(sql`
       SELECT ${schema}.add_job(
         identifier => ${FLOW_TASK},

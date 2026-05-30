@@ -11,3 +11,5 @@ Three sites affected:
 - `adapters/graphile/index.ts` — `add_job(... run_at => ${opts.runAt} ...)` cast to `::timestamptz` for the same reason. Affected every delayed enqueue (sleeps, retries, `delay` start opt).
 
 Consumers using postgres-js or neon-serverless no longer need to spin up a separate `node-postgres` handle for the engine's pool.
+
+A single `ts(date)` helper in `src/util/sql-params.ts` centralizes the cast — every Date param in a raw `sql\`\`` fragment goes through it. Easier to grep for, easier to extend (uuid/bigint/etc.) if the next driver-portability footgun shows up.
