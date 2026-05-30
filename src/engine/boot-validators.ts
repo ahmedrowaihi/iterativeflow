@@ -52,3 +52,39 @@ export const warnIfStuckShorterThanStepTimeout = (
     });
   }
 };
+
+/**
+ * Warn if no fallback step timeout is configured. A step body without a
+ * per-call `StepOpts.timeoutMs` AND no engine-wide
+ * `defaultStepTimeoutMs` can hang forever, pinning a graphile-worker
+ * slot — under load the pool drains and the engine wedges.
+ *
+ * @internal
+ */
+export const warnIfUnboundedStepTimeout = (
+  defaultStepTimeoutMs: number | undefined,
+  logger: Logger,
+): void => {
+  if (defaultStepTimeoutMs !== undefined) return;
+  logger.warn("flow.config.unbounded_step_timeout", {
+    hint: "set EngineOpts.defaultStepTimeoutMs (or pass StepOpts.timeoutMs on every ctx.step) — a hung step otherwise pins a worker slot indefinitely",
+  });
+};
+
+/**
+ * Warn if no retention cron is configured. The `events` table grows on
+ * every step / sleep / signal / suspend; terminal `runs` accumulate
+ * forever. Reconciler scans (and any `engine.listRuns` query) slow with
+ * row count.
+ *
+ * @internal
+ */
+export const warnIfNoRetention = (
+  retention: { runsOlderThan?: unknown; eventsOlderThan?: unknown } | undefined,
+  logger: Logger,
+): void => {
+  if (retention?.runsOlderThan !== undefined || retention?.eventsOlderThan !== undefined) return;
+  logger.warn("flow.config.no_retention", {
+    hint: "set EngineOpts.retention (or define your own prune cron) — `workflow.events` and terminal `workflow.runs` grow unboundedly otherwise",
+  });
+};
