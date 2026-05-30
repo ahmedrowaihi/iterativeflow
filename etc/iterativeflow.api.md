@@ -12,6 +12,9 @@ import { Pool } from 'pg';
 import { StandardSchemaV1 } from '@standard-schema/spec';
 
 // @public
+export const applyFlowSchema: (db: WorkflowDb) => Promise<void>;
+
+// @public
 export type BackoffPolicy = "exponential" | "linear" | "fixed" | ((attempt: number) => number);
 
 // @public
@@ -41,6 +44,9 @@ export interface DefineFlowOpts<I, O> {
     name: string;
     version?: number;
 }
+
+// @public
+export const dropFlowSchema: (db: WorkflowDb) => Promise<void>;
 
 // @public
 export type Duration = number | DurationString | Date;
@@ -100,6 +106,7 @@ export interface EngineOpts {
         batchSize?: number;
     };
     runningStuckMs?: number;
+    tables?: FlowTables;
     workerSchema?: string;
 }
 
@@ -204,7 +211,18 @@ export class FlowRuntimeError extends Error {
 }
 
 // @public
-export const flowSchema: drizzle_orm_pg_core.PgSchema<"workflow">;
+export interface FlowTables {
+    // (undocumented)
+    events: unknown;
+    // (undocumented)
+    runs: unknown;
+    // (undocumented)
+    signals: unknown;
+    // (undocumented)
+    steps: unknown;
+    // (undocumented)
+    timers: unknown;
+}
 
 // @public
 export interface HealthReport {

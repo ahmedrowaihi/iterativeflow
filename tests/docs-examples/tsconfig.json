@@ -10,11 +10,8 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "types": ["node"],
-    "baseUrl": ".",
     "paths": {
-      "iterativeflow": ["../../src/index.ts"],
-      "iterativeflow/schema": ["../../src/storage/schema.ts"],
-      "iterativeflow/relations": ["../../src/storage/relations.ts"]
+      "iterativeflow": ["../../src/index.ts"]
     }
   },
   "include": ["*.ts", "globals.d.ts"]

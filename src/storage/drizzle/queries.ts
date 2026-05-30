@@ -1,12 +1,12 @@
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import type { WorkflowDb } from "../db";
-import { runs, signals, steps, timers } from "../schema";
 import type { ListRunsOpts, ListRunsPage, RunDetail } from "../types";
+import type { StorageSliceDeps } from "./types";
 
 /** @internal */
 export const loadRunDetail =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async (runId: string): Promise<RunDetail | undefined> => {
+    const { runs, steps, timers, signals } = tables;
     const detail = await Promise.all([
       db.select().from(runs).where(eq(runs.id, runId)).limit(1),
       db.select().from(steps).where(eq(steps.runId, runId)),
@@ -25,8 +25,9 @@ export const loadRunDetail =
 
 /** @internal */
 export const loadOutput =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async (runId: string): Promise<unknown> => {
+    const { runs } = tables;
     const row = await db
       .select({ output: runs.output, status: runs.status })
       .from(runs)
@@ -38,8 +39,9 @@ export const loadOutput =
 
 /** @internal */
 export const listRuns =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async (query: ListRunsOpts): Promise<ListRunsPage> => {
+    const { runs } = tables;
     const conds = [] as ReturnType<typeof eq>[];
     if (query.name) conds.push(eq(runs.name, query.name));
     if (query.status?.length) conds.push(inArray(runs.status, [...query.status]));
@@ -73,7 +75,9 @@ export const listRuns =
 
 /** @internal */
 export const findChildRun =
-  (db: WorkflowDb) => async (parentRunId: string, parentCursorKey: string) => {
+  ({ db, tables }: StorageSliceDeps) =>
+  async (parentRunId: string, parentCursorKey: string) => {
+    const { runs } = tables;
     const rows = await db
       .select()
       .from(runs)
@@ -83,8 +87,12 @@ export const findChildRun =
   };
 
 /** @internal */
-export const listChildren = (db: WorkflowDb) => (parentRunId: string) =>
-  db.select().from(runs).where(eq(runs.parentRunId, parentRunId));
+export const listChildren =
+  ({ db, tables }: StorageSliceDeps) =>
+  (parentRunId: string) => {
+    const { runs } = tables;
+    return db.select().from(runs).where(eq(runs.parentRunId, parentRunId));
+  };
 
 // re-export asc for parity in other modules without re-importing drizzle
 export { asc };

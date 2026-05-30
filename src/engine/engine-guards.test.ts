@@ -126,9 +126,9 @@ describe("engine guards", () => {
       await expect(handle.start({})).rejects.toThrow(/SCHEMA_MISMATCH/);
     });
 
-    it("handle.start throws SCHEMA_MISMATCH when a v2 marker column is missing", async () => {
+    it("handle.start throws SCHEMA_MISMATCH when an engine-required table is missing", async () => {
       await applyFlowSchema(db);
-      await db.execute(sql`ALTER TABLE workflow.runs DROP COLUMN parent_run_id`);
+      await db.execute(sql`DROP TABLE workflow.signals CASCADE`);
       const engine = createEngine({
         db,
         pool: {} as unknown as Pool,

@@ -1,5 +1,6 @@
-import { EXPECTED_SCHEMA_VERSION } from "../storage/schema";
 import type { Storage } from "./types";
+
+const EXPECTED_SCHEMA_VERSION = 2;
 
 /**
  * Lazily-memoized "is the DB at the engine's expected schema version" check.

@@ -4,6 +4,20 @@ import type { StandardSchemaV1 } from "../util/standard-schema";
 import type { RunStatus } from "../storage/schema";
 import type { SignalDeliveryResult } from "../storage/types";
 
+/**
+ * The five workflow tables. Pass `flowTables` from your generated
+ * `iterativeflow-schema.ts` into `createEngine({ tables })`. Field types are
+ * intentionally `unknown` so the engine's `.d.ts` never embeds a specific
+ * drizzle-orm version's `PgTable` shape.
+ */
+export interface FlowTables {
+  runs: unknown;
+  steps: unknown;
+  signals: unknown;
+  timers: unknown;
+  events: unknown;
+}
+
 /** Argument passed to a step body. */
 export interface StepArg<I = unknown> {
   /** Channel input from the previous builder step. `undefined` for `ctx.step(...)` invocations. */

@@ -1,18 +1,17 @@
 import { eq, sql } from "drizzle-orm";
-import type { WorkflowDb } from "../db";
-import { runs } from "../schema";
-import type { TxEnqueue } from "./types";
+import type { StorageSliceDeps } from "./types";
 
 /**
- * Fire `pg_notify('flow_terminal', runId)` so subscribed engine instances
- * wake their `handle.result(runId)` waiters. If the run has a parent, also
- * re-enqueue the parent (it may be sleeping in `ctx.invoke`).
+ * Fire `pg_notify('flow_terminal', runId)` so subscribed engines wake their
+ * `handle.result(runId)` waiters. If the run has a parent, also re-enqueue
+ * the parent (it may be sleeping in `ctx.invoke`).
  *
  * @internal
  */
 export const notifyTerminal =
-  (db: WorkflowDb, enqueue: TxEnqueue) =>
+  ({ db, tables, enqueue }: StorageSliceDeps) =>
   async (runId: string): Promise<void> => {
+    const { runs } = tables;
     const row = await db
       .select({ parentRunId: runs.parentRunId })
       .from(runs)

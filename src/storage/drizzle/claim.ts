@@ -1,10 +1,14 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
-import { runs, signals, steps, timers } from "../schema";
 import type { ClaimResult, RunSnapshot } from "../types";
-import { asTx, TERMINAL } from "./types";
+import { type InternalTables, type StorageSliceDeps, TERMINAL } from "./types";
 
-const loadSnapshotIn = async (tx: WorkflowDb, runId: string): Promise<RunSnapshot> => {
+const loadSnapshotIn = async (
+  tx: WorkflowDb,
+  tables: InternalTables,
+  runId: string,
+): Promise<RunSnapshot> => {
+  const { steps, timers, signals } = tables;
   const [stepRows, timerRows, signalRows] = await Promise.all([
     tx.select().from(steps).where(eq(steps.runId, runId)),
     tx.select().from(timers).where(eq(timers.runId, runId)),
@@ -20,15 +24,14 @@ const loadSnapshotIn = async (tx: WorkflowDb, runId: string): Promise<RunSnapsho
 /**
  * Atomic claim: lock the row, decide claim/missing/terminal/lost, transition
  * to `running`, bump `attempts`, load the snapshot — all in one transaction.
- * Closes the prior race window between `markRunning` and `loadSnapshot`.
  *
  * @internal
  */
 export const claimRun =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async (runId: string): Promise<ClaimResult> =>
-    db.transaction(async (raw) => {
-      const tx = asTx(raw);
+    db.transaction(async (tx) => {
+      const { runs } = tables;
       const locked = await tx.select().from(runs).where(eq(runs.id, runId)).for("update").limit(1);
       if (locked.length === 0) return { kind: "missing" } satisfies ClaimResult;
       const row = locked[0];
@@ -56,7 +59,7 @@ export const claimRun =
       if (updated.length === 0) {
         return { kind: "lost" } satisfies ClaimResult;
       }
-      const snapshot = await loadSnapshotIn(tx, runId);
+      const snapshot = await loadSnapshotIn(tx, tables, runId);
       return {
         kind: "claimed",
         claim: {

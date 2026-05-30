@@ -26,6 +26,9 @@
     "type": "git",
     "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git"
   },
+  "bin": {
+    "iterativeflow": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "migrations"
@@ -37,20 +40,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./schema": {
-      "types": "./dist/storage/schema.d.ts",
-      "import": "./dist/storage/schema.js"
-    },
-    "./relations": {
-      "types": "./dist/storage/relations.d.ts",
-      "import": "./dist/storage/relations.js"
-    }
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/copy-schema-asset.mjs",
     "migrations:generate": "tsx scripts/generate-migrations.ts",
     "docs:check": "node scripts/extract-doc-examples.mjs && tsc -p tests/docs-examples",
     "corpus:capture": "tsx scripts/capture-corpus.ts",
