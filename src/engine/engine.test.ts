@@ -6,20 +6,14 @@ import { eq } from "drizzle-orm";
 import type { WorkflowDb } from "../storage/db";
 import { createDrizzleStorage, type TxEnqueue } from "../storage/drizzle";
 import { events, runs } from "../storage/schema";
-import { applyWorkflowSchema } from "../storage/setup";
-import { RuntimeWorkflowContext } from "./context";
-import { WorkflowRegistry } from "./registry";
-import { executeRun } from "./runner";
-import { isSuspend, WorkflowSuspend } from "./suspend";
-import { WorkflowRuntimeError } from "../util/errors";
-import type { Logger, Storage, WorkflowContext } from "./types";
-
-const silentLogger: Logger = {
-  debug: () => undefined,
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-};
+import { applyFlowSchema } from "../storage/setup";
+import { RuntimeFlowContext } from "./context";
+import { FlowRegistry } from "./registry";
+import { playRunAttempt } from "./run-lifecycle";
+import { isSuspend, FlowSuspend } from "./suspend";
+import { baseContextDeps, baseRunnerDeps, silentLogger } from "./test-helpers";
+import { FlowRuntimeError } from "../util/errors";
+import type { Storage, FlowContext } from "./types";
 
 interface RecordedEnqueue {
   runId: string;
@@ -43,7 +37,7 @@ interface TestHarness {
   db: WorkflowDb;
   storage: Storage;
   enqueues: RecordedEnqueue[];
-  registry: WorkflowRegistry;
+  registry: FlowRegistry;
   runOnce: (runId: string) => Promise<{ status: string }>;
   close: () => Promise<void>;
 }
@@ -52,17 +46,17 @@ const setup = async (): Promise<TestHarness> => {
   const client = new PGlite();
   await client.waitReady;
   const db = drizzle({ client }) as unknown as WorkflowDb;
-  await applyWorkflowSchema(db);
+  await applyFlowSchema(db);
   const { enqueue, enqueues } = createRecorder();
   const storage = createDrizzleStorage({ db, logger: silentLogger, enqueue });
-  const registry = new WorkflowRegistry();
+  const registry = new FlowRegistry();
   return {
     db,
     storage,
     enqueues,
     registry,
     runOnce: async (runId) => {
-      const r = await executeRun({ registry, storage, logger: silentLogger }, runId);
+      const r = await playRunAttempt({ ...baseRunnerDeps(), registry, storage }, runId);
       return { status: r.status };
     },
     close: async () => {
@@ -72,9 +66,9 @@ const setup = async (): Promise<TestHarness> => {
 };
 
 const register = (
-  registry: WorkflowRegistry,
+  registry: FlowRegistry,
   name: string,
-  run: (ctx: WorkflowContext, input: unknown) => unknown,
+  run: (ctx: FlowContext, input: unknown) => unknown,
   opts?: { inputSchema?: z.ZodType<unknown> },
 ) => {
   registry.register({
@@ -133,12 +127,12 @@ describe("workflow engine (pglite)", () => {
     it("positional cursor numbers repeated step names: foo, foo:1, foo:2", async () => {
       const runId = await createRun(h.storage, "x", {});
       const snapshot = await h.storage.loadSnapshot(runId);
-      const ctx = new RuntimeWorkflowContext({
+      const ctx = new RuntimeFlowContext({
+        ...baseContextDeps(),
         runId,
         attempt: 1,
         storage: h.storage,
         snapshot,
-        logger: silentLogger,
       });
       await ctx.step("foo", () => "a");
       await ctx.step("foo", () => "b");
@@ -151,6 +145,87 @@ describe("workflow engine (pglite)", () => {
       ];
       expect(stored.every((s) => s?.status === "ok")).toBe(true);
       expect(stored.map((s) => s?.result)).toEqual(["a", "b", "c"]);
+    });
+  });
+
+  describe("invoke caps", () => {
+    it("throws INVOKE_DEPTH_EXCEEDED when ctx.invoke would exceed maxInvokeDepth", async () => {
+      const childHandle = {
+        name: "child",
+        version: 1,
+        start: async () => ({ runId: "x", status: "pending" as const }),
+        output: async () => undefined,
+        result: async () => {
+          throw new Error("not invoked in test");
+        },
+        wait: async () => {
+          throw new Error("not invoked in test");
+        },
+      };
+      const runId = await createRun(h.storage, "deep", {});
+      // Synthesize a 5-deep parent chain ending at runId.
+      let parent = runId;
+      for (let i = 0; i < 4; i++) {
+        const { runId: child } = await h.storage.createRun({
+          name: `c${i}`,
+          version: 1,
+          input: {},
+          parentRunId: parent,
+          parentCursorKey: `invoke:c${i}@1`,
+        });
+        parent = child;
+      }
+      const ctx = new RuntimeFlowContext({
+        ...baseContextDeps(),
+        runId: parent,
+        attempt: 1,
+        storage: h.storage,
+        snapshot: await h.storage.loadSnapshot(parent),
+        maxInvokeDepth: 5,
+        startChild: async () => "unreachable",
+      });
+      await expect(ctx.invoke(childHandle, {})).rejects.toMatchObject({
+        code: "INVOKE_DEPTH_EXCEEDED",
+        nonRetryable: true,
+      });
+    });
+
+    it("throws INVOKE_FANOUT_EXCEEDED when a run has already spawned maxChildrenPerRun children", async () => {
+      const childHandle = {
+        name: "child",
+        version: 1,
+        start: async () => ({ runId: "x", status: "pending" as const }),
+        output: async () => undefined,
+        result: async () => {
+          throw new Error("not invoked in test");
+        },
+        wait: async () => {
+          throw new Error("not invoked in test");
+        },
+      };
+      const runId = await createRun(h.storage, "fanout", {});
+      for (let i = 0; i < 3; i++) {
+        await h.storage.createRun({
+          name: `c${i}`,
+          version: 1,
+          input: {},
+          parentRunId: runId,
+          parentCursorKey: `invoke:c${i}@1`,
+        });
+      }
+      const ctx = new RuntimeFlowContext({
+        ...baseContextDeps(),
+        runId,
+        attempt: 1,
+        storage: h.storage,
+        snapshot: await h.storage.loadSnapshot(runId),
+        maxChildrenPerRun: 3,
+        startChild: async () => "unreachable",
+      });
+      await expect(ctx.invoke(childHandle, {})).rejects.toMatchObject({
+        code: "INVOKE_FANOUT_EXCEEDED",
+        nonRetryable: true,
+      });
     });
   });
 
@@ -171,7 +246,7 @@ describe("workflow engine (pglite)", () => {
 
     it("fires immediately and continues when fireAt is in the past", async () => {
       register(h.registry, "past-sleep", async (ctx) => {
-        await ctx.sleep(-1000);
+        await ctx.sleep(new Date(0));
         return "done";
       });
 
@@ -284,7 +359,7 @@ describe("workflow engine (pglite)", () => {
   });
 
   describe("suspend in step is forbidden", () => {
-    it("returns WORKFLOW_SUSPEND_IN_STEP when sleep is called inside step", async () => {
+    it("returns STEP_INVALID_AWAIT when sleep is called inside step", async () => {
       register(h.registry, "bad", async (ctx) => {
         return ctx.step("nested", async () => {
           await ctx.sleep("1h");
@@ -295,22 +370,22 @@ describe("workflow engine (pglite)", () => {
       const runId = await createRun(h.storage, "bad", {});
       const r = await h.runOnce(runId);
       expect(r.status).toBe("failed");
-      expect((await h.storage.loadRun(runId))?.error?.code).toBe("WORKFLOW_SUSPEND_IN_STEP");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("STEP_INVALID_AWAIT");
     });
   });
 
   describe("hooks", () => {
     it("suspends on ctx.hook and resumes after delivery", async () => {
       register(h.registry, "approve", async (ctx) => {
-        const result = await ctx.hook<{ ok: boolean }>("approval");
+        const result = await ctx.signal<{ ok: boolean }>("approval");
         return result.ok ? "approved" : "rejected";
       });
 
       const runId = await createRun(h.storage, "approve", {});
       expect((await h.runOnce(runId)).status).toBe("suspended");
-      expect((await h.storage.loadRun(runId))?.status).toBe("waiting");
+      expect((await h.storage.loadRun(runId))?.status).toBe("awaiting_signal");
 
-      const sig = await h.storage.signalHook(runId, "approval", { ok: true });
+      const sig = await h.storage.deliverSignal(runId, "approval", { ok: true });
       expect(sig.kind).toBe("delivered");
 
       const r = await h.runOnce(runId);
@@ -320,11 +395,11 @@ describe("workflow engine (pglite)", () => {
 
     it("buffers pre-arm signal: hook returns immediately on first call", async () => {
       const runId = await createRun(h.storage, "approve2", {});
-      const buffered = await h.storage.preDeliverHook(runId, "hook:approval", { ok: true });
+      const buffered = await h.storage.preDeliverSignal(runId, "signal:approval", { ok: true });
       expect(buffered).toBe(true);
 
       register(h.registry, "approve2", async (ctx) => {
-        const r = await ctx.hook<{ ok: boolean }>("approval");
+        const r = await ctx.signal<{ ok: boolean }>("approval");
         return r.ok ? "approved" : "rejected";
       });
 
@@ -335,23 +410,23 @@ describe("workflow engine (pglite)", () => {
 
     it("times out when expiresAt is reached without delivery", async () => {
       register(h.registry, "timeout", async (ctx) => {
-        return ctx.hook("approval", { timeout: -1000 });
+        return ctx.signal("approval", { timeout: new Date(0) });
       });
 
       const runId = await createRun(h.storage, "timeout", {});
       await h.runOnce(runId);
       const r = await h.runOnce(runId);
       expect(r.status).toBe("failed");
-      expect((await h.storage.loadRun(runId))?.error?.code).toBe("WORKFLOW_HOOK_TIMEOUT");
+      expect((await h.storage.loadRun(runId))?.error?.code).toBe("SIGNAL_TIMEOUT");
     });
 
     it("second signal for the same hook is idempotent (duplicate)", async () => {
       const runId = await createRun(h.storage, "x", {});
-      const first = await h.storage.signalHook(runId, "foo", "v1");
-      const second = await h.storage.signalHook(runId, "foo", "v2");
+      const first = await h.storage.deliverSignal(runId, "foo", "v1");
+      const second = await h.storage.deliverSignal(runId, "foo", "v2");
       expect(first.kind).toBe("buffered");
       expect(second.kind).toBe("duplicate");
-      const row = await h.storage.loadHook(runId, "hook:foo");
+      const row = await h.storage.loadSignal(runId, "signal:foo");
       expect(row?.payload).toBe("v1");
     });
   });
@@ -457,18 +532,18 @@ describe("workflow engine (pglite)", () => {
         version: 1,
         input: {},
       });
-      await h.storage.signalHook(runId, "x", { secret: "redacted-large-blob" });
+      await h.storage.deliverSignal(runId, "x", { secret: "redacted-large-blob" });
 
       const evts = await h.db
         .select({ type: events.type, payload: events.payload })
         .from(events)
         .where(eq(events.runId, runId));
-      const resolved = evts.find((e) => e.type === "hook_resolved");
+      const resolved = evts.find((e) => e.type === "signal_delivered");
       expect(resolved?.payload).toEqual({
-        hookKey: "hook:x",
+        cursorKey: "signal:x",
         buffered: true,
       });
-      const stored = await h.storage.loadHook(runId, "hook:x");
+      const stored = await h.storage.loadSignal(runId, "signal:x");
       expect(stored?.payload).toEqual({ secret: "redacted-large-blob" });
     });
   });
@@ -547,7 +622,7 @@ describe("workflow engine (pglite)", () => {
             { retries: 5, classify: () => "permanent" as const },
           );
         } catch (err) {
-          if (err instanceof WorkflowRuntimeError && err.nonRetryable) {
+          if (err instanceof FlowRuntimeError && err.nonRetryable) {
             gotFatal = true;
           }
         }
@@ -593,7 +668,7 @@ describe("workflow engine (pglite)", () => {
         const collected: Array<{ data: string; done?: boolean }> = [];
         let cursor = 0;
         while (true) {
-          const event = await ctx.hook<{ data: string; done?: boolean }>(`evt-${cursor}`);
+          const event = await ctx.signal<{ data: string; done?: boolean }>(`evt-${cursor}`);
           collected.push(event);
           if (event.done) break;
           cursor += 1;
@@ -604,13 +679,13 @@ describe("workflow engine (pglite)", () => {
       const runId = await createRun(h.storage, "collect", {});
       expect((await h.runOnce(runId)).status).toBe("suspended");
 
-      await h.storage.signalHook(runId, "evt-0", { data: "first" });
+      await h.storage.deliverSignal(runId, "evt-0", { data: "first" });
       expect((await h.runOnce(runId)).status).toBe("suspended");
 
-      await h.storage.signalHook(runId, "evt-1", { data: "second" });
+      await h.storage.deliverSignal(runId, "evt-1", { data: "second" });
       expect((await h.runOnce(runId)).status).toBe("suspended");
 
-      await h.storage.signalHook(runId, "evt-2", {
+      await h.storage.deliverSignal(runId, "evt-2", {
         data: "third",
         done: true,
       });
@@ -702,7 +777,7 @@ describe("workflow engine (pglite)", () => {
           executions.step1 += 1;
           return "a";
         });
-        await ctx.sleep(-1);
+        await ctx.sleep(new Date(0));
         const b = await ctx.step("step2", () => {
           executions.step2 += 1;
           return `${a}b`;
@@ -761,7 +836,7 @@ describe("defineWorkflow (low-level API)", () => {
           const history: Array<{ from: string; text: string }> = [];
           let i = 0;
           while (true) {
-            const msg = await ctx.hook<{ text: string; end?: boolean }>("user-msg");
+            const msg = await ctx.signal<{ text: string; end?: boolean }>("user-msg");
             if (msg.end) return history;
             history.push({ from: "user", text: msg.text });
             const reply = await ctx.step(`reply-${i}`, () => `echo: ${msg.text}`);
@@ -775,11 +850,11 @@ describe("defineWorkflow (low-level API)", () => {
 
       // pre-deliver the FIRST hook (no hook armed yet); subsequent turns
       // use signalHook which targets the currently-armed iteration.
-      await h.storage.preDeliverHook(runId, "hook:user-msg", { text: "hello" });
+      await h.storage.preDeliverSignal(runId, "signal:user-msg", { text: "hello" });
       await h.runOnce(runId);
-      await h.storage.signalHook(runId, "user-msg", { text: "again" });
+      await h.storage.deliverSignal(runId, "user-msg", { text: "again" });
       await h.runOnce(runId);
-      await h.storage.signalHook(runId, "user-msg", { end: true });
+      await h.storage.deliverSignal(runId, "user-msg", { end: true });
       const r = await h.runOnce(runId);
 
       expect(r.status).toBe("completed");
@@ -793,9 +868,9 @@ describe("defineWorkflow (low-level API)", () => {
 
 describe("suspend signal", () => {
   it("isSuspend narrows correctly", () => {
-    const suspended = new WorkflowSuspend({ reason: "sleep" });
+    const suspended = new FlowSuspend({ reason: "sleep" });
     expect(isSuspend(suspended)).toBe(true);
     expect(isSuspend(new Error("other"))).toBe(false);
-    expect(isSuspend(new WorkflowRuntimeError({ code: "X", message: "y" }))).toBe(false);
+    expect(isSuspend(new FlowRuntimeError({ code: "X", message: "y" }))).toBe(false);
   });
 });

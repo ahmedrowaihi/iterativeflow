@@ -27,7 +27,8 @@
     "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "migrations"
   ],
   "type": "module",
   "sideEffects": false,
@@ -50,6 +51,11 @@
   },
   "scripts": {
     "build": "tsdown",
+    "migrations:generate": "tsx scripts/generate-migrations.ts",
+    "api:check": "api-extractor run --local && node scripts/normalize-api-report.mjs && git diff --exit-code --quiet -- etc/iterativeflow.api.md",
+    "api:update": "api-extractor run --local && node scripts/normalize-api-report.mjs",
+    "smoke:dist": "node scripts/smoke-dist.mjs",
+    "size:check": "node scripts/size-check.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -69,6 +75,8 @@
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
     "@electric-sql/pglite": "0.2.12",
+    "@microsoft/api-extractor": "^7.58.7",
+    "@testcontainers/postgresql": "^12.0.1",
     "@types/node": "^22.19.19",
     "@types/pg": "8.15.5",
     "drizzle-kit": "^0.31.10",
@@ -78,7 +86,9 @@
     "oxfmt": "^0.52.0",
     "oxlint": "^1.67.0",
     "pg": "8.16.0",
+    "testcontainers": "^12.0.1",
     "tsdown": "^0.15.6",
+    "tsx": "^4.22.3",
     "typescript": "^5.9.3",
     "vitest": "3.2.4",
     "zod": "^4.3.6"

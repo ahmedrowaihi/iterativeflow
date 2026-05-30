@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Logger, Storage } from "../engine/types";
 import { createDrizzleStorage, type TxEnqueue } from "./drizzle";
 import type { WorkflowDb } from "./db";
-import { events, hooks, runs, timers } from "./schema";
-import { applyWorkflowSchema } from "./setup";
+import { events, runs, signals, timers } from "./schema";
+import { applyFlowSchema } from "./setup";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -31,7 +31,7 @@ const setup = async (): Promise<Harness> => {
   const client = new PGlite();
   await client.waitReady;
   const db = drizzle({ client }) as unknown as WorkflowDb;
-  await applyWorkflowSchema(db);
+  await applyFlowSchema(db);
   const enqueues: Recorded[] = [];
   const enqueue: TxEnqueue = async (_tx, runId, opts) => {
     enqueues.push({ runId, runAt: opts?.runAt });
@@ -45,6 +45,8 @@ const ageRun = async (db: WorkflowDb, runId: string, ageMs: number) => {
   await db.execute(sql`UPDATE workflow.runs SET updated_at = ${stamp} WHERE id = ${runId}::uuid`);
 };
 
+const stuckCutoff = (): Date => new Date(Date.now() - 10 * 60_000);
+
 describe("storage durability", () => {
   let h: Harness;
   beforeEach(async () => {
@@ -54,6 +56,130 @@ describe("storage durability", () => {
     await h.close();
   });
 
+  describe("claimRun", () => {
+    it("claims a pending run: bumps attempts, marks running, returns snapshot", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "claim-fresh",
+        version: 1,
+        input: { v: 1 },
+      });
+      const result = await h.storage.claimRun(runId);
+      expect(result.kind).toBe("claimed");
+      if (result.kind !== "claimed") return;
+      expect(result.claim.run.status).toBe("running");
+      expect(result.claim.run.attempts).toBe(1);
+      expect(result.claim.resumed).toBe(false);
+      expect(result.claim.snapshot.steps.size).toBe(0);
+    });
+
+    it("returns 'lost' when a second claim arrives while the first is still running", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "claim-double",
+        version: 1,
+        input: {},
+      });
+      const first = await h.storage.claimRun(runId);
+      expect(first.kind).toBe("claimed");
+      const second = await h.storage.claimRun(runId);
+      expect(second.kind).toBe("lost");
+    });
+
+    it("returns 'terminal' for a completed run", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "claim-terminal",
+        version: 1,
+        input: {},
+      });
+      await h.storage.markCompleted(runId, "ok");
+      const result = await h.storage.claimRun(runId);
+      expect(result.kind).toBe("terminal");
+    });
+
+    it("returns 'missing' for an unknown run", async () => {
+      const result = await h.storage.claimRun("00000000-0000-0000-0000-000000000000");
+      expect(result.kind).toBe("missing");
+    });
+
+    it("marks 'resumed' when claiming a sleeping run and includes timer snapshot", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "claim-resume",
+        version: 1,
+        input: {},
+      });
+      await h.storage.markSleeping(runId);
+      await h.storage.createTimer(runId, "sleep", new Date(Date.now() - 1_000));
+      const result = await h.storage.claimRun(runId);
+      expect(result.kind).toBe("claimed");
+      if (result.kind !== "claimed") return;
+      expect(result.claim.resumed).toBe(true);
+      expect(result.claim.snapshot.timers.has("sleep")).toBe(true);
+    });
+  });
+
+  describe("getSchemaVersion", () => {
+    it("returns the current schema version when all markers exist", async () => {
+      expect(await h.storage.getSchemaVersion()).toBe(2);
+    });
+
+    it("returns 1 when a v2 marker column is missing", async () => {
+      await h.db.execute(sql`ALTER TABLE workflow.runs DROP COLUMN parent_run_id`);
+      expect(await h.storage.getSchemaVersion()).toBe(1);
+    });
+
+    it("returns 0 when the schema is not applied at all", async () => {
+      await h.db.execute(sql`DROP SCHEMA workflow CASCADE`);
+      expect(await h.storage.getSchemaVersion()).toBe(0);
+    });
+  });
+
+  describe("child runs (invokeBudget, findChildRun)", () => {
+    it("invokeBudget reports depth + direct child count in one call", async () => {
+      const root = await h.storage.createRun({ name: "root", version: 1, input: {} });
+      const c1 = await h.storage.createRun({
+        name: "c1",
+        version: 1,
+        input: {},
+        parentRunId: root.runId,
+        parentCursorKey: "invoke:c1@1",
+      });
+      const c2 = await h.storage.createRun({
+        name: "c2",
+        version: 1,
+        input: {},
+        parentRunId: c1.runId,
+        parentCursorKey: "invoke:c2@1",
+      });
+      for (let i = 0; i < 2; i++) {
+        await h.storage.createRun({
+          name: `sibling${i}`,
+          version: 1,
+          input: {},
+          parentRunId: root.runId,
+          parentCursorKey: `invoke:sibling${i}@1`,
+        });
+      }
+
+      expect(await h.storage.invokeBudget(root.runId)).toEqual({ depth: 1, childCount: 3 });
+      expect(await h.storage.invokeBudget(c1.runId)).toEqual({ depth: 2, childCount: 1 });
+      expect(await h.storage.invokeBudget(c2.runId)).toEqual({ depth: 3, childCount: 0 });
+    });
+
+    it("findChildRun locates the child by (parentRunId, parentCursorKey)", async () => {
+      const root = await h.storage.createRun({ name: "root", version: 1, input: {} });
+      const child = await h.storage.createRun({
+        name: "c",
+        version: 1,
+        input: {},
+        parentRunId: root.runId,
+        parentCursorKey: "invoke:c@1",
+      });
+      const found = await h.storage.findChildRun(root.runId, "invoke:c@1");
+      expect(found?.id).toBe(child.runId);
+      const missing = await h.storage.findChildRun(root.runId, "invoke:nope@1");
+      expect(missing).toBeUndefined();
+    });
+  });
+
   describe("signalHook", () => {
     it("delivers + enqueues atomically when a hook is armed", async () => {
       const { runId } = await h.storage.createRun({
@@ -61,13 +187,13 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      const armed = await h.storage.armOrConsumeHook(runId, "hook:s", undefined);
+      const armed = await h.storage.armOrConsumeSignal(runId, "signal:s", undefined);
       expect(armed.kind).toBe("armed");
 
-      const result = await h.storage.signalHook(runId, "s", { v: 1 });
-      expect(result).toEqual({ kind: "delivered", hookKey: "hook:s" });
+      const result = await h.storage.deliverSignal(runId, "s", { v: 1 });
+      expect(result).toEqual({ kind: "delivered", cursorKey: "signal:s" });
 
-      const hook = await h.storage.loadHook(runId, "hook:s");
+      const hook = await h.storage.loadSignal(runId, "signal:s");
       expect(hook?.delivered).toBe(true);
       expect(hook?.payload).toEqual({ v: 1 });
       expect(h.enqueues).toEqual([{ runId, runAt: undefined }]);
@@ -80,10 +206,10 @@ describe("storage durability", () => {
         input: {},
       });
 
-      const result = await h.storage.signalHook(runId, "s", { v: 2 });
-      expect(result).toEqual({ kind: "buffered", hookKey: "hook:s" });
+      const result = await h.storage.deliverSignal(runId, "s", { v: 2 });
+      expect(result).toEqual({ kind: "buffered", cursorKey: "signal:s" });
 
-      const hook = await h.storage.loadHook(runId, "hook:s");
+      const hook = await h.storage.loadSignal(runId, "signal:s");
       expect(hook?.delivered).toBe(true);
       expect(hook?.payload).toEqual({ v: 2 });
       expect(h.enqueues).toEqual([]);
@@ -95,12 +221,28 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      const first = await h.storage.signalHook(runId, "s", "v1");
-      const second = await h.storage.signalHook(runId, "s", "v2");
+      const first = await h.storage.deliverSignal(runId, "s", "v1");
+      const second = await h.storage.deliverSignal(runId, "s", "v2");
       expect(first.kind).toBe("buffered");
       expect(second.kind).toBe("duplicate");
-      const hook = await h.storage.loadHook(runId, "hook:s");
+      const hook = await h.storage.loadSignal(runId, "signal:s");
       expect(hook?.payload).toBe("v1");
+    });
+
+    it("returns 'expired' when the armed hook's expiresAt has passed", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "expired-hook",
+        version: 1,
+        input: {},
+      });
+      await h.storage.armOrConsumeSignal(runId, "signal:s", new Date(Date.now() - 1_000));
+
+      const result = await h.storage.deliverSignal(runId, "s", { late: true });
+      expect(result).toEqual({ kind: "expired", cursorKey: "signal:s" });
+
+      const hook = await h.storage.loadSignal(runId, "signal:s");
+      expect(hook?.delivered).toBe(false);
+      expect(hook?.payload).toBeNull();
     });
 
     it("rolls back deliver + enqueue together when enqueue throws", async () => {
@@ -109,7 +251,7 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      await h.storage.armOrConsumeHook(runId, "hook:s", undefined);
+      await h.storage.armOrConsumeSignal(runId, "signal:s", undefined);
 
       const flaky: TxEnqueue = async () => {
         throw new Error("queue down");
@@ -120,9 +262,9 @@ describe("storage durability", () => {
         enqueue: flaky,
       });
 
-      await expect(flakyStorage.signalHook(runId, "s", { v: 1 })).rejects.toThrow("queue down");
+      await expect(flakyStorage.deliverSignal(runId, "s", { v: 1 })).rejects.toThrow("queue down");
 
-      const hook = await h.storage.loadHook(runId, "hook:s");
+      const hook = await h.storage.loadSignal(runId, "signal:s");
       expect(hook?.delivered).toBe(false);
     });
   });
@@ -134,9 +276,9 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      const result = await h.storage.armOrConsumeHook(runId, "hook:x", undefined);
+      const result = await h.storage.armOrConsumeSignal(runId, "signal:x", undefined);
       expect(result).toEqual({ kind: "armed" });
-      const hook = await h.storage.loadHook(runId, "hook:x");
+      const hook = await h.storage.loadSignal(runId, "signal:x");
       expect(hook?.delivered).toBe(false);
     });
 
@@ -146,9 +288,9 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      await h.storage.preDeliverHook(runId, "hook:x", { value: "raced" });
+      await h.storage.preDeliverSignal(runId, "signal:x", { value: "raced" });
 
-      const result = await h.storage.armOrConsumeHook(runId, "hook:x", undefined);
+      const result = await h.storage.armOrConsumeSignal(runId, "signal:x", undefined);
       expect(result).toEqual({ kind: "consumed", payload: { value: "raced" } });
     });
   });
@@ -164,6 +306,7 @@ describe("storage durability", () => {
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(1);
       expect(h.enqueues).toEqual([{ runId, runAt: undefined }]);
@@ -175,12 +318,13 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      await h.storage.markWaiting(runId);
-      await h.storage.preDeliverHook(runId, "hook:x", { score: 7 });
+      await h.storage.markAwaitingSignal(runId);
+      await h.storage.preDeliverSignal(runId, "signal:x", { score: 7 });
       await ageRun(h.db, runId, 5 * 60_000);
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -198,6 +342,7 @@ describe("storage durability", () => {
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -216,6 +361,7 @@ describe("storage durability", () => {
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -227,12 +373,13 @@ describe("storage durability", () => {
         version: 1,
         input: {},
       });
-      await h.storage.markWaiting(runId);
-      await h.storage.armOrConsumeHook(runId, "hook:to", new Date(Date.now() - 1_000));
+      await h.storage.markAwaitingSignal(runId);
+      await h.storage.armOrConsumeSignal(runId, "signal:to", new Date(Date.now() - 1_000));
       await ageRun(h.db, runId, 5 * 60_000);
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -242,6 +389,7 @@ describe("storage durability", () => {
       await h.storage.createRun({ name: "fresh", version: 1, input: {} });
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -281,7 +429,7 @@ describe("storage durability", () => {
       expect(h.enqueues.length).toBe(0);
     });
 
-    it("skips running runs entirely when no stuck cutoff is supplied", async () => {
+    it("respects a far-future stuck cutoff (treats every running row as fresh)", async () => {
       const { runId } = await h.storage.createRun({
         name: "no-stuck-check",
         version: 1,
@@ -292,6 +440,7 @@ describe("storage durability", () => {
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: new Date(0),
       });
       expect(n).toBe(0);
       expect(runId).toBeTruthy();
@@ -308,6 +457,7 @@ describe("storage durability", () => {
 
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: stuckCutoff(),
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -317,7 +467,7 @@ describe("storage durability", () => {
   });
 
   describe("loadRunDetail + loadOutput", () => {
-    it("loadRunDetail returns the run with steps/timers/hooks", async () => {
+    it("loadRunDetail.signals", async () => {
       const { runId } = await h.storage.createRun({
         name: "detail",
         version: 1,
@@ -326,19 +476,19 @@ describe("storage durability", () => {
       await h.storage.startStep(runId, "s1", 1);
       await h.storage.finishStep({
         runId,
-        stepKey: "s1",
+        cursorKey: "s1",
         status: "ok",
         attempts: 1,
         result: "ok",
       });
       await h.storage.createTimer(runId, "sleep", new Date());
-      await h.storage.armOrConsumeHook(runId, "hook:x", undefined);
+      await h.storage.armOrConsumeSignal(runId, "signal:x", undefined);
 
       const detail = await h.storage.loadRunDetail(runId);
       expect(detail?.run.name).toBe("detail");
       expect(detail?.steps.length).toBe(1);
       expect(detail?.timers.length).toBe(1);
-      expect(detail?.hooks.length).toBe(1);
+      expect(detail?.signals.length).toBe(1);
     });
 
     it("loadRunDetail returns undefined for an unknown run", async () => {
@@ -401,13 +551,13 @@ describe("storage durability", () => {
       await h.storage.startStep(runId, "s1", 1);
       await h.storage.finishStep({
         runId,
-        stepKey: "s1",
+        cursorKey: "s1",
         status: "ok",
         attempts: 1,
         result: 42,
       });
       await h.storage.createTimer(runId, "sleep", new Date());
-      await h.storage.armOrConsumeHook(runId, "hook:x", undefined);
+      await h.storage.armOrConsumeSignal(runId, "signal:x", undefined);
       await h.storage.recordEvent({ runId, type: "started" });
 
       await h.storage.markCompleted(runId, "done");
@@ -429,7 +579,7 @@ describe("storage durability", () => {
       const tm = await h.db.select().from(timers).where(eq(timers.runId, runId));
       expect(tm.length).toBe(0);
 
-      const hk = await h.db.select().from(hooks).where(eq(hooks.runId, runId));
+      const hk = await h.db.select().from(signals).where(eq(signals.runId, runId));
       expect(hk.length).toBe(0);
     });
 

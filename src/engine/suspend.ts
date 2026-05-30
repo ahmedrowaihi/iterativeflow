@@ -1,21 +1,23 @@
+import type { SuspendReason } from "./types";
+
 export interface SuspendOpts {
   wakeAt?: Date;
   wakeOn?: string;
-  reason: "sleep" | "hook" | "step_retry";
+  reason: SuspendReason;
 }
 
-export class WorkflowSuspend extends Error {
+export class FlowSuspend extends Error {
   readonly wakeAt?: Date;
   readonly wakeOn?: string;
-  readonly reason: SuspendOpts["reason"];
+  readonly reason: SuspendReason;
 
   constructor(opt: SuspendOpts) {
-    super(`workflow suspended (${opt.reason})`);
-    this.name = "WorkflowSuspend";
+    super(`flow suspended (${opt.reason})`);
+    this.name = "FlowSuspend";
     this.wakeAt = opt.wakeAt;
     this.wakeOn = opt.wakeOn;
     this.reason = opt.reason;
   }
 }
 
-export const isSuspend = (err: unknown): err is WorkflowSuspend => err instanceof WorkflowSuspend;
+export const isSuspend = (err: unknown): err is FlowSuspend => err instanceof FlowSuspend;

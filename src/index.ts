@@ -1,24 +1,54 @@
-export { createEngine, type Engine, type EngineOpts } from "./engine/engine";
-export { flow } from "./builder/flow";
-export type { FlowDefinition, FlowNode, LoopNode, NodeArg, NodeCtx } from "./builder/types";
+export {
+  consoleLogger,
+  createEngine,
+  defineFlow,
+  type Engine,
+  type EngineOpts,
+  type HealthReport,
+  type MetricsRecorder,
+} from "./engine/engine";
+export { FlowRuntimeError, flowError, toFlowError } from "./util/errors";
+export { flow, type FlowBuilder, type TerminalFlowBuilder } from "./builder/flow";
+export type {
+  FlowDefinition,
+  FlowNode,
+  LoopNode,
+  SignalNode,
+  SleepNode,
+  StepNode,
+} from "./builder/types";
 export type {
   CronSpec,
-  DefineWorkflowOpts,
-  HookOpts,
+  FlowContext,
+  FlowHandle,
+  DefineFlowOpts,
+  InvokeOpts,
+  ListRunsOpts,
+  ListRunsPage,
   Logger,
+  RunDetail,
+  SignalDeliveryResult,
+  SignalIssue,
+  SignalOpts,
   StartOpts,
+  StepArg,
   StepOpts,
-  WorkflowContext,
-  WorkflowHandle,
+  SuspendReason,
+  WaitUntil,
 } from "./engine/types";
-export type { Duration } from "./util/duration";
+export type { Duration, DurationString } from "./util/duration";
+export type { BackoffPolicy } from "./util/backoff";
+export type { WorkflowDb } from "./storage/db";
+export type { TxEnqueue } from "./storage/drizzle";
 export {
   EVENT_TYPES,
+  FLOW_ERROR_CODES,
   RUN_STATUSES,
   STEP_STATUSES,
-  workflowSchema,
+  flowSchema,
   type EventType,
+  type FlowError,
+  type FlowErrorCode,
   type RunStatus,
   type StepStatus,
-  type WorkflowError,
 } from "./storage/schema";

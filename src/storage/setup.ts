@@ -9,13 +9,14 @@ const buildCreateSql = async (): Promise<string[]> => {
   return generateMigration(empty, next);
 };
 
-export const applyWorkflowSchema = async (db: WorkflowDb): Promise<void> => {
+/** Apply the flow schema (creates `workflow.*` tables/indexes idempotently). */
+export const applyFlowSchema = async (db: WorkflowDb): Promise<void> => {
   const statements = await buildCreateSql();
   for (const stmt of statements) {
     await db.execute(sql.raw(stmt));
   }
 };
 
-export const dropWorkflowSchema = async (db: WorkflowDb): Promise<void> => {
+export const dropFlowSchema = async (db: WorkflowDb): Promise<void> => {
   await db.execute(sql`DROP SCHEMA IF EXISTS "workflow" CASCADE`);
 };

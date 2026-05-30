@@ -32,7 +32,9 @@ const UNITS = {
 
 type Unit = keyof typeof UNITS;
 
+/** String form of a duration: `"5m"`, `"30 seconds"`, `"2h"`, etc. */
 export type DurationString = `${number}${Unit}` | `${number} ${Unit}`;
+/** Duration accepted everywhere: number (ms), a {@link DurationString}, or an absolute `Date`. */
 export type Duration = number | DurationString | Date;
 
 const DURATION_RE = new RegExp(
@@ -50,8 +52,9 @@ const parseDurationString = (s: string): number => {
 
 export const toMs = (duration: Duration): number => {
   if (duration instanceof Date) return Math.max(0, duration.getTime() - Date.now());
-  if (typeof duration === "number") return duration;
-  return parseDurationString(duration);
+  const ms = typeof duration === "number" ? duration : parseDurationString(duration);
+  if (ms < 0) throw new Error(`Duration must be non-negative, got ${ms}ms`);
+  return ms;
 };
 
 export const toFireAt = (duration: Duration): Date => {
