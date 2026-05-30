@@ -50,6 +50,7 @@ jobs:
       - run: npm run build
       - run: npm run smoke:dist
       - run: npm run size:check
+      - run: npm run docs:check
 
   release:
     name: changesets

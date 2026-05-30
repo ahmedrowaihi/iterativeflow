@@ -6,6 +6,8 @@ Inspired by [Trigger.dev](https://trigger.dev) and [Temporal](https://temporal.i
 
 Schemas use [Standard Schema](https://standardschema.dev) — any compliant validator works (zod, valibot, arktype, …).
 
+<!-- doc-check: skip — teaser showing the full flow without setup; full setup below in "Hello flow" -->
+
 ```ts
 const onboard = flow("onboard")
   .input(z.object({ userId: z.string() }))
@@ -24,7 +26,7 @@ switch (result.kind) {
   case "delivered": // the run was awaiting; now resumes
   case "buffered": // signal arrived first; consumed on arm
   case "duplicate": // already accepted; idempotent
-  case "expired": // hook's timeout fired; reject the webhook
+  case "expired": // signal's timeout fired; reject the webhook
 }
 
 const out = await handle.result(runId); // resolves when terminal
@@ -52,6 +54,8 @@ Peers: `drizzle-orm`, `graphile-worker`, `pg`.
 
 Install both schemas once at deploy:
 
+<!-- doc-check: skip — `migrate` is provided by graphile-worker's CLI/programmatic API; setup snippet -->
+
 ```ts
 import { migrate } from "graphile-worker";
 await migrate({ pgPool: pool }); // graphile_worker schema
@@ -63,12 +67,16 @@ For the engine's own `workflow.*` schema, two clean patterns. Pick whichever fit
 
 Re-export from a single file your `drizzle.config.ts` already points at:
 
+<!-- doc-check: skip — references user-local `./auth`/`./billing` modules -->
+
 ```ts
 // db/schema.ts — your existing aggregator
 export * from "./auth";
 export * from "./billing";
 export * from "iterativeflow/schema";
 ```
+
+<!-- doc-check: skip — drizzle-kit's `defineConfig` is implicit in its CLI context -->
 
 ```ts
 // drizzle.config.ts
@@ -83,6 +91,8 @@ export default defineConfig({
 ### Option B — multi-entry array (no aggregator needed)
 
 drizzle-kit's `schema:` field takes filesystem paths, not Node package specifiers, so we resolve with `require.resolve`:
+
+<!-- doc-check: skip — drizzle-kit config; references user-local `./db/auth.ts` -->
 
 ```ts
 // drizzle.config.ts
@@ -103,6 +113,8 @@ npx drizzle-kit generate && npx drizzle-kit migrate
 ```
 
 ## Hello flow
+
+<!-- doc-check: skip — uses external `createAccount`; runnable shape only -->
 
 ```ts
 import { Pool } from "pg";
@@ -168,6 +180,8 @@ A flow is a linear chain (with optional loops). Each `.step()` fn is memoized by
 
 Inside a step / flow body:
 
+<!-- doc-check: skip — bare body shape; no ctx/url/childHandle binding -->
+
 ```ts
 async (ctx) => {
   const x = await ctx.step("fetch", async ({ signal }) => fetch(url, { signal }));
@@ -181,6 +195,8 @@ async (ctx) => {
 ```
 
 ## Production
+
+<!-- doc-check: skip — references in-scope `db`/`pool`/`counters`/`histograms` -->
 
 ```ts
 const engine = createEngine({
@@ -221,6 +237,8 @@ await engine.listen();
 **Versioning.** `.version(N)` enforces positive integers and forbids regression. Changes to a flow's shape between versions are caught by the replay-compat check — including **renames inside loop bodies** (occurrence count inside a loop is dynamic, but base names are still verified).
 
 **Non-retryable errors.** Throw `FlowRuntimeError` with `nonRetryable: true` to skip retries on a permanent failure:
+
+<!-- doc-check: skip — bare body snippet; no ctx binding -->
 
 ```ts
 import { FlowRuntimeError } from "iterativeflow";

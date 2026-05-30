@@ -5,3 +5,6 @@ temp/
 .turbo/
 .DS_Store
 npm-debug.log*
+.claude
+tests/docs-examples/*.ts
+!tests/docs-examples/globals.d.ts

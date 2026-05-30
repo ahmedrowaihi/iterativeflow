@@ -42,3 +42,5 @@ pre-push:
       run: npm run size:check
     - name: smoke-dist
       run: npm run smoke:dist
+    - name: docs-check
+      run: npm run docs:check
