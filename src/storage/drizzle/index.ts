@@ -1,37 +1,35 @@
+import { flowTables as defaultTables } from "../schema";
 import type { AtomicStorage, Storage } from "../types";
 import { claimRun } from "./claim";
 import { invokeBudget } from "./invoke-budget";
 import { notifyTerminal } from "./notify";
 import { buildOps } from "./ops";
-import { findChildRun, listChildren, listRuns, loadOutput, loadRunDetail } from "./queries";
 import { pruneEvents, pruneRuns } from "./prune";
+import { findChildRun, listChildren, listRuns, loadOutput, loadRunDetail } from "./queries";
 import { reenqueueOrphans } from "./reconcile";
 import { getSchemaVersion } from "./schema-version";
 import { armOrConsumeSignal, deliverSignal } from "./signals";
-import { asTx, type DrizzleStorageOpts } from "./types";
+import type { DrizzleStorageOpts, StorageSliceDeps } from "./types";
 
-export type { TxEnqueue, DrizzleStorageOpts } from "./types";
+export type { TxEnqueue, DrizzleStorageOpts, InternalTables, StorageSliceDeps } from "./types";
 export { noopEnqueue } from "./types";
 
 /**
- * Compose the Drizzle-backed {@link Storage}. The `db` / `enqueue` pair is
- * shared with sub-modules; each sub-module exposes the slice of behaviour
- * it owns (claim, signals, queries, prune, reconcile, schema-version,
- * invoke-budget, notify). `transaction(fn)` rebuilds ops over the inner
- * `tx` so writes inside the closure are atomic.
+ * Compose the Drizzle-backed {@link Storage}. `transaction(fn)` rebuilds ops
+ * over the inner `tx` so writes inside the closure commit atomically.
  */
 export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
   const { db, enqueue, logger } = opt;
-
-  const root = buildOps(db, enqueue);
+  const tables = opt.tables ?? defaultTables;
+  const deps: StorageSliceDeps = { db, tables, enqueue, logger };
+  const root = buildOps({ db, tables, enqueue });
 
   return {
     ...root.ops,
 
     async transaction(fn) {
       return db.transaction(async (tx) => {
-        const txDb = asTx(tx);
-        const inner = buildOps(txDb, enqueue);
+        const inner = buildOps({ db: tx, tables, enqueue });
         const atomic: AtomicStorage = {
           ...inner.ops,
           lockRun: inner.lockRun,
@@ -41,19 +39,19 @@ export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
       });
     },
 
-    claimRun: claimRun(db),
-    deliverSignal: deliverSignal(db, enqueue),
-    armOrConsumeSignal: armOrConsumeSignal(db),
-    loadRunDetail: loadRunDetail(db),
-    loadOutput: loadOutput(db),
-    listRuns: listRuns(db),
-    findChildRun: findChildRun(db),
-    listChildren: listChildren(db),
-    invokeBudget: invokeBudget(db),
-    getSchemaVersion: getSchemaVersion(db),
-    notifyTerminal: notifyTerminal(db, enqueue),
-    reenqueueOrphans: reenqueueOrphans(db, enqueue, logger),
-    pruneEvents: pruneEvents(db),
-    pruneRuns: pruneRuns(db),
+    claimRun: claimRun(deps),
+    deliverSignal: deliverSignal(deps),
+    armOrConsumeSignal: armOrConsumeSignal(deps),
+    loadRunDetail: loadRunDetail(deps),
+    loadOutput: loadOutput(deps),
+    listRuns: listRuns(deps),
+    findChildRun: findChildRun(deps),
+    listChildren: listChildren(deps),
+    invokeBudget: invokeBudget(deps),
+    getSchemaVersion: getSchemaVersion(deps),
+    notifyTerminal: notifyTerminal(deps),
+    reenqueueOrphans: reenqueueOrphans(deps),
+    pruneEvents: pruneEvents(deps),
+    pruneRuns: pruneRuns(deps),
   };
 };

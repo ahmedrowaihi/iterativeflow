@@ -52,65 +52,46 @@ Peers: `drizzle-orm`, `graphile-worker`, `pg`.
 
 ## Setup
 
-Install both schemas once at deploy:
+### 1. Generate the schema file in your project
 
-<!-- doc-check: skip — `migrate` is provided by graphile-worker's CLI/programmatic API; setup snippet -->
-
-```ts
-import { migrate } from "graphile-worker";
-await migrate({ pgPool: pool }); // graphile_worker schema
+```bash
+npx iterativeflow generate-schema
+# wrote ./iterativeflow-schema.ts
 ```
 
-For the engine's own `workflow.*` schema, two clean patterns. Pick whichever fits your setup.
+This emits a drizzle schema file at the project root (override with `--out`). The file is typed against **your** `drizzle-orm` — so `db.select().from(flowTables.runs)` and drizzle-kit migration generation work regardless of which drizzle version iterativeflow itself was built against. Re-run the command after upgrading iterativeflow.
 
-### Option A — aggregator file (recommended if you have your own schemas)
-
-Re-export from a single file your `drizzle.config.ts` already points at:
-
-<!-- doc-check: skip — references user-local `./auth`/`./billing` modules -->
-
-```ts
-// db/schema.ts — your existing aggregator
-export * from "./auth";
-export * from "./billing";
-export * from "iterativeflow/schema";
-```
+### 2. Add it to your `drizzle.config.ts`
 
 <!-- doc-check: skip — drizzle-kit's `defineConfig` is implicit in its CLI context -->
 
 ```ts
 // drizzle.config.ts
-export default defineConfig({
-  dialect: "postgresql",
-  schema: ["./db/schema.ts"],
-  out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_URL! },
-});
-```
-
-### Option B — multi-entry array (no aggregator needed)
-
-drizzle-kit's `schema:` field takes filesystem paths, not Node package specifiers, so we resolve with `require.resolve`:
-
-<!-- doc-check: skip — drizzle-kit config; references user-local `./db/auth.ts` -->
-
-```ts
-// drizzle.config.ts
 import { defineConfig } from "drizzle-kit";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
 
 export default defineConfig({
   dialect: "postgresql",
-  schema: ["./db/auth.ts", require.resolve("iterativeflow/schema")],
+  schema: ["./db/your-schema.ts", "./iterativeflow-schema.ts"],
   out: "./drizzle",
   dbCredentials: { url: process.env.DATABASE_URL! },
 });
 ```
+
+### 3. Customize (optional)
+
+You own the generated file. Rename tables, switch `pgSchema` names, add columns, add indexes. When you customize, pass your `flowTables` to `createEngine({ tables: flowTables })` so the engine knows about the renames — otherwise the engine queries the default `workflow.*` schema and your customizations break it. The default `createEngine({ db, pool })` works with the unmodified generated file.
+
+### 4. Install both schemas
 
 ```bash
+# install graphile-worker's schema
+node -e "import('graphile-worker').then(m => m.migrate({ pgPool: pool }))"
+
+# install iterativeflow's workflow.* schema
 npx drizzle-kit generate && npx drizzle-kit migrate
 ```
+
+Or apply iterativeflow's bundled SQL directly: `psql -f node_modules/iterativeflow/migrations/0000_init.sql`.
 
 ## Hello flow
 

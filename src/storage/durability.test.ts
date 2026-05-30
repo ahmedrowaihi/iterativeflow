@@ -117,13 +117,13 @@ describe("storage durability", () => {
   });
 
   describe("getSchemaVersion", () => {
-    it("returns the current schema version when all markers exist", async () => {
+    it("returns 2 when every consumer-supplied table is present", async () => {
       expect(await h.storage.getSchemaVersion()).toBe(2);
     });
 
-    it("returns 1 when a v2 marker column is missing", async () => {
-      await h.db.execute(sql`ALTER TABLE workflow.runs DROP COLUMN parent_run_id`);
-      expect(await h.storage.getSchemaVersion()).toBe(1);
+    it("returns 0 when an engine-required table is missing", async () => {
+      await h.db.execute(sql`DROP TABLE workflow.signals CASCADE`);
+      expect(await h.storage.getSchemaVersion()).toBe(0);
     });
 
     it("returns 0 when the schema is not applied at all", async () => {

@@ -13,6 +13,7 @@ import { wrapLogger } from "../util/safe-logger";
 import { wrapMetrics } from "../util/safe-metrics";
 import type { StandardSchemaV1 } from "../util/standard-schema";
 import { withTaskSpan } from "../util/tracing";
+import type { InternalTables } from "../storage/drizzle";
 import { validateLogger, validateRetention, warnIfPoolUndersized } from "./boot-validators";
 import { createCancelCascade } from "./cancel-cascade";
 import { createHandleFactory } from "./handle";
@@ -29,6 +30,7 @@ import type {
   DefineFlowOpts,
   FlowContext,
   FlowHandle,
+  FlowTables,
   HealthReport,
   ListRunsOpts,
   ListRunsPage,
@@ -41,9 +43,9 @@ import type {
 
 export type { HealthReport, MetricsRecorder } from "./types";
 
-/** Options for {@link createEngine}. Only `db`, `pool` are required. */
+/** Options for {@link createEngine}. `db`, `pool`, and `tables` are required. */
 export interface EngineOpts {
-  /** Drizzle handle bound to the Postgres database hosting the `workflow` schema. */
+  /** Drizzle handle bound to the Postgres database hosting the workflow tables. */
   db: WorkflowDb;
   /**
    * Postgres connection pool. Caller-owned — `pool.end()` is the caller's
@@ -51,6 +53,12 @@ export interface EngineOpts {
    * `concurrency + handles awaiting result() + reconciler headroom`.
    */
   pool: Pool;
+  /**
+   * Optional — pass `flowTables` from `./iterativeflow-schema` only if you
+   * customized table names, the `pgSchema` name, or added columns the
+   * engine should see. Defaults to the internal `workflow.*` tables.
+   */
+  tables?: FlowTables;
   /** Structured logger; defaults to a noop. */
   logger?: Logger;
   /** Postgres schema name for graphile-worker. Default `"graphile_worker"`. */
@@ -169,7 +177,8 @@ export const createEngine = (opt: EngineOpts): Engine => {
 
   const registry = new FlowRegistry();
   const enqueue: TxEnqueue = opt.enqueue ?? createGraphileTxEnqueue(opt.workerSchema);
-  const storage: Storage = createDrizzleStorage({ db: opt.db, logger, enqueue });
+  const tables = opt.tables as unknown as InternalTables | undefined;
+  const storage: Storage = createDrizzleStorage({ db: opt.db, logger, enqueue, tables });
   const cronSpecs: CronSpec[] = [];
   const metrics = wrapMetrics(opt.metrics ?? {}, logger);
   const limits = opt.limits ?? {};

@@ -56,8 +56,6 @@ export type EventType = (typeof EVENT_TYPES)[number];
 /** Drizzle handle for the `workflow` Postgres schema (tables, columns, indexes). */
 export const flowSchema = pgSchema("workflow");
 
-export const EXPECTED_SCHEMA_VERSION = 2;
-
 /** Engine-known error codes. User-defined codes are also valid via the open string union. */
 export const FLOW_ERROR_CODES = [
   "STEP_FAILED",
@@ -191,6 +189,8 @@ export const events = flowSchema.table(
   },
   (t) => [index("flow_events_run_id_idx").on(t.runId, t.at)],
 );
+
+export const flowTables = { runs, steps, signals, timers, events } as const;
 
 export type RunRow = typeof runs.$inferSelect;
 export type NewRunRow = typeof runs.$inferInsert;

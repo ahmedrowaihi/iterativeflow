@@ -1,15 +1,10 @@
-import { sql } from "drizzle-orm";
-import type { WorkflowDb } from "../db";
+import { and, inArray, lte } from "drizzle-orm";
 import type { RunStatus } from "../schema";
+import type { StorageSliceDeps } from "./types";
 
-/**
- * Delete event rows older than `olderThan` in batches. Returns the count
- * deleted in this call. Safe to drive from cron.
- *
- * @internal
- */
+/** @internal */
 export const pruneEvents =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async ({
     olderThan,
     batchSize = 1000,
@@ -17,28 +12,24 @@ export const pruneEvents =
     olderThan: Date;
     batchSize?: number;
   }): Promise<number> => {
-    const result = (await db.execute(sql`
-      WITH del AS (
-        SELECT id FROM workflow.events
-        WHERE at < ${olderThan}
-        ORDER BY id
-        LIMIT ${batchSize}
-      )
-      DELETE FROM workflow.events
-      WHERE id IN (SELECT id FROM del)
-      RETURNING id
-    `)) as unknown as { rows: unknown[] };
-    return result.rows.length;
+    const { events } = tables;
+    const candidates = await db
+      .select({ id: events.id })
+      .from(events)
+      .where(lte(events.at, olderThan))
+      .limit(batchSize);
+    if (candidates.length === 0) return 0;
+    const ids = candidates.map((r) => r.id);
+    const deleted = await db
+      .delete(events)
+      .where(inArray(events.id, ids))
+      .returning({ id: events.id });
+    return deleted.length;
   };
 
-/**
- * Delete terminal-status run rows updated before `olderThan` in batches.
- * Returns the count deleted in this call.
- *
- * @internal
- */
+/** @internal */
 export const pruneRuns =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async ({
     olderThan,
     status = ["done", "failed", "canceled"],
@@ -48,21 +39,14 @@ export const pruneRuns =
     status?: ReadonlyArray<RunStatus>;
     batchSize?: number;
   }): Promise<number> => {
-    const statusList = sql.join(
-      status.map((s) => sql`${s}`),
-      sql`, `,
-    );
-    const result = (await db.execute(sql`
-      WITH del AS (
-        SELECT id FROM workflow.runs
-        WHERE updated_at < ${olderThan}
-          AND status IN (${statusList})
-        ORDER BY updated_at
-        LIMIT ${batchSize}
-      )
-      DELETE FROM workflow.runs
-      WHERE id IN (SELECT id FROM del)
-      RETURNING id
-    `)) as unknown as { rows: unknown[] };
-    return result.rows.length;
+    const { runs } = tables;
+    const candidates = await db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(lte(runs.updatedAt, olderThan), inArray(runs.status, [...status])))
+      .limit(batchSize);
+    if (candidates.length === 0) return 0;
+    const ids = candidates.map((r) => r.id);
+    const deleted = await db.delete(runs).where(inArray(runs.id, ids)).returning({ id: runs.id });
+    return deleted.length;
   };

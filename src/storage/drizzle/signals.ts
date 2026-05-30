@@ -1,27 +1,26 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
-import { events, runs, signals } from "../schema";
 import type { ArmResult, SignalDeliveryResult } from "../types";
-import { asTx, type TxEnqueue } from "./types";
+import type { InternalTables, StorageSliceDeps } from "./types";
 
-const lockRunIn = async (tx: WorkflowDb, runId: string): Promise<void> => {
+const lockRunIn = async (tx: WorkflowDb, tables: InternalTables, runId: string): Promise<void> => {
+  const { runs } = tables;
   await tx.select({ id: runs.id }).from(runs).where(eq(runs.id, runId)).for("update").limit(1);
 };
 
 /**
- * Deliver a signal by name. Resolves an armed waiter if present (returns
- * `delivered`), buffers for a future arm if not (returns `buffered`), or
- * returns `expired` / `duplicate` to let the caller decide HTTP behaviour.
+ * Deliver a signal by name. Resolves an armed waiter (`delivered`), buffers
+ * for a future arm (`buffered`), or returns `expired` / `duplicate`.
  *
  * @internal
  */
 export const deliverSignal =
-  (db: WorkflowDb, enqueue: TxEnqueue) =>
+  ({ db, tables, enqueue }: StorageSliceDeps) =>
   async (runId: string, signalName: string, payload: unknown): Promise<SignalDeliveryResult> => {
     const canonicalKey = `signal:${signalName}`;
-    return db.transaction(async (raw) => {
-      const tx = asTx(raw);
-      await lockRunIn(tx, runId);
+    const { signals, events } = tables;
+    return db.transaction(async (tx) => {
+      await lockRunIn(tx, tables, runId);
 
       const armed = await tx
         .select({ cursorKey: signals.cursorKey, expiresAt: signals.expiresAt })
@@ -118,18 +117,17 @@ export const deliverSignal =
   };
 
 /**
- * From inside a flow body: either consume a previously-buffered signal at the
- * cursor key, or arm an empty signal row so a later `deliverSignal` can find
- * and resolve it.
+ * From inside a flow body: consume a buffered signal at `cursorKey`, or arm
+ * an empty row so a later `deliverSignal` can find and resolve it.
  *
  * @internal
  */
 export const armOrConsumeSignal =
-  (db: WorkflowDb) =>
+  ({ db, tables }: StorageSliceDeps) =>
   async (runId: string, cursorKey: string, expiresAt?: Date): Promise<ArmResult> =>
-    db.transaction(async (raw) => {
-      const tx = asTx(raw);
-      await lockRunIn(tx, runId);
+    db.transaction(async (tx) => {
+      await lockRunIn(tx, tables, runId);
+      const { signals, events } = tables;
 
       const existing = await tx
         .select()

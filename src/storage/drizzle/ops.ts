@@ -1,24 +1,32 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
-import { events, runs, signals, steps, timers, type StepRow } from "../schema";
+import type { StepRow } from "../schema";
 import type { AtomicStorage, StorageOps } from "../types";
-import type { TxEnqueue } from "./types";
+import type { InternalTables, TxEnqueue } from "./types";
+
+interface BuildOpsInput {
+  db: WorkflowDb;
+  tables: InternalTables;
+  enqueue: TxEnqueue;
+}
 
 /**
- * Build the row-level CRUD ops over `(db, enqueue)`. Same body works for the
- * root connection (when no transaction is active) and for a tx-scoped
- * `WorkflowDb` (via `Storage.transaction`).
+ * Build the row-level CRUD ops over `{ db, tables, enqueue }`. Same body
+ * works for the root connection (no transaction active) and for a
+ * tx-scoped `WorkflowDb` (via `Storage.transaction`).
  *
  * @internal
  */
-export const buildOps = (
-  db: WorkflowDb,
-  enqueue: TxEnqueue,
-): {
+export const buildOps = ({
+  db,
+  tables,
+  enqueue,
+}: BuildOpsInput): {
   ops: StorageOps;
   lockRun: AtomicStorage["lockRun"];
   enqueue: AtomicStorage["enqueue"];
 } => {
+  const { runs, steps, timers, signals, events } = tables;
   const ops: StorageOps = {
     async createRun(opt) {
       const values = {

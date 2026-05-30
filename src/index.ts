@@ -29,6 +29,7 @@ export type {
   RunDetail,
   SignalDeliveryResult,
   SignalIssue,
+  FlowTables,
   SignalOpts,
   StartOpts,
   StepArg,
@@ -45,10 +46,10 @@ export {
   FLOW_ERROR_CODES,
   RUN_STATUSES,
   STEP_STATUSES,
-  flowSchema,
   type EventType,
   type FlowError,
   type FlowErrorCode,
   type RunStatus,
   type StepStatus,
 } from "./storage/schema";
+export { applyFlowSchema, dropFlowSchema } from "./storage/setup";

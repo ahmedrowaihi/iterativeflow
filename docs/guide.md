@@ -305,6 +305,8 @@ const engine = createEngine({
 
 Or run your own:
 
+<!-- doc-check: skip — assumes consumer-generated `./iterativeflow-schema` import -->
+
 ```ts
 import type { Pool } from "pg";
 import type { WorkflowDb } from "iterativeflow";
