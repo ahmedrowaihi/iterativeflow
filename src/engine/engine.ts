@@ -17,12 +17,21 @@ import type { InternalTables } from "../storage/drizzle";
 import {
   validateLogger,
   validateRetention,
+  warnIfNoRetention,
   warnIfPoolUndersized,
   warnIfStuckShorterThanStepTimeout,
+  warnIfUnboundedStepTimeout,
 } from "./boot-validators";
 import { createCancelCascade } from "./cancel-cascade";
 import { createHandleFactory } from "./handle";
+import {
+  buildReconcilerCron,
+  buildRetentionCron,
+  RECONCILE_CRON_NAME,
+  RETENTION_CRON_NAME,
+} from "./internal-crons";
 import { createListenLoop, type ListenLoop } from "./listen-loop";
+import { fallbackLogger } from "./loggers";
 import { createProgressWaiters, parseProgressPayload } from "./progress-waiters";
 import { type RegisteredFlow, FlowRegistry } from "./registry";
 import { createRunLifecycle } from "./run-lifecycle";
@@ -150,40 +159,34 @@ export interface Engine {
   }): Promise<number>;
 }
 
-const RECONCILE_CRON_NAME = "__iterativeflow_reconcile";
-const RETENTION_CRON_NAME = "__iterativeflow_retention";
+// Defaults live here so boot validators and the listen() body agree.
+const DEFAULT_CONCURRENCY = 5;
+const DEFAULT_RECONCILER_GRACE_MS = toMs("1m");
+const DEFAULT_RUNNING_STUCK_MS = toMs("10m");
+const DEFAULT_MAX_RUN_ATTEMPTS = 100;
+const DEFAULT_MAX_INVOKE_DEPTH = 10;
+const DEFAULT_MAX_CHILDREN_PER_RUN = 1000;
 
-const noopLogger: Logger = {
-  debug: () => undefined,
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-};
-
-/** Minimal {@link Logger} that prints structured payloads to `console`. */
-export const consoleLogger = (): Logger => ({
-  debug: (m, p) => console.debug(m, p ?? {}),
-  info: (m, p) => console.info(m, p ?? {}),
-  warn: (m, p) => console.warn(m, p ?? {}),
-  error: (e, p) => console.error(e, p ?? {}),
-});
+export { consoleLogger } from "./loggers";
 
 /** Construct an engine. Wires the registry, storage, worker, and reconciler. */
 export const createEngine = (opt: EngineOpts): Engine => {
-  const rawLogger = opt.logger ?? noopLogger;
+  const rawLogger = opt.logger ?? fallbackLogger;
   validateLogger(rawLogger);
   const logger = wrapLogger(rawLogger);
   validateRetention(opt.retention);
   try {
-    warnIfPoolUndersized(opt.pool.options?.max, opt.concurrency ?? 5, logger);
+    warnIfPoolUndersized(opt.pool.options?.max, opt.concurrency ?? DEFAULT_CONCURRENCY, logger);
   } catch {
     // pg internal shape not available; skip silently
   }
   warnIfStuckShorterThanStepTimeout(
-    opt.runningStuckMs ?? 10 * 60_000,
+    opt.runningStuckMs ?? DEFAULT_RUNNING_STUCK_MS,
     opt.defaultStepTimeoutMs,
     logger,
   );
+  warnIfUnboundedStepTimeout(opt.defaultStepTimeoutMs, logger);
+  warnIfNoRetention(opt.retention, logger);
 
   const registry = new FlowRegistry();
   const enqueue: TxEnqueue = opt.enqueue ?? createGraphileTxEnqueue(opt.workerSchema);
@@ -243,11 +246,11 @@ export const createEngine = (opt: EngineOpts): Engine => {
     metrics,
     terminalWaiters,
     runControllers,
-    maxRunAttempts: opt.maxRunAttempts ?? 100,
+    maxRunAttempts: opt.maxRunAttempts ?? DEFAULT_MAX_RUN_ATTEMPTS,
     defaultStepTimeoutMs: opt.defaultStepTimeoutMs,
     maxStepResultBytes: limits.maxStepResultBytes,
-    maxInvokeDepth: limits.maxInvokeDepth ?? 10,
-    maxChildrenPerRun: limits.maxChildrenPerRun ?? 1000,
+    maxInvokeDepth: limits.maxInvokeDepth ?? DEFAULT_MAX_INVOKE_DEPTH,
+    maxChildrenPerRun: limits.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN,
     startChild,
   });
 
@@ -310,41 +313,17 @@ export const createEngine = (opt: EngineOpts): Engine => {
         await schemaCheck.ensure();
         const allCrons: CronSpec[] = [...cronSpecs];
         if (!opt.disableReconciler && enqueue !== noopEnqueue) {
-          const graceMs = opt.reconcilerGraceMs ?? 60_000;
-          const stuckMs = opt.runningStuckMs ?? 10 * 60_000;
-          allCrons.push({
-            name: RECONCILE_CRON_NAME,
-            schedule: "* * * * *",
-            run: async () => {
-              const reEnqueued = await storage.reenqueueOrphans({
-                olderThan: new Date(Date.now() - graceMs),
-                runningStuckOlderThan: new Date(Date.now() - stuckMs),
-              });
-              metrics.reconcilerSweep?.({ scanned: reEnqueued, reEnqueued });
-            },
-          });
+          allCrons.push(
+            buildReconcilerCron({
+              storage,
+              metrics,
+              graceMs: opt.reconcilerGraceMs ?? DEFAULT_RECONCILER_GRACE_MS,
+              stuckMs: opt.runningStuckMs ?? DEFAULT_RUNNING_STUCK_MS,
+            }),
+          );
         }
         if (opt.retention) {
-          const r = opt.retention;
-          const batchSize = r.batchSize ?? 1000;
-          allCrons.push({
-            name: RETENTION_CRON_NAME,
-            schedule: r.schedule ?? "0 * * * *",
-            run: async () => {
-              if (r.eventsOlderThan !== undefined) {
-                await storage.pruneEvents({
-                  olderThan: new Date(Date.now() - toMs(r.eventsOlderThan)),
-                  batchSize,
-                });
-              }
-              if (r.runsOlderThan !== undefined) {
-                await storage.pruneRuns({
-                  olderThan: new Date(Date.now() - toMs(r.runsOlderThan)),
-                  batchSize,
-                });
-              }
-            },
-          });
+          allCrons.push(buildRetentionCron({ storage, retention: opt.retention }));
         }
 
         worker = await startGraphileWorker({

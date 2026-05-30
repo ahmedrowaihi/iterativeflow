@@ -96,9 +96,10 @@ describe("engine guards", () => {
         logger: noisyLogger,
         concurrency: 20,
       });
-      expect(warned).toEqual([
-        { msg: "flow.config.pool_too_small", payload: { concurrency: 20, poolMax: 5 } },
-      ]);
+      expect(warned).toContainEqual({
+        msg: "flow.config.pool_too_small",
+        payload: { concurrency: 20, poolMax: 5 },
+      });
     });
 
     it("warns when runningStuckMs is smaller than defaultStepTimeoutMs", () => {
@@ -141,6 +142,91 @@ describe("engine guards", () => {
       expect(
         warned.find((w) => w.msg === "flow.config.stuck_shorter_than_step_timeout"),
       ).toBeUndefined();
+    });
+
+    it("warns when defaultStepTimeoutMs is unset (hung step risk)", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+      });
+      expect(warned.find((w) => w.msg === "flow.config.unbounded_step_timeout")).toBeDefined();
+    });
+
+    it("does NOT warn about step timeout when defaultStepTimeoutMs is set", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+        defaultStepTimeoutMs: 30 * 60_000,
+        runningStuckMs: 60 * 60_000,
+      });
+      expect(warned.find((w) => w.msg === "flow.config.unbounded_step_timeout")).toBeUndefined();
+    });
+
+    it("warns when retention is not configured", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+      });
+      expect(warned.find((w) => w.msg === "flow.config.no_retention")).toBeDefined();
+    });
+
+    it("does NOT warn about retention when at least one cutoff is set", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+        retention: { eventsOlderThan: "30d" },
+      });
+      expect(warned.find((w) => w.msg === "flow.config.no_retention")).toBeUndefined();
+    });
+
+    it("pipes warn to stderr when logger is not provided (stderr fallback)", () => {
+      const stderr: unknown[][] = [];
+      const orig = console.warn;
+      console.warn = (...args: unknown[]) => stderr.push(args);
+      try {
+        createEngine({
+          db: {} as unknown as WorkflowDb,
+          pool: {} as unknown as Pool,
+          // intentionally no logger — should hit stderr fallback
+        });
+      } finally {
+        console.warn = orig;
+      }
+      const messages = stderr.map((a) => String(a[0]));
+      expect(messages.some((m) => m.includes("flow.config.unbounded_step_timeout"))).toBe(true);
+      expect(messages.some((m) => m.includes("flow.config.no_retention"))).toBe(true);
     });
   });
 
