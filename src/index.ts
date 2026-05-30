@@ -19,6 +19,7 @@ export type {
 } from "./builder/types";
 export type {
   CronSpec,
+  DefaultFlowTables,
   FlowContext,
   FlowHandle,
   DefineFlowOpts,
@@ -27,6 +28,7 @@ export type {
   ListRunsPage,
   Logger,
   RunDetail,
+  Row,
   SignalDeliveryResult,
   SignalIssue,
   FlowTables,
@@ -46,10 +48,15 @@ export {
   FLOW_ERROR_CODES,
   RUN_STATUSES,
   STEP_STATUSES,
+  type EventRow,
   type EventType,
   type FlowError,
   type FlowErrorCode,
+  type RunRow,
   type RunStatus,
+  type SignalRow,
+  type StepRow,
   type StepStatus,
+  type TimerRow,
 } from "./storage/schema";
 export { applyFlowSchema, dropFlowSchema } from "./storage/setup";
