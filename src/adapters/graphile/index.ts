@@ -17,11 +17,12 @@ export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"
   const schema = sql.identifier(workerSchema);
   return async (tx, runId, opts) => {
     const jobKey = `flow:${runId}`;
+    const runAt = opts?.runAt ? sql`${opts.runAt.toISOString()}::timestamptz` : sql`NULL`;
     await tx.execute(sql`
       SELECT ${schema}.add_job(
         identifier => ${FLOW_TASK},
         payload => ${sql`json_build_object('runId', ${runId}::text)`},
-        run_at => ${opts?.runAt ?? null},
+        run_at => ${runAt},
         priority => ${opts?.priority ?? null},
         job_key => ${jobKey},
         job_key_mode => ${"replace"}
