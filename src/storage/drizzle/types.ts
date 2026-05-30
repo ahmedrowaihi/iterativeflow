@@ -6,6 +6,17 @@ import type { EnqueueOpts } from "../types";
 /** Transaction-scoped enqueue. The runtime supplies the active `tx` (or root db). */
 export type TxEnqueue = (tx: WorkflowDb, runId: string, opts?: EnqueueOpts) => Promise<void>;
 
+/**
+ * Normalize `db.execute()` result. `node-postgres` returns `{ rows }`;
+ * `postgres-js` and some drizzle 1.x drivers return an array directly.
+ *
+ * @internal
+ */
+export const rowsOf = <T = Record<string, unknown>>(result: unknown): T[] => {
+  const r = result as { rows?: T[] } | T[];
+  return Array.isArray(r) ? r : (r.rows ?? []);
+};
+
 /** @internal */
 export interface InternalTables {
   runs: typeof runs;

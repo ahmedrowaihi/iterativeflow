@@ -1,6 +1,6 @@
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { StorageSliceDeps } from "./types";
+import { rowsOf, type StorageSliceDeps } from "./types";
 
 /**
  * Probe `information_schema.tables` for every consumer-supplied table at its
@@ -15,14 +15,16 @@ export const getSchemaVersion =
     const probes = [tables.runs, tables.steps, tables.signals, tables.timers, tables.events];
     for (const tbl of probes) {
       const cfg = getTableConfig(tbl);
-      const result = (await db.execute(sql`
-        SELECT EXISTS(
-          SELECT 1 FROM information_schema.tables
-          WHERE table_schema = ${cfg.schema ?? "public"}
-            AND table_name = ${cfg.name}
-        ) AS present
-      `)) as unknown as { rows: { present: boolean }[] };
-      if (!result.rows[0]?.present) return 0;
+      const rows = rowsOf<{ present: boolean }>(
+        await db.execute(sql`
+          SELECT EXISTS(
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = ${cfg.schema ?? "public"}
+              AND table_name = ${cfg.name}
+          ) AS present
+        `),
+      );
+      if (!rows[0]?.present) return 0;
     }
     return 2;
   };
