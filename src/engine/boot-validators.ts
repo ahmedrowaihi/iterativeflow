@@ -29,3 +29,26 @@ export const warnIfPoolUndersized = (
     logger.warn("flow.config.pool_too_small", { concurrency, poolMax });
   }
 };
+
+/**
+ * Warn if the reconciler's `running` stuck threshold is smaller than the
+ * fallback step timeout. A live step running between those bounds is
+ * indistinguishable from a crashed process — the reconciler would
+ * resurrect it, producing two concurrent attempts of the same run.
+ *
+ * @internal
+ */
+export const warnIfStuckShorterThanStepTimeout = (
+  runningStuckMs: number,
+  defaultStepTimeoutMs: number | undefined,
+  logger: Logger,
+): void => {
+  if (defaultStepTimeoutMs === undefined) return;
+  if (runningStuckMs < defaultStepTimeoutMs) {
+    logger.warn("flow.config.stuck_shorter_than_step_timeout", {
+      runningStuckMs,
+      defaultStepTimeoutMs,
+      hint: "raise runningStuckMs >= defaultStepTimeoutMs (plus headroom) so the reconciler doesn't resurrect a still-running step",
+    });
+  }
+};

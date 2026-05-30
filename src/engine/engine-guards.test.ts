@@ -100,6 +100,48 @@ describe("engine guards", () => {
         { msg: "flow.config.pool_too_small", payload: { concurrency: 20, poolMax: 5 } },
       ]);
     });
+
+    it("warns when runningStuckMs is smaller than defaultStepTimeoutMs", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+        runningStuckMs: 60_000,
+        defaultStepTimeoutMs: 30 * 60_000,
+      });
+      const hit = warned.find((w) => w.msg === "flow.config.stuck_shorter_than_step_timeout");
+      expect(hit).toBeDefined();
+      expect(hit?.payload).toMatchObject({
+        runningStuckMs: 60_000,
+        defaultStepTimeoutMs: 30 * 60_000,
+      });
+    });
+
+    it("does NOT warn when defaultStepTimeoutMs is unset", () => {
+      const warned: { msg: string; payload?: Record<string, unknown> }[] = [];
+      const noisyLogger: Logger = {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, payload) => warned.push({ msg, payload }),
+        error: () => undefined,
+      };
+      createEngine({
+        db: {} as unknown as WorkflowDb,
+        pool: {} as unknown as Pool,
+        logger: noisyLogger,
+        runningStuckMs: 60_000,
+      });
+      expect(
+        warned.find((w) => w.msg === "flow.config.stuck_shorter_than_step_timeout"),
+      ).toBeUndefined();
+    });
   });
 
   describe("schema fingerprint", () => {
