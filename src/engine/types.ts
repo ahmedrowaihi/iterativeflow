@@ -263,6 +263,7 @@ export type {
   ClaimedRun,
   EnqueueOpts,
   ListRunsOpts,
+  RetryResult,
   RunSnapshot,
   SignalDeliveryResult,
   SignalIssue,

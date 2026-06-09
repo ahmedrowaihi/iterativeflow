@@ -51,6 +51,7 @@ import type {
   ListRunsPage,
   Logger,
   MetricsRecorder,
+  RetryResult,
   RunDetail,
   SignalDeliveryResult,
   Storage,
@@ -175,6 +176,14 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
   signal(runId: string, signalName: string, payload?: unknown): Promise<SignalDeliveryResult>;
   /** Mark a run canceled. Aborts the in-flight step's AbortSignal if running. */
   cancel(runId: string, reason?: string): Promise<void>;
+  /**
+   * Re-enqueue a `failed` run for replay. Memoized `ok` step results are
+   * preserved, the `failed_terminal` step row is deleted, the run is reset
+   * to `pending` with `attempts=0`. The body re-executes from the failing
+   * step. Returns the {@link RetryResult} so callers can branch on whether
+   * the run was actually queued, missing, or not in `failed` status.
+   */
+  retry(runId: string): Promise<RetryResult>;
   /** Snapshot of run + steps + timers + signals. */
   status(runId: string): Promise<RunDetail<T> | undefined>;
   /** Liveness ping. */
@@ -453,6 +462,8 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     listRuns: (o = {}) => storage.listRuns(o) as Promise<ListRunsPage<T>>,
 
     cancel: (runId, reason) => cancelCascade(runId, reason),
+
+    retry: (runId) => storage.retryRun(runId),
 
     async health() {
       let db = false;

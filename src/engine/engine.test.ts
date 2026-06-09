@@ -358,6 +358,64 @@ describe("workflow engine (pglite)", () => {
     });
   });
 
+  describe("retry", () => {
+    it("replays a failed run: ok steps memoized, failed step re-executed", async () => {
+      let goodCalls = 0;
+      let badAttempts = 0;
+      register(h.registry, "two-step", async (ctx) => {
+        const a = await ctx.step("good", () => {
+          goodCalls += 1;
+          return "A";
+        });
+        const b = await ctx.step(
+          "bad",
+          () => {
+            badAttempts += 1;
+            if (badAttempts <= 2) throw new Error("flaky");
+            return "B";
+          },
+          { retries: 1, baseBackoffMs: 1 },
+        );
+        return `${a}-${b}`;
+      });
+
+      const runId = await createRun(h.storage, "two-step", {});
+      await h.runOnce(runId);
+      await h.runOnce(runId);
+      expect((await h.storage.loadRun(runId))?.status).toBe("failed");
+      expect(goodCalls).toBe(1);
+      expect(badAttempts).toBe(2);
+
+      const result = await h.storage.retryRun(runId);
+      expect(result).toEqual({ kind: "queued" });
+      const after = await h.storage.loadRun(runId);
+      expect(after?.status).toBe("pending");
+      expect(after?.attempts).toBe(0);
+      expect(after?.error).toBeNull();
+
+      await h.runOnce(runId);
+      const done = await h.storage.loadRun(runId);
+      expect(done?.status).toBe("done");
+      expect(done?.output).toBe("A-B");
+      expect(goodCalls).toBe(1);
+      expect(badAttempts).toBe(3);
+    });
+
+    it("returns not_failed for a run that hasn't failed", async () => {
+      register(h.registry, "noop", () => "ok");
+      const runId = await createRun(h.storage, "noop", {});
+      await h.runOnce(runId);
+      expect((await h.storage.loadRun(runId))?.status).toBe("done");
+      const result = await h.storage.retryRun(runId);
+      expect(result).toEqual({ kind: "not_failed", status: "done" });
+    });
+
+    it("returns missing for an unknown runId", async () => {
+      const result = await h.storage.retryRun("00000000-0000-0000-0000-000000000000");
+      expect(result).toEqual({ kind: "missing" });
+    });
+  });
+
   describe("suspend in step is forbidden", () => {
     it("returns STEP_INVALID_AWAIT when sleep is called inside step", async () => {
       register(h.registry, "bad", async (ctx) => {

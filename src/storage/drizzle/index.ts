@@ -7,6 +7,7 @@ import { buildOps } from "./ops";
 import { pruneEvents, pruneRuns } from "./prune";
 import { findChildRun, listChildren, listRuns, loadOutput, loadRunDetail } from "./queries";
 import { reenqueueOrphans } from "./reconcile";
+import { retryRun } from "./retry";
 import { getSchemaVersion } from "./schema-version";
 import { armOrConsumeSignal, deliverSignal } from "./signals";
 import type { DrizzleStorageOpts, StorageSliceDeps } from "./types";
@@ -53,5 +54,6 @@ export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
     reenqueueOrphans: reenqueueOrphans(deps),
     pruneEvents: pruneEvents(deps),
     pruneRuns: pruneRuns(deps),
+    retryRun: retryRun(deps),
   };
 };

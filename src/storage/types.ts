@@ -32,6 +32,12 @@ export type SignalDeliveryResult =
 
 export type ArmResult = { kind: "consumed"; payload: unknown; row: SignalRow } | { kind: "armed" };
 
+/** Outcome of `engine.retry(...)`. Branch on `kind` to decide HTTP response. */
+export type RetryResult =
+  | { kind: "queued" }
+  | { kind: "missing" }
+  | { kind: "not_failed"; status: RunStatus };
+
 export interface ClaimedRun {
   run: RunRow;
   snapshot: RunSnapshot;
@@ -167,4 +173,5 @@ export interface Storage extends StorageOps {
     status?: ReadonlyArray<RunStatus>;
     batchSize?: number;
   }): Promise<number>;
+  retryRun(runId: string): Promise<RetryResult>;
 }
