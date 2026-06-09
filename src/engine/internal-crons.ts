@@ -10,24 +10,27 @@ export const RETENTION_CRON_NAME = "__iterativeflow_retention";
 export interface ReconcilerCronOpts {
   storage: Storage;
   metrics: MetricsRecorder;
+  /** Sweep cadence. Default `"* * * * *"` (every minute). */
+  schedule?: string;
   graceMs: number;
   stuckMs: number;
 }
 
 /**
- * Build the orphan-reconciler cron — runs once per minute, re-enqueues runs
- * whose status looks stuck.
+ * Build the orphan-reconciler cron — re-enqueues runs whose status looks stuck.
+ * Sweeps every minute unless `schedule` overrides it.
  *
  * @internal
  */
 export const buildReconcilerCron = ({
   storage,
   metrics,
+  schedule,
   graceMs,
   stuckMs,
 }: ReconcilerCronOpts): CronSpec => ({
   name: RECONCILE_CRON_NAME,
-  schedule: "* * * * *",
+  schedule: schedule ?? "* * * * *",
   run: async () => {
     const reEnqueued = await storage.reenqueueOrphans({
       olderThan: new Date(Date.now() - graceMs),

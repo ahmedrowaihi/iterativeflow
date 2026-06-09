@@ -9,10 +9,11 @@ import {
 } from "graphile-worker";
 import type { Pool } from "pg";
 import type { CronSpec, Logger } from "../../engine/types";
+import type { WorkflowDb } from "../../storage/db";
 import type { TxEnqueue } from "../../storage/drizzle";
+import { CRON_TASK_PREFIX, buildCronHandler, reapOrphanedCronJobs } from "./cron";
 
 export const FLOW_TASK = "flow:run";
-const CRON_TASK_PREFIX = "cron:";
 
 export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"): TxEnqueue => {
   const schema = sql.identifier(workerSchema);
@@ -34,6 +35,7 @@ export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"
 
 export interface GraphileWorkerOpts {
   pool: Pool;
+  db: WorkflowDb;
   schema?: string;
   concurrency?: number;
   pollInterval?: number;
@@ -55,68 +57,13 @@ export const validateCron = (pattern: string): void => {
   }
 };
 
-const wrapBody =
-  (spec: CronSpec): (() => Promise<void>) =>
-  async () => {
-    // Apply jitter so concurrent engine instances don't fire simultaneously.
-    if (spec.jitterMs && spec.jitterMs > 0) {
-      await new Promise((r) => setTimeout(r, Math.floor(spec.jitterMs! * Math.random())));
-    }
-    await spec.run();
-  };
-
-const buildCronHandler =
-  (spec: CronSpec, logger: Logger, runCron: GraphileWorkerOpts["runCron"], pool: Pool) =>
-  async () => {
-    try {
-      if (spec.overlap === "allow") {
-        await runCron(spec.name, () => wrapBody(spec)());
-        return;
-      }
-      const client = await pool.connect();
-      try {
-        const lockKey = hashCronName(spec.name);
-        const got = await client.query<{ ok: boolean }>("SELECT pg_try_advisory_lock($1) AS ok", [
-          lockKey,
-        ]);
-        if (!got.rows[0]?.ok) {
-          logger.debug("flow.cron.skipped_overlap", { cron: spec.name });
-          return;
-        }
-        try {
-          await runCron(spec.name, () => wrapBody(spec)());
-        } finally {
-          await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => undefined);
-        }
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      logger.error(err instanceof Error ? err : new Error(String(err)), {
-        event: "flow.cron.failed",
-        cron: spec.name,
-      });
-      throw err;
-    }
-  };
-
-const hashCronName = (name: string): number => {
-  // Stable, signed 32-bit hash safe for pg_advisory_lock(bigint).
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (h << 5) - h + name.charCodeAt(i);
-    h |= 0;
-  }
-  return h;
-};
-
 export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<GraphileWorker> => {
   for (const c of opt.crons) validateCron(c.schedule);
 
   const parsedCronItems = parseCronItems(
     opt.crons.map((c) => ({
       task: `${CRON_TASK_PREFIX}${c.name}`,
-      match: buildMatchPattern(c),
+      match: buildMatchPattern(c.schedule),
       identifier: c.name,
       ...(c.backfillPeriod ? { options: { backfillPeriod: c.backfillPeriod } } : {}),
     })),
@@ -150,6 +97,7 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
   };
 
   const runner = await run(options);
+  await reapOrphanedCronJobs(opt.db, options.schema ?? "graphile_worker", opt.crons, opt.logger);
   opt.logger.info("flow.worker.started", {
     schema: options.schema,
     concurrency: options.concurrency,
@@ -164,9 +112,4 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
   };
 };
 
-const buildMatchPattern = (c: CronSpec): string => {
-  // graphile-worker supports cron strings only; ignore IANA tz for now (it's
-  // honored by the runtime when graphile-worker grows native tz support).
-  void c.timezone;
-  return c.schedule;
-};
+const buildMatchPattern = (schedule: string): string => schedule;

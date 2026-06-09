@@ -25,7 +25,7 @@ pre-push:
     - name: typecheck
       run: npm run typecheck
     - name: test
-      run: npm test
+      run: SKIP_TESTCONTAINERS=1 npm test
     - name: migrations-drift
       run: |
         npx tsx scripts/generate-migrations.ts

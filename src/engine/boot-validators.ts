@@ -48,7 +48,7 @@ export const warnIfStuckShorterThanStepTimeout = (
     logger.warn("flow.config.stuck_shorter_than_step_timeout", {
       runningStuckMs,
       defaultStepTimeoutMs,
-      hint: "raise runningStuckMs >= defaultStepTimeoutMs (plus headroom) so the reconciler doesn't resurrect a still-running step",
+      hint: "raise reconciler.runningStuckMs >= limits.defaultStepTimeoutMs (plus headroom) so the reconciler doesn't resurrect a still-running step",
     });
   }
 };
@@ -67,7 +67,7 @@ export const warnIfUnboundedStepTimeout = (
 ): void => {
   if (defaultStepTimeoutMs !== undefined) return;
   logger.warn("flow.config.unbounded_step_timeout", {
-    hint: "set EngineOpts.defaultStepTimeoutMs (or pass StepOpts.timeoutMs on every ctx.step) — a hung step otherwise pins a worker slot indefinitely",
+    hint: "set limits.defaultStepTimeoutMs (or pass StepOpts.timeoutMs on every ctx.step) — a hung step otherwise pins a worker slot indefinitely",
   });
 };
 

@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
+import type { SignalRow } from "../schema";
 import type { ArmResult, SignalDeliveryResult } from "../types";
 import type { InternalTables, StorageSliceDeps } from "./types";
 
@@ -136,7 +137,11 @@ export const armOrConsumeSignal =
         .limit(1);
 
       if (existing[0]?.delivered) {
-        return { kind: "consumed", payload: existing[0].payload } satisfies ArmResult;
+        return {
+          kind: "consumed",
+          payload: existing[0].payload,
+          row: existing[0] as SignalRow,
+        } satisfies ArmResult;
       }
 
       if (!existing[0]) {

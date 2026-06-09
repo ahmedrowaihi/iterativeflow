@@ -23,8 +23,8 @@ describe("engine.signal — delivery-time schema validation", () => {
       db,
       pool: {} as unknown as Pool,
       logger: silentLogger,
-      disableReconciler: true,
-      enqueue: async () => undefined,
+      reconciler: false,
+      worker: { enqueue: async () => undefined },
     });
   });
   afterEach(async () => {

@@ -81,17 +81,15 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
       db: h.dbA,
       pool: h.poolA,
       logger: silent,
-      disableReconciler: true,
-      concurrency: 2,
-      pollInterval: 200,
+      reconciler: false,
+      worker: { concurrency: 2, pollInterval: 200 },
     });
     engineB = createEngine({
       db: h.dbB,
       pool: h.poolB,
       logger: silent,
-      disableReconciler: true,
-      concurrency: 2,
-      pollInterval: 200,
+      reconciler: false,
+      worker: { concurrency: 2, pollInterval: 200 },
     });
     await engineA.listen();
     await engineB.listen();

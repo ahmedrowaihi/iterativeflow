@@ -102,7 +102,7 @@ const def = flow("sum")
 
 Step functions receive `{ input, signal, attempt }`. The `signal` is wired to:
 
-- `StepOpts.timeoutMs` (or `EngineOpts.defaultStepTimeoutMs` as fallback)
+- `StepOpts.timeoutMs` (or `EngineOpts.limits.defaultStepTimeoutMs` as fallback)
 - `engine.cancel(runId)` (which propagates through `cancelCascade` to any in-flight descendants)
 
 <!-- doc-check: skip — partial builder chain -->

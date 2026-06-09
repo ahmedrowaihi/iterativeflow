@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
-import type { StepRow } from "../schema";
+import type { StepRow, TimerRow } from "../schema";
 import type { AtomicStorage, StorageOps } from "../types";
 import type { InternalTables, TxEnqueue } from "./types";
 
@@ -196,7 +196,7 @@ export const buildOps = ({
     },
 
     async finishStep(opt) {
-      await db
+      const [row] = await db
         .update(steps)
         .set({
           status: opt.status,
@@ -205,12 +205,14 @@ export const buildOps = ({
           attempts: opt.attempts,
           completedAt: new Date(),
         })
-        .where(and(eq(steps.runId, opt.runId), eq(steps.cursorKey, opt.cursorKey)));
+        .where(and(eq(steps.runId, opt.runId), eq(steps.cursorKey, opt.cursorKey)))
+        .returning();
       if (opt.status === "ok" || opt.status === "failed_terminal") {
         await db.execute(
           sql`SELECT pg_notify('flow_progress', ${`step:${opt.runId}:${opt.cursorKey}`})`,
         );
       }
+      return row as StepRow;
     },
 
     async loadTimer(runId, cursorKey) {
@@ -230,10 +232,12 @@ export const buildOps = ({
     },
 
     async fireTimer(runId, cursorKey) {
-      await db
+      const [row] = await db
         .update(timers)
         .set({ firedAt: new Date() })
-        .where(and(eq(timers.runId, runId), eq(timers.cursorKey, cursorKey)));
+        .where(and(eq(timers.runId, runId), eq(timers.cursorKey, cursorKey)))
+        .returning();
+      return row as TimerRow;
     },
 
     async loadSignal(runId, cursorKey) {

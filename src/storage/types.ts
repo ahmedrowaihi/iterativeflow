@@ -30,7 +30,7 @@ export type SignalDeliveryResult =
   | { kind: "expired"; cursorKey: string }
   | { kind: "invalid_payload"; issues: ReadonlyArray<SignalIssue> };
 
-export type ArmResult = { kind: "consumed"; payload: unknown } | { kind: "armed" };
+export type ArmResult = { kind: "consumed"; payload: unknown; row: SignalRow } | { kind: "armed" };
 
 export interface ClaimedRun {
   run: RunRow;
@@ -78,7 +78,7 @@ export interface ListRunsOpts {
   since?: Date;
   /** Only runs created on or before this instant. */
   until?: Date;
-  /** Max rows. Hard-capped at 500 by the implementation. */
+  /** Max rows. Default 50; throws if greater than 500. */
   limit?: number;
   /** Keyset cursor from a prior page's `next`. */
   cursor?: { createdAt: Date; id: string };
@@ -121,11 +121,11 @@ export interface StorageOps {
     result?: unknown;
     error?: FlowError;
     attempts: number;
-  }): Promise<void>;
+  }): Promise<StepRow>;
 
   loadTimer(runId: string, cursorKey: string): Promise<TimerRow | undefined>;
   createTimer(runId: string, cursorKey: string, fireAt: Date): Promise<void>;
-  fireTimer(runId: string, cursorKey: string): Promise<void>;
+  fireTimer(runId: string, cursorKey: string): Promise<TimerRow>;
 
   loadSignal(runId: string, cursorKey: string): Promise<SignalRow | undefined>;
   preDeliverSignal(runId: string, cursorKey: string, payload: unknown): Promise<boolean>;

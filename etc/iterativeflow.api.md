@@ -105,12 +105,10 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
 
 // @public
 export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
-    concurrency?: number;
     db: WorkflowDb;
-    defaultStepTimeoutMs?: number;
-    disableReconciler?: boolean;
-    enqueue?: TxEnqueue;
     limits?: {
+        maxRunAttempts?: number;
+        defaultStepTimeoutMs?: number;
         maxInputBytes?: number;
         maxStepResultBytes?: number;
         maxSignalPayloadBytes?: number;
@@ -118,20 +116,26 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
         maxChildrenPerRun?: number;
     };
     logger?: Logger;
-    maxRunAttempts?: number;
     metrics?: MetricsRecorder;
-    pollInterval?: number;
     pool: Pool;
-    reconcilerGraceMs?: number;
-    retention?: {
+    reconciler?: false | {
+        schedule?: string;
+        graceMs?: number;
+        runningStuckMs?: number;
+    };
+    retention?: false | {
         runsOlderThan?: Duration;
         eventsOlderThan?: Duration;
         schedule?: string;
         batchSize?: number;
     };
-    runningStuckMs?: number;
     tables?: T;
-    workerSchema?: string;
+    worker?: {
+        schema?: string;
+        concurrency?: number;
+        pollInterval?: number;
+        enqueue?: TxEnqueue;
+    };
 }
 
 // @public
@@ -240,6 +244,17 @@ export class FlowRuntimeError extends Error {
 }
 
 // @public
+export class FlowSuspend extends Error {
+    constructor(opt: SuspendOpts);
+    // (undocumented)
+    readonly reason: SuspendReason;
+    // (undocumented)
+    readonly wakeAt?: Date;
+    // (undocumented)
+    readonly wakeOn?: string;
+}
+
+// @public
 export interface FlowTables {
     // (undocumented)
     events: {
@@ -277,6 +292,9 @@ export interface InvokeOpts {
     idempotencyKey?: string;
     tags?: ReadonlyArray<string>;
 }
+
+// @public
+export const isSuspend: (err: unknown) => err is FlowSuspend;
 
 // @public
 export interface ListRunsOpts {
@@ -469,6 +487,16 @@ export type StepRow = typeof steps.$inferSelect;
 
 // @public
 export type StepStatus = (typeof STEP_STATUSES)[number];
+
+// @public (undocumented)
+export interface SuspendOpts {
+    // (undocumented)
+    reason: SuspendReason;
+    // (undocumented)
+    wakeAt?: Date;
+    // (undocumented)
+    wakeOn?: string;
+}
 
 // @public
 export type SuspendReason = "sleep" | "awaiting_signal" | "step_retry";
