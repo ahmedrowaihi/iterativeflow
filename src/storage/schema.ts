@@ -192,10 +192,89 @@ export const events = flowSchema.table(
 
 export const flowTables = { runs, steps, signals, timers, events } as const;
 
-export type RunRow = typeof runs.$inferSelect;
 export type NewRunRow = typeof runs.$inferInsert;
-export type StepRow = typeof steps.$inferSelect;
 export type NewStepRow = typeof steps.$inferInsert;
-export type TimerRow = typeof timers.$inferSelect;
-export type SignalRow = typeof signals.$inferSelect;
-export type EventRow = typeof events.$inferSelect;
+
+/**
+ * Row shape of `workflow.runs`. Hand-written so the public `.d.ts` doesn't
+ * depend on the bundled drizzle column brand — a consumer's drizzle copy
+ * can't dereference the vendored brand, which silently collapses every
+ * column to `unknown` at the call site. A compile-time equivalence check
+ * below pins this interface to drizzle's runtime inference so a column
+ * rename or type change here fails the build instead of drifting.
+ */
+export interface RunRow {
+  id: string;
+  name: string;
+  version: number;
+  status: RunStatus;
+  parentRunId: string | null;
+  parentCursorKey: string | null;
+  input: unknown;
+  output: unknown;
+  error: FlowError | null;
+  attempts: number;
+  idempotencyKey: string | null;
+  tags: string[] | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  updatedAt: Date;
+}
+
+/** Row shape of `workflow.steps`. See {@link RunRow} for why this is hand-written. */
+export interface StepRow {
+  runId: string;
+  cursorKey: string;
+  status: StepStatus;
+  result: unknown;
+  error: FlowError | null;
+  attempts: number;
+  startedAt: Date;
+  completedAt: Date | null;
+}
+
+/** Row shape of `workflow.timers`. See {@link RunRow} for why this is hand-written. */
+export interface TimerRow {
+  runId: string;
+  cursorKey: string;
+  fireAt: Date;
+  firedAt: Date | null;
+}
+
+/** Row shape of `workflow.signals`. See {@link RunRow} for why this is hand-written. */
+export interface SignalRow {
+  runId: string;
+  cursorKey: string;
+  delivered: boolean;
+  payload: unknown;
+  expiresAt: Date | null;
+  createdAt: Date;
+  deliveredAt: Date | null;
+}
+
+/** Row shape of `workflow.events`. See {@link RunRow} for why this is hand-written. */
+export interface EventRow {
+  id: number;
+  runId: string;
+  type: EventType;
+  cursorKey: string | null;
+  payload: unknown;
+  at: Date;
+}
+
+type _Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+type _Assert<X extends true> = X;
+
+// Hand-written row interfaces above must stay in sync with drizzle's
+// `$inferSelect` inference of the runtime tables. If any column is added,
+// removed, or retyped, exactly one of these assertions fails — pointing at
+// the row interface that needs an update.
+export type _RowInterfacesMatchSchema = [
+  _Assert<_Equals<RunRow, typeof runs.$inferSelect>>,
+  _Assert<_Equals<StepRow, typeof steps.$inferSelect>>,
+  _Assert<_Equals<TimerRow, typeof timers.$inferSelect>>,
+  _Assert<_Equals<SignalRow, typeof signals.$inferSelect>>,
+  _Assert<_Equals<EventRow, typeof events.$inferSelect>>,
+];

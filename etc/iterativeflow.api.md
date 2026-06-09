@@ -4,8 +4,6 @@
 
 ```ts
 
-import * as drizzle_orm from 'drizzle-orm';
-import * as drizzle_orm_pg_core from 'drizzle-orm/pg-core';
 import { PgDatabase } from 'drizzle-orm/pg-core';
 import { PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { Pool } from 'pg';
@@ -142,10 +140,21 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
 // @public
 export const EVENT_TYPES: readonly ["started", "step_started", "step_ok", "step_failed", "step_terminal", "sleep_scheduled", "sleep_fired", "signal_armed", "signal_delivered", "signal_timeout", "suspended", "resumed", "completed", "failed", "canceled"];
 
-// Warning: (ae-forgotten-export) The symbol "events" needs to be exported by the entry point index.d.ts
-//
-// @public (undocumented)
-export type EventRow = typeof events.$inferSelect;
+// @public
+export interface EventRow {
+    // (undocumented)
+    at: Date;
+    // (undocumented)
+    cursorKey: string | null;
+    // (undocumented)
+    id: number;
+    // (undocumented)
+    payload: unknown;
+    // (undocumented)
+    runId: string;
+    // (undocumented)
+    type: EventType;
+}
 
 // @public
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -399,10 +408,41 @@ export interface RunDetail<T extends FlowTables = DefaultFlowTables> {
     timers: Row<T["timers"]>[];
 }
 
-// Warning: (ae-forgotten-export) The symbol "runs" needs to be exported by the entry point index.d.ts
-//
-// @public (undocumented)
-export type RunRow = typeof runs.$inferSelect;
+// @public
+export interface RunRow {
+    // (undocumented)
+    attempts: number;
+    // (undocumented)
+    completedAt: Date | null;
+    // (undocumented)
+    createdAt: Date;
+    // (undocumented)
+    error: FlowError | null;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    idempotencyKey: string | null;
+    // (undocumented)
+    input: unknown;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    output: unknown;
+    // (undocumented)
+    parentCursorKey: string | null;
+    // (undocumented)
+    parentRunId: string | null;
+    // (undocumented)
+    startedAt: Date | null;
+    // (undocumented)
+    status: RunStatus;
+    // (undocumented)
+    tags: string[] | null;
+    // (undocumented)
+    updatedAt: Date;
+    // (undocumented)
+    version: number;
+}
 
 // @public
 export type RunStatus = (typeof RUN_STATUSES)[number];
@@ -444,10 +484,23 @@ export interface SignalOpts<T> {
     timeout?: Duration;
 }
 
-// Warning: (ae-forgotten-export) The symbol "signals" needs to be exported by the entry point index.d.ts
-//
-// @public (undocumented)
-export type SignalRow = typeof signals.$inferSelect;
+// @public
+export interface SignalRow {
+    // (undocumented)
+    createdAt: Date;
+    // (undocumented)
+    cursorKey: string;
+    // (undocumented)
+    delivered: boolean;
+    // (undocumented)
+    deliveredAt: Date | null;
+    // (undocumented)
+    expiresAt: Date | null;
+    // (undocumented)
+    payload: unknown;
+    // (undocumented)
+    runId: string;
+}
 
 // @public
 export interface SleepNode {
@@ -491,10 +544,25 @@ export interface StepOpts {
     timeoutMs?: number;
 }
 
-// Warning: (ae-forgotten-export) The symbol "steps" needs to be exported by the entry point index.d.ts
-//
-// @public (undocumented)
-export type StepRow = typeof steps.$inferSelect;
+// @public
+export interface StepRow {
+    // (undocumented)
+    attempts: number;
+    // (undocumented)
+    completedAt: Date | null;
+    // (undocumented)
+    cursorKey: string;
+    // (undocumented)
+    error: FlowError | null;
+    // (undocumented)
+    result: unknown;
+    // (undocumented)
+    runId: string;
+    // (undocumented)
+    startedAt: Date;
+    // (undocumented)
+    status: StepStatus;
+}
 
 // @public
 export type StepStatus = (typeof STEP_STATUSES)[number];
@@ -519,10 +587,17 @@ export class TerminalFlowBuilder<I, O> {
     build(): FlowDefinition<I, O>;
 }
 
-// Warning: (ae-forgotten-export) The symbol "timers" needs to be exported by the entry point index.d.ts
-//
-// @public (undocumented)
-export type TimerRow = typeof timers.$inferSelect;
+// @public
+export interface TimerRow {
+    // (undocumented)
+    cursorKey: string;
+    // (undocumented)
+    fireAt: Date;
+    // (undocumented)
+    firedAt: Date | null;
+    // (undocumented)
+    runId: string;
+}
 
 // @public
 export const toFlowError: (err: unknown) => FlowError;
