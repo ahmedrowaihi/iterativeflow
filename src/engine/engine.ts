@@ -71,7 +71,7 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
   /**
    * Postgres connection pool. Caller-owned — `pool.end()` is the caller's
    * responsibility after `engine.stop()`. Size to at least
-   * `concurrency + handles awaiting result() + reconciler headroom`.
+   * `worker.concurrency + handles awaiting result() + reconciler headroom`.
    */
   pool: Pool;
   /**
@@ -82,40 +82,63 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
   tables?: T;
   /** Structured logger; defaults to a noop. */
   logger?: Logger;
-  /** Postgres schema name for graphile-worker. Default `"graphile_worker"`. */
-  workerSchema?: string;
-  /** Graphile-worker concurrency. Default 5. Should be `<= pool.max`. */
-  concurrency?: number;
-  /** Graphile-worker poll interval (ms) when no NOTIFY arrives. Default 1000. */
-  pollInterval?: number;
-  /** Override the transaction-scoped enqueue (test-only — defaults to graphile). */
-  enqueue?: TxEnqueue;
-  /** Skip auto-scheduling the orphan-reconcile cron. */
-  disableReconciler?: boolean;
-  /** Reconciler treats runs idle longer than this as candidates for re-enqueue. Default 60_000. */
-  reconcilerGraceMs?: number;
-  /** Reconciler treats `running` runs untouched longer than this as stuck. Default 600_000. */
-  runningStuckMs?: number;
-  /**
-   * Hard ceiling on a run's `attempts` counter. Once exceeded the run is
-   * marked failed with `RUN_ATTEMPTS_EXHAUSTED`. Default 100.
-   */
-  maxRunAttempts?: number;
-  /** Fallback step timeout in ms when `StepOpts.timeoutMs` is not set. */
-  defaultStepTimeoutMs?: number;
-  /** Auto-schedule pruning crons; opt-in. */
-  retention?: {
-    /** Drop terminal runs older than this on each sweep. */
-    runsOlderThan?: Duration;
-    /** Drop event rows older than this on each sweep. */
-    eventsOlderThan?: Duration;
-    /** Cron schedule for retention sweeps. Default `"0 * * * *"` (hourly). */
-    schedule?: string;
-    /** Rows deleted per sweep batch. Default 1000. */
-    batchSize?: number;
+  /** Optional telemetry recorder; every method is optional. */
+  metrics?: MetricsRecorder;
+
+  /** graphile-worker runner settings. Omit for defaults. */
+  worker?: {
+    /** Postgres schema for graphile-worker. Default `"graphile_worker"`. */
+    schema?: string;
+    /** Worker concurrency. Default 5. Should be `<= pool.max`. */
+    concurrency?: number;
+    /** Poll interval (ms) when no NOTIFY arrives. Default 1000. */
+    pollInterval?: number;
+    /** Override the transaction-scoped enqueue (advanced/test — defaults to graphile). */
+    enqueue?: TxEnqueue;
   };
-  /** Hard caps; sizes default to none, invoke caps default to 10/1000. */
+
+  /**
+   * Orphan reconciler — re-enqueues runs whose status looks stuck. **ON by
+   * default.** Pass `false` to disable, or an object to tune.
+   */
+  reconciler?:
+    | false
+    | {
+        /** Sweep cadence (5-field cron). Default `"* * * * *"` (every minute). */
+        schedule?: string;
+        /** Runs idle longer than this are re-enqueue candidates. Default 60_000. */
+        graceMs?: number;
+        /** `running` runs untouched longer than this are treated as stuck. Default 600_000. */
+        runningStuckMs?: number;
+      };
+
+  /**
+   * Retention sweeps — **delete** old terminal runs and event rows so the
+   * tables don't grow unbounded. **OFF by default.** Pass an object to enable;
+   * `false` is the same as omitting it.
+   */
+  retention?:
+    | false
+    | {
+        /** Drop terminal runs older than this on each sweep. */
+        runsOlderThan?: Duration;
+        /** Drop event rows older than this on each sweep. */
+        eventsOlderThan?: Duration;
+        /** Sweep cadence (5-field cron). Default `"0 * * * *"` (hourly). */
+        schedule?: string;
+        /** Rows deleted per sweep batch. Default 1000. */
+        batchSize?: number;
+      };
+
+  /** Hard caps on execution and payload sizes. Omit for defaults. */
   limits?: {
+    /**
+     * Ceiling on a run's `attempts`; exceeding it fails the run with
+     * `RUN_ATTEMPTS_EXHAUSTED`. Default 100.
+     */
+    maxRunAttempts?: number;
+    /** Fallback step timeout (ms) when `StepOpts.timeoutMs` is unset. */
+    defaultStepTimeoutMs?: number;
     /** Max bytes per `handle.start` input (JSON). */
     maxInputBytes?: number;
     /** Max bytes per `ctx.step` return value (JSON). */
@@ -127,8 +150,6 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
     /** Maximum direct children spawned by a single run via `ctx.invoke`. Default 1000. */
     maxChildrenPerRun?: number;
   };
-  /** Optional telemetry recorder; every method is optional. */
-  metrics?: MetricsRecorder;
 }
 
 /**
@@ -177,6 +198,25 @@ const DEFAULT_RUNNING_STUCK_MS = toMs("10m");
 const DEFAULT_MAX_RUN_ATTEMPTS = 100;
 const DEFAULT_MAX_INVOKE_DEPTH = 10;
 const DEFAULT_MAX_CHILDREN_PER_RUN = 1000;
+const DEFAULT_RECONCILER_SCHEDULE = "* * * * *";
+
+interface ReconcilerConfig {
+  enabled: boolean;
+  schedule: string;
+  graceMs: number;
+  stuckMs: number;
+}
+
+/** Fill the `false | {...}` reconciler option with its defaults. */
+const withReconcilerDefaults = (opt: EngineOpts["reconciler"]): ReconcilerConfig => {
+  const tuning = typeof opt === "object" ? opt : undefined;
+  return {
+    enabled: opt !== false,
+    schedule: tuning?.schedule ?? DEFAULT_RECONCILER_SCHEDULE,
+    graceMs: tuning?.graceMs ?? DEFAULT_RECONCILER_GRACE_MS,
+    stuckMs: tuning?.runningStuckMs ?? DEFAULT_RUNNING_STUCK_MS,
+  };
+};
 
 export { consoleLogger } from "./loggers";
 
@@ -194,27 +234,32 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
   const rawLogger = opt.logger ?? fallbackLogger;
   validateLogger(rawLogger);
   const logger = wrapLogger(rawLogger);
-  validateRetention(opt.retention);
+
+  const workerCfg = opt.worker ?? {};
+  const limits = opt.limits ?? {};
+  const reconciler = withReconcilerDefaults(opt.reconciler);
+  const retention = opt.retention === false ? undefined : opt.retention;
+
+  validateRetention(retention);
   try {
-    warnIfPoolUndersized(opt.pool.options?.max, opt.concurrency ?? DEFAULT_CONCURRENCY, logger);
+    warnIfPoolUndersized(
+      opt.pool.options?.max,
+      workerCfg.concurrency ?? DEFAULT_CONCURRENCY,
+      logger,
+    );
   } catch {
     // pg internal shape not available; skip silently
   }
-  warnIfStuckShorterThanStepTimeout(
-    opt.runningStuckMs ?? DEFAULT_RUNNING_STUCK_MS,
-    opt.defaultStepTimeoutMs,
-    logger,
-  );
-  warnIfUnboundedStepTimeout(opt.defaultStepTimeoutMs, logger);
-  warnIfNoRetention(opt.retention, logger);
+  warnIfStuckShorterThanStepTimeout(reconciler.stuckMs, limits.defaultStepTimeoutMs, logger);
+  warnIfUnboundedStepTimeout(limits.defaultStepTimeoutMs, logger);
+  warnIfNoRetention(retention, logger);
 
   const registry = new FlowRegistry();
-  const enqueue: TxEnqueue = opt.enqueue ?? createGraphileTxEnqueue(opt.workerSchema);
+  const enqueue: TxEnqueue = workerCfg.enqueue ?? createGraphileTxEnqueue(workerCfg.schema);
   const tables = opt.tables as unknown as InternalTables | undefined;
   const storage: Storage = createDrizzleStorage({ db: opt.db, logger, enqueue, tables });
   const cronSpecs: CronSpec[] = [];
   const metrics = wrapMetrics(opt.metrics ?? {}, logger);
-  const limits = opt.limits ?? {};
   const runControllers = new Map<string, AbortController>();
   const terminalWaiters = createTerminalWaiters();
   const progressWaiters = createProgressWaiters();
@@ -266,8 +311,8 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     metrics,
     terminalWaiters,
     runControllers,
-    maxRunAttempts: opt.maxRunAttempts ?? DEFAULT_MAX_RUN_ATTEMPTS,
-    defaultStepTimeoutMs: opt.defaultStepTimeoutMs,
+    maxRunAttempts: limits.maxRunAttempts ?? DEFAULT_MAX_RUN_ATTEMPTS,
+    defaultStepTimeoutMs: limits.defaultStepTimeoutMs,
     maxStepResultBytes: limits.maxStepResultBytes,
     maxInvokeDepth: limits.maxInvokeDepth ?? DEFAULT_MAX_INVOKE_DEPTH,
     maxChildrenPerRun: limits.maxChildrenPerRun ?? DEFAULT_MAX_CHILDREN_PER_RUN,
@@ -332,25 +377,27 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
       startPromise = (async () => {
         await schemaCheck.ensure();
         const allCrons: CronSpec[] = [...cronSpecs];
-        if (!opt.disableReconciler && enqueue !== noopEnqueue) {
+        if (reconciler.enabled && enqueue !== noopEnqueue) {
           allCrons.push(
             buildReconcilerCron({
               storage,
               metrics,
-              graceMs: opt.reconcilerGraceMs ?? DEFAULT_RECONCILER_GRACE_MS,
-              stuckMs: opt.runningStuckMs ?? DEFAULT_RUNNING_STUCK_MS,
+              schedule: reconciler.schedule,
+              graceMs: reconciler.graceMs,
+              stuckMs: reconciler.stuckMs,
             }),
           );
         }
-        if (opt.retention) {
-          allCrons.push(buildRetentionCron({ storage, retention: opt.retention }));
+        if (retention) {
+          allCrons.push(buildRetentionCron({ storage, retention }));
         }
 
         worker = await startGraphileWorker({
           pool: opt.pool,
-          schema: opt.workerSchema,
-          concurrency: opt.concurrency,
-          pollInterval: opt.pollInterval,
+          db: opt.db,
+          schema: workerCfg.schema,
+          concurrency: workerCfg.concurrency,
+          pollInterval: workerCfg.pollInterval,
           logger,
           crons: allCrons,
           runCron: (name, fn) => withTaskSpan("cron", name, fn),

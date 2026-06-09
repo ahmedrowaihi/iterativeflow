@@ -136,13 +136,14 @@ A few load-bearing semantics that surprise people. Read once.
 6. **`engine.signal(runId, name, payload)` is single-consumer.** Not pub/sub. Each call delivers to one armed `ctx.signal` (or buffers for the first arm).
 7. **Idempotency keys are scoped to `(name, version, key)`.** Cross-version dedup is intentionally NOT happening. Bumping `.version(N)` lets the same key start a fresh run.
 8. **No defaults you might assume exist:**
-   - `concurrency` default `5` — bump for high throughput
-   - `defaultStepTimeoutMs` default `undefined` — a step can hang forever unless you set it
+   - `StepOpts.retries` default `0` — a step runs once; opt in with `retries: N` (steps re-run on crash or retry, so keep side effects idempotent)
+   - `worker.concurrency` default `5` — bump for high throughput
+   - `limits.defaultStepTimeoutMs` default `undefined` — a step can hang forever unless you set it
    - `limits.*Bytes` default `undefined` — no payload size cap unless you set it
-   - `retention` default `undefined` — `events` and `runs` tables grow forever unless configured
+   - `retention` default off — `events` and `runs` tables grow forever unless configured
    - cron `timezone` default `UTC` — set `timezone: "America/Los_Angeles"` etc. if you need local time
 9. **The pool is yours.** `engine.stop()` does NOT call `pool.end()`. Call it yourself in your shutdown sequence.
-10. **`maxRunAttempts` default `100`.** Poison-pill runs die after that with `RUN_ATTEMPTS_EXHAUSTED`.
+10. **`limits.maxRunAttempts` default `100`.** Poison-pill runs die after that with `RUN_ATTEMPTS_EXHAUSTED`.
 11. **`ctx.invoke` has tree caps.** `limits.maxInvokeDepth` default `10` (root counts as 1); `limits.maxChildrenPerRun` default `1000`. Exceeding either throws `INVOKE_DEPTH_EXCEEDED` / `INVOKE_FANOUT_EXCEEDED` non-retryably. Stops accidental infinite recursion or runaway fan-out from filling the runs table.
 
 Full reference: [docs/replay-semantics.md](docs/replay-semantics.md), [docs/signals.md](docs/signals.md).
@@ -182,17 +183,17 @@ async (ctx) => {
 ```ts
 const engine = createEngine({
   db,
-  pool, // caller-owned; ≥ concurrency + headroom
+  pool, // caller-owned; ≥ worker.concurrency + headroom
   logger: consoleLogger(), // or your own Logger
-  concurrency: 10,
-  maxRunAttempts: 100, // hard ceiling — stops poison-pill loops
-  defaultStepTimeoutMs: 30 * 60_000, // 30m fallback per step
+  worker: { concurrency: 10 },
   retention: {
     eventsOlderThan: "30d",
     runsOlderThan: "90d",
     schedule: "0 * * * *", // hourly
   },
   limits: {
+    maxRunAttempts: 100, // hard ceiling — stops poison-pill loops
+    defaultStepTimeoutMs: 30 * 60_000, // 30m fallback per step
     maxInputBytes: 256 * 1024,
     maxStepResultBytes: 256 * 1024,
     maxSignalPayloadBytes: 64 * 1024,
@@ -209,7 +210,7 @@ const detach = engine.attachShutdownSignals();
 await engine.listen();
 ```
 
-**`AbortSignal` in steps.** Every step fn receives `{ input, signal, attempt }`. Pass `signal` to `fetch`, `undici`, `pg`, `openai` SDKs — `engine.cancel(runId)` propagates an abort. With `defaultStepTimeoutMs` set, a hung step gets a `step "name" exceeded timeoutMs=...` error AND the abort fires.
+**`AbortSignal` in steps.** Every step fn receives `{ input, signal, attempt }`. Pass `signal` to `fetch`, `undici`, `pg`, `openai` SDKs — `engine.cancel(runId)` propagates an abort. With `limits.defaultStepTimeoutMs` set, a hung step gets a `step "name" exceeded timeoutMs=...` error AND the abort fires.
 
 **Multi-tenant idempotency.** The unique constraint is `(name, version, idempotencyKey)`. For multi-tenant deployments prefix the key yourself: `idempotencyKey: \`\${tenantId}:\${requestId}\``.
 

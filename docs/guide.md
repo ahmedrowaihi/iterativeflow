@@ -193,8 +193,8 @@ flowchart TB
   enq --> dedupe["jobKey flow:runId, mode=replace<br/>dedupes against existing"]
 ```
 
-Tune with `EngineOpts.reconcilerGraceMs`, `runningStuckMs`, or disable via
-`disableReconciler`.
+Tune with `reconciler: { graceMs, runningStuckMs, schedule }`, or disable via
+`reconciler: false`.
 
 ### Restart behavior
 
@@ -216,11 +216,11 @@ completion and the `finishStep` commit re-runs the body on resume. Make
 step bodies idempotent if their side effects matter — `Idempotency-Key`
 header on external calls, `INSERT ... ON CONFLICT DO NOTHING` for inserts.
 
-**Crash recovery latency = `runningStuckMs`** (default 10 min). Lower it
-if your operations need faster recovery (`createEngine({ runningStuckMs:
-60_000 })`); the cost is a more aggressive reconciler that may re-enqueue
-a still-running but slow step. The engine warns at boot if
-`runningStuckMs < defaultStepTimeoutMs` — without that bound, the
+**Crash recovery latency = `reconciler.runningStuckMs`** (default 10 min). Lower
+it if your operations need faster recovery (`createEngine({ reconciler: {
+runningStuckMs: 60_000 } })`); the cost is a more aggressive reconciler that may
+re-enqueue a still-running but slow step. The engine warns at boot if
+`reconciler.runningStuckMs < limits.defaultStepTimeoutMs` — without that bound, the
 reconciler can resurrect a step that's still legitimately running,
 producing two concurrent attempts on the same run.
 
@@ -274,7 +274,11 @@ What the engine **cannot enforce** and you must own.
 ### Per-step hygiene
 
 - **Set `timeoutMs` on every step doing I/O.** A hung fn pins a worker slot
-  indefinitely; with the timeout it becomes a transient error and retries.
+  indefinitely; with the timeout it becomes a transient error (retried only if
+  you set `retries`).
+- **Steps don't retry by default (`retries: 0`).** Opt in per step with
+  `retries: N`. Steps re-run on crash recovery regardless, so keep
+  side-effecting bodies idempotent.
 - **Keep step results small.** Every completed result is loaded into RAM on
   every replay. Use pointers (IDs, S3 keys) not blobs.
 - **Make step fns idempotent.** At-least-once delivery — a crash between the
@@ -368,32 +372,44 @@ cascades to steps / timers / signals / events through FK.
 
 ### `EngineOpts`
 
-| Field               | Type              | Default             | Note                                              |
-| ------------------- | ----------------- | ------------------- | ------------------------------------------------- |
-| `db`                | `WorkflowDb`      | required            | drizzle Postgres handle                           |
-| `pool`              | `pg.Pool`         | required            | shared with graphile-worker                       |
-| `logger`            | `Logger`          | noop                | `{ debug, info, warn, error }`                    |
-| `workerSchema`      | `string`          | `"graphile_worker"` | graphile schema name                              |
-| `concurrency`       | `number`          | `5`                 | graphile-worker concurrency                       |
-| `pollInterval`      | `number`          | `1000`              | ms                                                |
-| `disableReconciler` | `boolean`         | `false`             | turn off the auto-cron                            |
-| `reconcilerGraceMs` | `number`          | `60_000`            | how stale before re-enqueue                       |
-| `runningStuckMs`    | `number`          | `600_000`           | running runs older than this are considered stuck |
-| `retention`         | `object`          | —                   | auto-prune cron (opt-in)                          |
-| `limits`            | `object`          | —                   | byte caps + invoke depth/fanout caps              |
-| `metrics`           | `MetricsRecorder` | —                   | optional telemetry recorder                       |
-| `enqueue`           | `TxEnqueue`       | graphile `add_job`  | inject your own (tests)                           |
+| Field        | Type              | Default  | Note                                                                  |
+| ------------ | ----------------- | -------- | --------------------------------------------------------------------- |
+| `db`         | `WorkflowDb`      | required | drizzle Postgres handle                                               |
+| `pool`       | `pg.Pool`         | required | shared with graphile-worker                                           |
+| `logger`     | `Logger`          | noop     | `{ debug, info, warn, error }`                                        |
+| `metrics`    | `MetricsRecorder` | —        | optional telemetry recorder                                           |
+| `worker`     | `object`          | —        | `{ schema, concurrency, pollInterval, enqueue }`                      |
+| `reconciler` | `false \| object` | on       | `false` to disable, or `{ schedule, graceMs, runningStuckMs }`        |
+| `retention`  | `false \| object` | off      | opt in with `{ runsOlderThan, eventsOlderThan, schedule, batchSize }` |
+| `limits`     | `object`          | —        | run caps + byte caps + invoke depth/fanout                            |
+
+`worker`:
+
+| Field          | Default             | Note                        |
+| -------------- | ------------------- | --------------------------- |
+| `schema`       | `"graphile_worker"` | graphile schema name        |
+| `concurrency`  | `5`                 | graphile-worker concurrency |
+| `pollInterval` | `1000`              | ms between polls            |
+| `enqueue`      | graphile `add_job`  | inject your own (tests)     |
+
+`reconciler` (omit = on with defaults; `false` = off):
+
+| Field            | Default     | Note                                              |
+| ---------------- | ----------- | ------------------------------------------------- |
+| `schedule`       | `* * * * *` | sweep cadence (every minute)                      |
+| `graceMs`        | `60_000`    | how stale before re-enqueue                       |
+| `runningStuckMs` | `600_000`   | running runs older than this are considered stuck |
 
 ### `StepOpts`
 
-| Field           | Type                                  | Default       | Note                                       |
-| --------------- | ------------------------------------- | ------------- | ------------------------------------------ |
-| `retries`       | `number`                              | `3`           | additional attempts after first failure    |
-| `baseBackoffMs` | `number`                              | —             | exponential backoff base                   |
-| `capBackoffMs`  | `number`                              | —             | cap                                        |
-| `backoff`       | `BackoffPolicy`                       | `exponential` | full backoff policy override               |
-| `classify`      | `(err) => "transient" \| "permanent"` | `"transient"` | controls retry vs terminal                 |
-| `timeoutMs`     | `number`                              | —             | step fn timeout; expires → transient error |
+| Field           | Type                                  | Default       | Note                                             |
+| --------------- | ------------------------------------- | ------------- | ------------------------------------------------ |
+| `retries`       | `number`                              | `0`           | additional attempts after first failure (opt in) |
+| `baseBackoffMs` | `number`                              | —             | exponential backoff base                         |
+| `capBackoffMs`  | `number`                              | —             | cap                                              |
+| `backoff`       | `BackoffPolicy`                       | `exponential` | full backoff policy override                     |
+| `classify`      | `(err) => "transient" \| "permanent"` | `"transient"` | controls retry vs terminal                       |
+| `timeoutMs`     | `number`                              | —             | step fn timeout; expires → transient error       |
 
 ### `SignalOpts<T>`
 

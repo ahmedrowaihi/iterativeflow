@@ -68,7 +68,13 @@ export interface StepArg<I = unknown> {
 
 /** Options for a single `ctx.step(...)` invocation. */
 export interface StepOpts {
-  /** Number of additional attempts after the first failure (default `3`, total attempts = retries + 1). */
+  /**
+   * Additional attempts after the first failure. Default `0` — a step runs
+   * once and its failure is terminal. Opt in to retrying with `retries: N`
+   * (total attempts = retries + 1). Attempts are counted when a step starts,
+   * so a worker crash mid-step consumes one too. Steps re-run on crash
+   * recovery (at-least-once), so keep side-effecting bodies idempotent.
+   */
   retries?: number;
   /** Backoff curve for retries. */
   backoff?: BackoffPolicy;

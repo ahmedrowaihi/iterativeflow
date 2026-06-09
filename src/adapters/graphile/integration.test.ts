@@ -5,6 +5,7 @@ import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { flow } from "../../builder/flow";
 import { createEngine, type Engine } from "../../engine/engine";
+import { reapOrphanedCronJobs } from "./cron";
 import type { Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
@@ -81,7 +82,7 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
       db: h.db,
       pool: h.pool,
       logger: silent,
-      disableReconciler: true,
+      reconciler: false,
     });
 
     const handle = engine.register(
@@ -100,6 +101,26 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
     expect(rows[0].key).toBe(`flow:${runId}`);
   });
 
+  it("reapOrphanedCronJobs purges cron:* jobs with no registered task", async () => {
+    const utils = await makeWorkerUtils({ pgPool: h.pool });
+    await utils.addJob("cron:orphan", {}, { jobKey: "cron:orphan" });
+    await utils.release();
+
+    const before = await h.pool.query<{ n: string }>(
+      "SELECT count(*) AS n FROM graphile_worker.jobs WHERE task_identifier = $1",
+      ["cron:orphan"],
+    );
+    expect(Number(before.rows[0].n)).toBe(1);
+
+    await reapOrphanedCronJobs(h.db, "graphile_worker", [], silent);
+
+    const after = await h.pool.query<{ n: string }>(
+      "SELECT count(*) AS n FROM graphile_worker.jobs WHERE task_identifier = $1",
+      ["cron:orphan"],
+    );
+    expect(Number(after.rows[0].n)).toBe(0);
+  });
+
   describe("engine lifecycle on real pg", () => {
     let engine: Engine;
 
@@ -108,9 +129,8 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
         db: h.db,
         pool: h.pool,
         logger: silent,
-        disableReconciler: true,
-        concurrency: 2,
-        pollInterval: 200,
+        reconciler: false,
+        worker: { concurrency: 2, pollInterval: 200 },
       });
       await engine.listen();
     });

@@ -94,7 +94,7 @@ describe("engine guards", () => {
         db: {} as unknown as WorkflowDb,
         pool: { options: { max: 5 } } as unknown as Pool,
         logger: noisyLogger,
-        concurrency: 20,
+        worker: { concurrency: 20 },
       });
       expect(warned).toContainEqual({
         msg: "flow.config.pool_too_small",
@@ -114,8 +114,8 @@ describe("engine guards", () => {
         db: {} as unknown as WorkflowDb,
         pool: {} as unknown as Pool,
         logger: noisyLogger,
-        runningStuckMs: 60_000,
-        defaultStepTimeoutMs: 30 * 60_000,
+        reconciler: { runningStuckMs: 60_000 },
+        limits: { defaultStepTimeoutMs: 30 * 60_000 },
       });
       const hit = warned.find((w) => w.msg === "flow.config.stuck_shorter_than_step_timeout");
       expect(hit).toBeDefined();
@@ -137,7 +137,7 @@ describe("engine guards", () => {
         db: {} as unknown as WorkflowDb,
         pool: {} as unknown as Pool,
         logger: noisyLogger,
-        runningStuckMs: 60_000,
+        reconciler: { runningStuckMs: 60_000 },
       });
       expect(
         warned.find((w) => w.msg === "flow.config.stuck_shorter_than_step_timeout"),
@@ -172,8 +172,8 @@ describe("engine guards", () => {
         db: {} as unknown as WorkflowDb,
         pool: {} as unknown as Pool,
         logger: noisyLogger,
-        defaultStepTimeoutMs: 30 * 60_000,
-        runningStuckMs: 60 * 60_000,
+        limits: { defaultStepTimeoutMs: 30 * 60_000 },
+        reconciler: { runningStuckMs: 60 * 60_000 },
       });
       expect(warned.find((w) => w.msg === "flow.config.unbounded_step_timeout")).toBeUndefined();
     });
@@ -248,7 +248,7 @@ describe("engine guards", () => {
         db,
         pool: {} as unknown as Pool,
         logger: silent,
-        disableReconciler: true,
+        reconciler: false,
       });
       const handle = engine.register({ name: "f", version: 1, body: () => "ok" });
       await expect(handle.start({})).rejects.toThrow(/SCHEMA_MISMATCH/);
@@ -261,7 +261,7 @@ describe("engine guards", () => {
         db,
         pool: {} as unknown as Pool,
         logger: silent,
-        disableReconciler: true,
+        reconciler: false,
       });
       const handle = engine.register({ name: "f", version: 1, body: () => "ok" });
       await expect(handle.start({})).rejects.toThrow(/SCHEMA_MISMATCH/);
@@ -273,8 +273,8 @@ describe("engine guards", () => {
         db,
         pool: {} as unknown as Pool,
         logger: silent,
-        disableReconciler: true,
-        enqueue: async () => undefined,
+        reconciler: false,
+        worker: { enqueue: async () => undefined },
       });
       const handle = engine.register({ name: "f", version: 1, body: () => "ok" });
       const { runId } = await handle.start({});

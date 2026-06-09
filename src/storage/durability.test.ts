@@ -291,7 +291,11 @@ describe("storage durability", () => {
       await h.storage.preDeliverSignal(runId, "signal:x", { value: "raced" });
 
       const result = await h.storage.armOrConsumeSignal(runId, "signal:x", undefined);
-      expect(result).toEqual({ kind: "consumed", payload: { value: "raced" } });
+      expect(result).toMatchObject({ kind: "consumed", payload: { value: "raced" } });
+      if (result.kind === "consumed") {
+        expect(result.row.delivered).toBe(true);
+        expect(result.row.payload).toEqual({ value: "raced" });
+      }
     });
   });
 
@@ -410,6 +414,23 @@ describe("storage durability", () => {
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
+    });
+
+    it("resets a stuck running run to retrying so it can be re-claimed (crash recovery)", async () => {
+      const { runId } = await h.storage.createRun({
+        name: "crash-recover",
+        version: 1,
+        input: {},
+      });
+      expect((await h.storage.claimRun(runId)).kind).toBe("claimed");
+      await ageRun(h.db, runId, 15 * 60_000);
+
+      await h.storage.reenqueueOrphans({
+        olderThan: new Date(Date.now() - 60_000),
+        runningStuckOlderThan: new Date(Date.now() - 10 * 60_000),
+      });
+
+      expect((await h.storage.claimRun(runId)).kind).toBe("claimed");
     });
 
     it("skips a running run whose heartbeat is still fresh", async () => {

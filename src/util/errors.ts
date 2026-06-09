@@ -28,6 +28,14 @@ export class FlowRuntimeError extends Error {
   }
 }
 
+/**
+ * Coerce any thrown value into an `Error`, wrapping non-Error throws.
+ *
+ * @internal
+ */
+export const asError = (err: unknown): Error =>
+  err instanceof Error ? err : new Error(String(err));
+
 /** Normalize any thrown value into a {@link FlowError} suitable for persisting. */
 export const toFlowError = (err: unknown): FlowError => {
   if (err instanceof FlowRuntimeError) {

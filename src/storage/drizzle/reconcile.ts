@@ -14,6 +14,10 @@ interface ReconcileOpts {
  * signal, or `running` past the stuck threshold. Locks each candidate,
  * re-checks its status, then re-enqueues via the worker's tx-enqueue.
  *
+ * A stuck `running` run is first reset to `retrying`: it was left `running` by
+ * a crashed worker, and `claimRun` rejects `running` as "lost", so without the
+ * reset the re-enqueued job could never re-claim it.
+ *
  * Date params are bound through drizzle's column encoders (via `lt`) so
  * postgres-js, neon-serverless, and node-postgres all encode them
  * consistently. The EXISTS subqueries stay raw — they only reference
@@ -78,6 +82,9 @@ export const reenqueueOrphans =
           const { status, updatedAt } = cur[0];
           if (!(RESUMABLE as ReadonlyArray<string>).includes(status)) return;
           if (status === "running" && updatedAt >= runningStuckOlderThan) return;
+          if (status === "running") {
+            await tx.update(runs).set({ status: "retrying" }).where(eq(runs.id, runId));
+          }
           await enqueue(tx, runId);
         });
         reEnqueued += 1;

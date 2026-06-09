@@ -59,7 +59,10 @@ export const listRuns =
         >,
       );
     }
-    const limit = Math.min(query.limit ?? 50, 500);
+    const limit = query.limit ?? 50;
+    if (limit > 500) {
+      throw new Error(`listRuns: limit ${limit} exceeds the maximum of 500`);
+    }
     const rows = await db
       .select()
       .from(runs)
