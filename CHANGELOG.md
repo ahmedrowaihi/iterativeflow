@@ -1,5 +1,85 @@
 # iterativeflow
 
+## 4.0.0
+
+### Major Changes
+
+- e0c14ad: Stop hiding consequential behavior behind defaults.
+
+  Two defaults silently took actions the developer didn't ask for. Both now hand the decision back:
+  - **`StepOpts.retries` defaults to `0`** (was `3`). A step runs once and its failure is terminal unless you opt in with `retries: N`. Previously every step silently retried up to 4× with exponential backoff; you had to write `retries: 0` to get a single run. (Steps re-run on crash recovery regardless, so side-effecting bodies should already be idempotent.)
+  - **`engine.listRuns({ limit })` throws when `limit > 500`** instead of silently clamping to 500. Asking for more than the max now surfaces an error rather than truncating the page without a signal.
+
+  Migration: if you relied on automatic step retries, add `retries: 3` (or your preferred count) to those `ctx.step(...)` / `.step(...)` calls. If you passed `listRuns({ limit })` above 500, lower it to ≤ 500.
+
+- e0c14ad: Group `EngineOpts` into descriptive config blocks.
+
+  The flat options bag is replaced with four nested groups so related settings live together and each group's defaults are documented on the hover. Switchable subsystems (`reconciler`, `retention`) take `false | { … }`; always-on tuning (`worker`, `limits`) takes `{ … }`. New: `reconciler.schedule` lets you change the sweep cadence (previously hardcoded to every minute).
+
+  Migration:
+
+  | Before (v3)               | After (v4)                    |
+  | ------------------------- | ----------------------------- |
+  | `workerSchema`            | `worker.schema`               |
+  | `concurrency`             | `worker.concurrency`          |
+  | `pollInterval`            | `worker.pollInterval`         |
+  | `enqueue`                 | `worker.enqueue`              |
+  | `disableReconciler: true` | `reconciler: false`           |
+  | `reconcilerGraceMs`       | `reconciler.graceMs`          |
+  | `runningStuckMs`          | `reconciler.runningStuckMs`   |
+  | `maxRunAttempts`          | `limits.maxRunAttempts`       |
+  | `defaultStepTimeoutMs`    | `limits.defaultStepTimeoutMs` |
+
+  `retention` and `limits` (size caps) keep their fields; `limits` now also holds `maxRunAttempts` and `defaultStepTimeoutMs`.
+
+  ```ts
+  // before
+  createEngine({
+    db,
+    pool,
+    workerSchema: "gw",
+    concurrency: 10,
+    disableReconciler: true,
+    maxRunAttempts: 50,
+  });
+
+  // after
+  createEngine({
+    db,
+    pool,
+    worker: { schema: "gw", concurrency: 10 },
+    reconciler: false,
+    limits: { maxRunAttempts: 50 },
+  });
+  ```
+
+### Minor Changes
+
+- e0c14ad: Export `isSuspend` and `FlowSuspend` from the public API.
+
+  `ctx.sleep` / `ctx.signal` / `ctx.invoke` park a run by throwing `FlowSuspend`. Because it extends `Error`, a `try/catch` around a `ctx.*` call silently swallows the suspend and the run never parks. These were `@internal`, so consumers had no way to guard. The correct pattern is now expressible:
+
+  ```ts
+  try {
+    await ctx.signal("approval", { timeout: "24h" });
+  } catch (err) {
+    if (isSuspend(err)) throw err; // let the run park
+    // ...handle real errors
+  }
+  ```
+
+### Patch Changes
+
+- e0c14ad: Reap orphaned `cron:*` jobs on worker startup.
+
+  When a cron is removed from code, graphile-worker stops scheduling it but already-enqueued `cron:<name>` jobs linger with no task handler — they sit forever, erroring across deploy cutovers. `startGraphileWorker` now runs a best-effort purge after `run()`, completing any `cron:*` job whose task is no longer registered. It never throws, so a reap failure can't block worker startup.
+
+  The cron policy (jitter, overlap, reaping) now lives in its own `cron` module that the graphile adapter drives.
+
+- e0c14ad: Recover runs whose worker crashed mid-execution.
+
+  A run that died while `status = running` could never resume: the reconciler re-enqueued it but left the status `running`, and `claimRun` rejects `running` as "lost" — so the re-enqueued job was skipped forever and the run hung permanently. The reconciler now resets a stuck `running` run to `retrying` before re-enqueuing, so the next claim succeeds. Guarded by the existing `reconciler.runningStuckMs` threshold (default 10 min).
+
 ## 3.1.0
 
 ### Minor Changes
