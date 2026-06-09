@@ -98,6 +98,7 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
         batchSize?: number;
     }): Promise<number>;
     register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>;
+    retry(runId: string): Promise<RetryResult>;
     signal(runId: string, signalName: string, payload?: unknown): Promise<SignalDeliveryResult>;
     status(runId: string): Promise<RunDetail<T> | undefined>;
     stop(): Promise<void>;
@@ -371,6 +372,16 @@ export interface MetricsRecorder {
         durationMs: number;
     }): void;
 }
+
+// @public
+export type RetryResult = {
+    kind: "queued";
+} | {
+    kind: "missing";
+} | {
+    kind: "not_failed";
+    status: RunStatus;
+};
 
 // @public
 export type Row<T> = T extends {

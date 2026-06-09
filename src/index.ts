@@ -28,6 +28,7 @@ export type {
   ListRunsOpts,
   ListRunsPage,
   Logger,
+  RetryResult,
   RunDetail,
   Row,
   SignalDeliveryResult,
