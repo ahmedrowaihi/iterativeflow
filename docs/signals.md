@@ -125,7 +125,7 @@ await ctx.signal("approve", { schema: z.object({ approved: z.boolean() }) });
 
 **Today:** validation runs on workflow resume after the signal is consumed. Invalid payload → `FlowRuntimeError(SIGNAL_PAYLOAD_INVALID, nonRetryable: true)` → run marked failed. The webhook caller already got `delivered`; they cannot retry with a corrected payload.
 
-**Known limitation:** see `docs/dx-hardening-plan.md` (PR-2) for delivery-time validation, which would reject the bad payload at `engine.signal` time and keep the workflow armed for a retry. Until then, validate the payload in your webhook handler before calling `engine.signal`.
+**Known limitation:** delivery-time validation (rejecting a bad payload at `engine.signal` time and keeping the workflow armed for a retry) is not implemented. Until then, validate the payload in your webhook handler before calling `engine.signal`.
 
 ## Constraints summary
 
@@ -135,7 +135,7 @@ await ctx.signal("approve", { schema: z.object({ approved: z.boolean() }) });
 - Timeout fires on workflow resume after `expiresAt`
 - Payload size cap (`limits.maxSignalPayloadBytes`) is operator-configured; no default
 - No signal authentication at the engine layer — whoever has the `runId` can deliver. Authn is the caller's responsibility (webhook signing, mutual TLS, etc.)
-- Bad-payload signals currently fail the run; will move to delivery-time rejection in a future minor (see plan doc)
+- Bad-payload signals currently fail the run; delivery-time rejection is planned for a future minor
 
 ## Patterns
 
@@ -173,4 +173,4 @@ All three signals must be delivered before the workflow completes. Order doesn't
 
 ### Fan-out then collect
 
-For more complex fan-out (start N child flows, await all), see `ctx.invoke` and the [child-flows guide](./examples/checkout.md). Signals are for external messages, not internal coordination.
+For more complex fan-out (start N child flows, await all), use `ctx.invoke`. Signals are for external messages, not internal coordination.

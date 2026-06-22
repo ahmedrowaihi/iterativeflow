@@ -237,7 +237,6 @@ await ctx.step("charge", async () => {
 ```
 
 Full concepts, versioning, failure modes, and reference: **[docs/guide.md](docs/guide.md)**.
-Worked use cases (checkout, onboarding, multi-agent AI + human-in-loop, multi-signer, saga, account deletion): **[docs/examples/](docs/examples/)**.
 
 ## License
 

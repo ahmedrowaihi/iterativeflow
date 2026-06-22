@@ -1,8 +1,7 @@
 # Guide
 
 Everything beyond the README — how it works, the rules you must follow, what
-fails and how, and the full reference. Worked scenarios live in
-[`examples/`](examples/).
+fails and how, and the full reference.
 
 ## How it works
 
