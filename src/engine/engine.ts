@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { FlowContract } from "../builder/contract";
 import type { FlowDefinition } from "../builder/types";
 import {
   createGraphileTxEnqueue,
@@ -54,8 +55,10 @@ import type {
   RetryResult,
   RunDetail,
   SignalDeliveryResult,
+  StartOpts,
   Storage,
 } from "./types";
+import type { RunStatus } from "../storage/schema";
 
 export type { HealthReport, MetricsRecorder } from "./types";
 
@@ -161,6 +164,24 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
 export interface Engine<T extends FlowTables = DefaultFlowTables> {
   /** Register a flow built with `flow(...)` or `defineFlow(...)`. */
   register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>;
+  /**
+   * Build a typed enqueue-only {@link FlowHandle} from a {@link FlowContract}
+   * without registering a body. The process can `.start`/`.result` the flow but
+   * never claims it (it adds nothing to the worker's task list) — the worker
+   * that {@link Engine.register}ed the body runs it. Lets an API process start
+   * flows from the light contract without importing the body's heavy deps.
+   */
+  enqueueHandle<I, O>(contract: FlowContract<I, O>): FlowHandle<I, O>;
+  /**
+   * Low-level, untyped escape hatch behind {@link Engine.enqueueHandle}, for
+   * dynamic/codegen callers with no static contract. Prefer `enqueueHandle`.
+   */
+  enqueue(
+    name: string,
+    version: number,
+    input: unknown,
+    opts?: StartOpts,
+  ): Promise<{ runId: string; status: RunStatus }>;
   /** Register a cron task. Must be called before {@link Engine.listen}. */
   defineCron(spec: CronSpec): void;
   /** Start consuming the queue. Idempotent. */
@@ -371,6 +392,14 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
         built.nodes,
         built.signalSchemas,
       );
+    },
+
+    enqueueHandle<I, O>(contract: FlowContract<I, O>): FlowHandle<I, O> {
+      return buildHandle<I, O>(contract.name, contract.version, contract.input);
+    },
+
+    enqueue(name, version, input, opts) {
+      return buildHandle<unknown, unknown>(name, version, undefined).start(input, opts);
     },
 
     defineCron(spec) {

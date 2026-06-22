@@ -10,6 +10,7 @@ export {
 export { FlowRuntimeError, flowError, toFlowError } from "./util/errors";
 export { FlowSuspend, isSuspend, type SuspendOpts } from "./engine/suspend";
 export { flow, type FlowBuilder, type TerminalFlowBuilder } from "./builder/flow";
+export { defineContract, type FlowContract } from "./builder/contract";
 export type {
   FlowDefinition,
   FlowNode,

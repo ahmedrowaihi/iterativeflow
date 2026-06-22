@@ -295,6 +295,40 @@ What the engine **cannot enforce** and you must own.
 - Pool size ≥ `concurrency + handles awaiting result() + reconciler headroom`.
 - Configure retention (or run your own retention cron) — see [retention](#retention).
 
+### Enqueue-only processes (flow contracts)
+
+An API process that only _starts_ flows should not import the flow body and its
+heavy deps. Split the flow into a light **contract** and a heavy
+**implementation** built from it:
+
+<!-- doc-check: skip — illustrative; the typed pattern is covered by contract.test.ts -->
+
+```ts
+// clone.contract.ts — light; imported by the API
+export const cloneContract = defineContract<{ mediaId: string }, { status: "done" }>({
+  name: "clone-media",
+  version: 1,
+  input: z.object({ mediaId: z.string() }),
+});
+
+// clone.flow.ts — heavy (native deps); lives with the worker
+export const cloneFlow = flow(cloneContract)
+  .step("copy", ({ input }) => copyWithNodeAv(input.mediaId))
+  .output(() => ({ status: "done" as const }))
+  .build();
+
+// API: typed .start, no body import, no listen()
+await engine.enqueueHandle(cloneContract).start({ mediaId });
+// Worker: registers the body and claims the run
+engine.register(cloneFlow);
+await engine.listen();
+```
+
+Both agree on `clone-media@1` and its input/output because they share the
+contract object — a mismatched `.start` or a body returning the wrong output is a
+compile error. `engine.enqueue(name, version, input)` is the untyped escape hatch
+for dynamic callers.
+
 ## What you don't get
 
 - **Exactly-once.** At-least-once is the contract.
