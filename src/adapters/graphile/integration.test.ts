@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { flow } from "../../builder/flow";
 import { createEngine, type Engine } from "../../engine/engine";
 import { reapOrphanedCronJobs } from "./cron";
-import type { Logger } from "../../engine/types";
+import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
 
@@ -93,12 +93,13 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
 
     const { runId } = await handle.start({});
 
-    const { rows } = await h.pool.query<{ key: string }>(
-      "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+    const { rows } = await h.pool.query<{ key: string; task_identifier: string }>(
+      "SELECT key, task_identifier FROM graphile_worker.jobs WHERE key = $1",
       [`flow:${runId}`],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].key).toBe(`flow:${runId}`);
+    expect(rows[0].task_identifier).toBe("flow:run:smoke@1");
   });
 
   it("reapOrphanedCronJobs purges cron:* jobs with no registered task", async () => {
@@ -123,6 +124,9 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
 
   describe("engine lifecycle on real pg", () => {
     let engine: Engine;
+    // Register every flow before listen() — the worker's task list is fixed at
+    // listen() time, so a flow registered later would never be claimed.
+    const handles: Record<string, FlowHandle<unknown, unknown>> = {};
 
     beforeAll(async () => {
       engine = createEngine({
@@ -132,6 +136,64 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
         reconciler: false,
         worker: { concurrency: 2, pollInterval: 200 },
       });
+
+      handles.e2e = engine.register(
+        flow("e2e")
+          .step("compute", () => 42)
+          .sleep("50ms")
+          .step("after-sleep", ({ input }) => input)
+          .output(({ input }) => input)
+          .build(),
+      );
+      handles.idempoV1 = engine.register(
+        flow("idempo")
+          .version(1)
+          .step("noop", () => "v1")
+          .build(),
+      );
+      handles.idempoV2 = engine.register(
+        flow("idempo")
+          .version(2)
+          .step("noop", () => "v2")
+          .build(),
+      );
+      handles.cancelMe = engine.register(
+        flow("cancel-me")
+          .sleep("10s")
+          .step("never", () => "never-runs")
+          .build(),
+      );
+      handles.waitSignal = engine.register(
+        flow("wait-signal")
+          .signal("go")
+          .output(() => "done")
+          .build(),
+      );
+      handles.waitStep = engine.register(
+        flow("wait-step")
+          .step("compute", () => 7)
+          .sleep("200ms")
+          .step("after", ({ input }) => input)
+          .build(),
+      );
+      handles.waitImmediate = engine.register(
+        flow("wait-immediate")
+          .step("once", () => "ok")
+          .build(),
+      );
+      handles.warmListen = engine.register(
+        flow("warm-listen")
+          .signal("never")
+          .output(() => "done")
+          .build(),
+      );
+      handles.hookExpire = engine.register(
+        flow("hook-expire")
+          .signal("ping", { timeout: "200ms" })
+          .output(() => "done")
+          .build(),
+      );
+
       await engine.listen();
     });
 
@@ -140,50 +202,21 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
     });
 
     it("runs a workflow end-to-end with sleep + step replay", async () => {
-      const handle = engine.register(
-        flow("e2e")
-          .step("compute", () => 42)
-          .sleep("50ms")
-          .step("after-sleep", ({ input }) => input)
-          .output(({ input }) => input)
-          .build(),
-      );
+      const { runId } = await handles.e2e.start({});
 
-      const { runId } = await handle.start({});
-
-      const output = await waitFor(() => handle.output(runId), { timeoutMs: 15_000 });
+      const output = await waitFor(() => handles.e2e.output(runId), { timeoutMs: 15_000 });
       expect(output).toBe(42);
     }, 30_000);
 
     it("idempotency key is scoped by (name, version, key)", async () => {
-      const v1 = engine.register(
-        flow("idempo")
-          .version(1)
-          .step("noop", () => "v1")
-          .build(),
-      );
-      const v2 = engine.register(
-        flow("idempo")
-          .version(2)
-          .step("noop", () => "v2")
-          .build(),
-      );
-
-      const a = await v1.start({}, { idempotencyKey: "shared" });
-      const b = await v2.start({}, { idempotencyKey: "shared" });
+      const a = await handles.idempoV1.start({}, { idempotencyKey: "shared" });
+      const b = await handles.idempoV2.start({}, { idempotencyKey: "shared" });
 
       expect(a.runId).not.toBe(b.runId);
     });
 
     it("cancel marks the run canceled", async () => {
-      const handle = engine.register(
-        flow("cancel-me")
-          .sleep("10s")
-          .step("never", () => "never-runs")
-          .build(),
-      );
-
-      const { runId } = await handle.start({});
+      const { runId } = await handles.cancelMe.start({});
       await new Promise((r) => setTimeout(r, 200));
       await engine.cancel(runId, "test");
 
@@ -192,16 +225,9 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
     });
 
     it("handle.wait({ until: { signal } }) unblocks when engine.signal arrives", async () => {
-      const handle = engine.register(
-        flow("wait-signal")
-          .signal("go")
-          .output(() => "done")
-          .build(),
-      );
+      const { runId } = await handles.waitSignal.start({});
 
-      const { runId } = await handle.start({});
-
-      const waitP = handle.wait(runId, { until: { signal: "go" }, timeoutMs: 10_000 });
+      const waitP = handles.waitSignal.wait(runId, { until: { signal: "go" }, timeoutMs: 10_000 });
       await new Promise((r) => setTimeout(r, 200));
       await engine.signal(runId, "go", { ok: true });
 
@@ -209,44 +235,25 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
     }, 30_000);
 
     it("handle.wait({ until: { step } }) unblocks when the step row is persisted", async () => {
-      const handle = engine.register(
-        flow("wait-step")
-          .step("compute", () => 7)
-          .sleep("200ms")
-          .step("after", ({ input }) => input)
-          .build(),
-      );
-
-      const { runId } = await handle.start({});
+      const { runId } = await handles.waitStep.start({});
 
       await expect(
-        handle.wait(runId, { until: { step: "compute" }, timeoutMs: 10_000 }),
+        handles.waitStep.wait(runId, { until: { step: "compute" }, timeoutMs: 10_000 }),
       ).resolves.toBeUndefined();
     }, 30_000);
 
     it("handle.wait({ until: { step } }) returns immediately when the step is already finished", async () => {
-      const handle = engine.register(
-        flow("wait-immediate")
-          .step("once", () => "ok")
-          .build(),
-      );
-
-      const { runId } = await handle.start({});
-      await waitFor(() => handle.output(runId), { timeoutMs: 10_000 });
+      const { runId } = await handles.waitImmediate.start({});
+      await waitFor(() => handles.waitImmediate.output(runId), { timeoutMs: 10_000 });
 
       const start = Date.now();
-      await handle.wait(runId, { until: { step: "once" }, timeoutMs: 1_000 });
+      await handles.waitImmediate.wait(runId, { until: { step: "once" }, timeoutMs: 1_000 });
       expect(Date.now() - start).toBeLessThan(500);
     });
 
     it("LISTEN client reconnects after pg_terminate_backend kills its backend", async () => {
       // Force ensureListen by starting a waiter — handle.wait calls it.
-      const handle = engine.register(
-        flow("warm-listen")
-          .signal("never")
-          .output(() => "done")
-          .build(),
-      );
+      const handle = handles.warmListen;
       const { runId } = await handle.start({});
       const probeKey = "signal:warm";
       const initialWait = handle.wait(runId, { until: { signal: "warm" }, timeoutMs: 5_000 });
@@ -300,14 +307,7 @@ describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
     }, 60_000);
 
     it("hook timeout marks the run failed with SIGNAL_TIMEOUT and rejects late signal", async () => {
-      const handle = engine.register(
-        flow("hook-expire")
-          .signal("ping", { timeout: "200ms" })
-          .output(() => "done")
-          .build(),
-      );
-
-      const { runId } = await handle.start({});
+      const { runId } = await handles.hookExpire.start({});
 
       const failed = await waitFor(
         async () => {

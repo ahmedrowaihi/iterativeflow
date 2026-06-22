@@ -5,7 +5,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { flow } from "../../builder/flow";
 import { createEngine, type Engine } from "../../engine/engine";
-import type { Logger } from "../../engine/types";
+import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
 
@@ -66,10 +66,35 @@ const waitFor = async <T>(
   throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 };
 
+const terminalDef = flow("xinst-terminal")
+  .step("compute", () => 42)
+  .output(({ input }) => input)
+  .build();
+
+const progressDef = flow("xinst-progress")
+  .step("first", () => "ok")
+  .sleep("500ms")
+  .step("second", () => "done")
+  .build();
+
+const signalDef = flow("xinst-signal")
+  .signal("approve")
+  .output(() => "approved")
+  .build();
+
+const cancelDef = flow("xinst-cancel")
+  .step("seed", () => "ok")
+  .sleep("60s")
+  .step("never-runs", () => "no")
+  .build();
+
 describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, same DB)", () => {
   let h: MultiHarness;
   let engineA: Engine;
   let engineB: Engine;
+  // Flows are registered up front, before listen() — the worker's task list is
+  // fixed at listen() time, so a flow registered later would never be claimed.
+  const handles: Record<string, FlowHandle<unknown, unknown>> = {};
 
   beforeAll(async () => {
     h = await setup();
@@ -91,6 +116,16 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
       reconciler: false,
       worker: { concurrency: 2, pollInterval: 200 },
     });
+
+    handles.terminalA = engineA.register(terminalDef);
+    handles.terminalB = engineB.register(terminalDef);
+    handles.progressA = engineA.register(progressDef);
+    handles.progressB = engineB.register(progressDef);
+    handles.signalA = engineA.register(signalDef);
+    engineB.register(signalDef);
+    handles.cancelA = engineA.register(cancelDef);
+    engineB.register(cancelDef);
+
     await engineA.listen();
     await engineB.listen();
   }, 120_000);
@@ -104,12 +139,8 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
   }, 60_000);
 
   it("handle.result() on engine B wakes when the run terminates on engine A", async () => {
-    const def = flow("xinst-terminal")
-      .step("compute", () => 42)
-      .output(({ input }) => input)
-      .build();
-    const handleA = engineA.register(def);
-    const handleB = engineB.register(def);
+    const handleA = handles.terminalA;
+    const handleB = handles.terminalB;
 
     const { runId } = await handleA.start({});
     // Engine B blocks on result() — the only way it learns about completion
@@ -119,16 +150,8 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
   }, 30_000);
 
   it("handle.wait({ until: { step } }) on engine B wakes when engine A finishes the step", async () => {
-    const def = flow("xinst-progress")
-      .step("first", () => "ok")
-      .sleep("500ms")
-      .step("second", () => "done")
-      .build();
-    const handleA = engineA.register(def);
-    const handleB = engineB.register(def);
-
-    const { runId } = await handleA.start({});
-    await handleB.wait(runId, { until: { step: "first" }, timeoutMs: 15_000 });
+    const { runId } = await handles.progressA.start({});
+    await handles.progressB.wait(runId, { until: { step: "first" }, timeoutMs: 15_000 });
     // After the wait resolves, the step row must already be persisted by A.
     const status = await engineB.status(runId);
     const stepRow = status?.steps.find((s) => s.cursorKey === "first");
@@ -136,12 +159,7 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
   }, 30_000);
 
   it("engine.signal() on engine B unblocks a run armed by engine A's worker", async () => {
-    const def = flow("xinst-signal")
-      .signal("approve")
-      .output(() => "approved")
-      .build();
-    const handleA = engineA.register(def);
-    engineB.register(def); // engine B must know the flow to drive the resumed run
+    const handleA = handles.signalA;
 
     const { runId } = await handleA.start({});
     // Wait until A's worker has armed the signal row (status flips to awaiting_signal).
@@ -162,13 +180,7 @@ describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, sa
   }, 30_000);
 
   it("engine.cancel() on engine B terminates a sleeping run started on engine A", async () => {
-    const def = flow("xinst-cancel")
-      .step("seed", () => "ok")
-      .sleep("60s")
-      .step("never-runs", () => "no")
-      .build();
-    const handleA = engineA.register(def);
-    engineB.register(def); // engine B must know the flow to act on the run
+    const handleA = handles.cancelA;
 
     const { runId } = await handleA.start({});
     // Wait for the run to actually enter sleep (so cancel hits a sleeping row, not a pending one).

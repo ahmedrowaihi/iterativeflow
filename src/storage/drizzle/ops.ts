@@ -2,12 +2,12 @@ import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
 import type { StepRow, TimerRow } from "../schema";
 import type { AtomicStorage, StorageOps } from "../types";
-import type { InternalTables, TxEnqueue } from "./types";
+import type { EnqueueRun, InternalTables } from "./types";
 
 interface BuildOpsInput {
   db: WorkflowDb;
   tables: InternalTables;
-  enqueue: TxEnqueue;
+  enqueue: EnqueueRun;
 }
 
 /**

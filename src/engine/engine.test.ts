@@ -27,8 +27,8 @@ const createRecorder = (): {
   const enqueues: RecordedEnqueue[] = [];
   return {
     enqueues,
-    enqueue: async (_tx, runId, opts) => {
-      enqueues.push({ runId, runAt: opts?.runAt });
+    enqueue: async (_tx, job, opts) => {
+      enqueues.push({ runId: job.runId, runAt: opts?.runAt });
     },
   };
 };

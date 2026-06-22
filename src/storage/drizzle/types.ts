@@ -3,8 +3,25 @@ import type { WorkflowDb } from "../db";
 import type { events, runs, signals, steps, timers } from "../schema";
 import type { EnqueueOpts } from "../types";
 
-/** Transaction-scoped enqueue. The runtime supplies the active `tx` (or root db). */
-export type TxEnqueue = (tx: WorkflowDb, runId: string, opts?: EnqueueOpts) => Promise<void>;
+/**
+ * Transaction-scoped enqueue routed by flow identity. The runtime supplies the
+ * active `tx` (or root db). `name`/`version` select the per-flow graphile task
+ * identifier so only a worker that registered the flow can claim the job.
+ */
+export type TxEnqueue = (
+  tx: WorkflowDb,
+  job: { runId: string; name: string; version: number },
+  opts?: EnqueueOpts,
+) => Promise<void>;
+
+/**
+ * Storage-internal enqueue keyed by `runId` alone. {@link createDrizzleStorage}
+ * resolves `name`/`version` from `tables.runs` once, then delegates to the raw
+ * {@link TxEnqueue}. Call sites that only hold a `runId` use this.
+ *
+ * @internal
+ */
+export type EnqueueRun = (tx: WorkflowDb, runId: string, opts?: EnqueueOpts) => Promise<void>;
 
 /**
  * Normalize `db.execute()` result. `node-postgres` returns `{ rows }`;
@@ -45,7 +62,7 @@ export interface DrizzleStorageOpts {
 export interface StorageSliceDeps {
   db: WorkflowDb;
   tables: InternalTables;
-  enqueue: TxEnqueue;
+  enqueue: EnqueueRun;
   logger: Logger;
 }
 

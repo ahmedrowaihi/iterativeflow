@@ -605,7 +605,11 @@ export const toFlowError: (err: unknown) => FlowError;
 // Warning: (ae-forgotten-export) The symbol "EnqueueOpts" needs to be exported by the entry point index.d.ts
 //
 // @public
-export type TxEnqueue = (tx: WorkflowDb, runId: string, opts?: EnqueueOpts) => Promise<void>;
+export type TxEnqueue = (tx: WorkflowDb, job: {
+    runId: string;
+    name: string;
+    version: number;
+}, opts?: EnqueueOpts) => Promise<void>;
 
 // @public
 export type WaitUntil = {

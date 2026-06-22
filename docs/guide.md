@@ -288,7 +288,10 @@ What the engine **cannot enforce** and you must own.
 ### Engine lifecycle
 
 - Install `graphile_worker` schema before `engine.listen()` (`await migrate({ pgPool })`).
-- Register all `defineCron` specs before `engine.listen()` — late calls throw.
+- Register all flows (`engine.register`) and `defineCron` specs before `engine.listen()` — the
+  worker's task list is fixed at `listen()`; late calls throw. A process claims only the flows it
+  registered, so split workers by registering a subset (a clone-only worker registers just the
+  clone flow), and an enqueue-only API registers flows for `.start` handles but never `listen()`s.
 - Pool size ≥ `concurrency + handles awaiting result() + reconciler headroom`.
 - Configure retention (or run your own retention cron) — see [retention](#retention).
 

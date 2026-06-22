@@ -29,6 +29,10 @@ export class FlowRegistry {
     return this.map.get(this.key(name, version));
   }
 
+  list(): ReadonlyArray<{ name: string; version: number }> {
+    return [...this.map.values()].map(({ name, version }) => ({ name, version }));
+  }
+
   /**
    * Resolve the signal schema declared on `(name, version)`'s flow, if any.
    * Used by the engine to validate signal payloads at delivery time.
