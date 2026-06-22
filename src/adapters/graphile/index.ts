@@ -13,17 +13,24 @@ import type { WorkflowDb } from "../../storage/db";
 import type { TxEnqueue } from "../../storage/drizzle";
 import { CRON_TASK_PREFIX, buildCronHandler, reapOrphanedCronJobs } from "./cron";
 
-export const FLOW_TASK = "flow:run";
+/**
+ * graphile task identifier for a flow. Per-flow (not a shared `"flow:run"`) so
+ * graphile routes a run only to workers that registered that exact
+ * `name@version` — a worker physically cannot claim a flow it didn't register.
+ *
+ * @internal
+ */
+export const flowTaskId = (name: string, version: number): string => `flow:run:${name}@${version}`;
 
 export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"): TxEnqueue => {
   const schema = sql.identifier(workerSchema);
-  return async (tx, runId, opts) => {
-    const jobKey = `flow:${runId}`;
+  return async (tx, job, opts) => {
+    const jobKey = `flow:${job.runId}`;
     const runAt = opts?.runAt ? ts(opts.runAt) : sql`NULL`;
     await tx.execute(sql`
       SELECT ${schema}.add_job(
-        identifier => ${FLOW_TASK},
-        payload => ${sql`json_build_object('runId', ${runId}::text)`},
+        identifier => ${flowTaskId(job.name, job.version)},
+        payload => ${sql`json_build_object('runId', ${job.runId}::text)`},
         run_at => ${runAt},
         priority => ${opts?.priority ?? null},
         job_key => ${jobKey},
@@ -41,6 +48,7 @@ export interface GraphileWorkerOpts {
   pollInterval?: number;
   logger: Logger;
   crons: CronSpec[];
+  flows: ReadonlyArray<{ name: string; version: number }>;
   runWorkflow: (runId: string) => Promise<void>;
   runCron: (name: string, fn: () => Promise<void>) => Promise<void>;
 }
@@ -76,15 +84,10 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
     ]),
   );
 
-  const options: RunnerOptions = {
-    pgPool: opt.pool,
-    schema: opt.schema ?? "graphile_worker",
-    concurrency: opt.concurrency ?? 5,
-    pollInterval: opt.pollInterval ?? 1000,
-    noHandleSignals: true,
-    parsedCronItems,
-    taskList: {
-      [FLOW_TASK]: async (payload, helpers) => {
+  const flowTasks: TaskList = Object.fromEntries(
+    opt.flows.map(({ name, version }) => [
+      flowTaskId(name, version),
+      async (payload: unknown, helpers) => {
         const { runId } = payload as { runId?: string };
         if (!runId) {
           helpers.logger.warn("flow task missing runId");
@@ -92,8 +95,17 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
         }
         await opt.runWorkflow(runId);
       },
-      ...cronTasks,
-    },
+    ]),
+  );
+
+  const options: RunnerOptions = {
+    pgPool: opt.pool,
+    schema: opt.schema ?? "graphile_worker",
+    concurrency: opt.concurrency ?? 5,
+    pollInterval: opt.pollInterval ?? 1000,
+    noHandleSignals: true,
+    parsedCronItems,
+    taskList: { ...flowTasks, ...cronTasks },
   };
 
   const runner = await run(options);
@@ -101,6 +113,7 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
   opt.logger.info("flow.worker.started", {
     schema: options.schema,
     concurrency: options.concurrency,
+    flows: opt.flows.map(({ name, version }) => `${name}@${version}`),
     crons: opt.crons.map((c) => `${c.name}@${c.schedule}`),
   });
 

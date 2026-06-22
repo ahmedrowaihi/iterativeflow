@@ -341,6 +341,11 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     nodes?: FlowDefinition<I, O>["nodes"],
     signalSchemas?: FlowDefinition<I, O>["signalSchemas"],
   ): FlowHandle<I, O> => {
+    if (startPromise !== null) {
+      throw new Error(
+        `register("${name}") called after engine.listen(); the worker's task list is fixed at listen() — register all flows before listen()`,
+      );
+    }
     registry.register({
       name,
       version,
@@ -409,6 +414,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
           pollInterval: workerCfg.pollInterval,
           logger,
           crons: allCrons,
+          flows: registry.list(),
           runCron: (name, fn) => withTaskSpan("cron", name, fn),
           runWorkflow: (runId) => runLifecycle.execute(runId),
         });

@@ -33,8 +33,8 @@ const setup = async (): Promise<Harness> => {
   const db = drizzle({ client }) as unknown as WorkflowDb;
   await applyFlowSchema(db);
   const enqueues: Recorded[] = [];
-  const enqueue: TxEnqueue = async (_tx, runId, opts) => {
-    enqueues.push({ runId, runAt: opts?.runAt });
+  const enqueue: TxEnqueue = async (_tx, job, opts) => {
+    enqueues.push({ runId: job.runId, runAt: opts?.runAt });
   };
   const storage = createDrizzleStorage({ db, logger: silent, enqueue });
   return { db, storage, enqueues, close: () => client.close() };
