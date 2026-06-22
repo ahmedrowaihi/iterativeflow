@@ -57,6 +57,13 @@ export interface DefaultFlowTables {
 }
 
 // @public
+export const defineContract: <I, O = unknown>(contract: {
+    name: string;
+    version: number;
+    input?: StandardSchemaV1<unknown, I>;
+}) => FlowContract<I, O>;
+
+// @public
 export const defineFlow: <I, O>(opts: DefineFlowOpts<I, O>) => DefineFlowOpts<I, O>;
 
 // @public
@@ -83,6 +90,11 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
     attachShutdownSignals(signals?: ReadonlyArray<NodeJS.Signals>): () => void;
     cancel(runId: string, reason?: string): Promise<void>;
     defineCron(spec: CronSpec): void;
+    enqueue(name: string, version: number, input: unknown, opts?: StartOpts): Promise<{
+        runId: string;
+        status: RunStatus;
+    }>;
+    enqueueHandle<I, O>(contract: FlowContract<I, O>): FlowHandle<I, O>;
     health(): Promise<HealthReport>;
     listen(): Promise<void>;
     listRuns(opt?: ListRunsOpts): Promise<ListRunsPage<T>>;
@@ -160,30 +172,33 @@ export interface EventRow {
 export type EventType = (typeof EVENT_TYPES)[number];
 
 // @public
-export const flow: (name: string) => FlowBuilder<unknown, undefined>;
+export function flow(name: string): FlowBuilder<unknown, undefined, unknown>;
+
+// @public
+export function flow<I, O>(contract: FlowContract<I, O>): FlowBuilder<I, I, O>;
 
 // @public
 export const FLOW_ERROR_CODES: readonly ["STEP_FAILED", "STEP_RESULT_TOO_LARGE", "STEP_INVALID_AWAIT", "SIGNAL_PAYLOAD_INVALID", "SIGNAL_TIMEOUT", "FLOW_UNKNOWN", "INPUT_INVALID", "RUN_CANCELED", "RUN_ATTEMPTS_EXHAUSTED", "INVOKE_DEPTH_EXCEEDED", "INVOKE_FANOUT_EXCEEDED", "REPLAY_NON_DETERMINISTIC", "REPLAY_INCOMPATIBLE_VERSION", "SCHEMA_MISMATCH"];
 
 // @public
-export class FlowBuilder<I, Channel> {
+export class FlowBuilder<I, Channel, Out = unknown> {
     // Warning: (ae-forgotten-export) The symbol "FlowState" needs to be exported by the entry point index.d.ts
     //
     // @internal
     constructor(state: FlowState);
     build(): FlowDefinition<I, Channel>;
-    input<I2>(schema: StandardSchemaV1<unknown, I2>): FlowBuilder<I2, I2>;
+    input<I2>(schema: StandardSchemaV1<unknown, I2>): FlowBuilder<I2, I2, Out>;
     loop(opts: {
         until: (input: Channel) => boolean;
-    }, body: (sub: FlowBuilder<I, Channel>) => FlowBuilder<I, Channel>): FlowBuilder<I, Channel>;
-    output<O>(fn: (arg: {
+    }, body: (sub: FlowBuilder<I, Channel>) => FlowBuilder<I, Channel>): FlowBuilder<I, Channel, Out>;
+    output<O2 extends Out>(fn: (arg: {
         input: Channel;
-    }) => O): TerminalFlowBuilder<I, O>;
-    signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T>;
-    signal<T, R$1>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R$1): FlowBuilder<I, R$1>;
-    sleep(duration: Duration): FlowBuilder<I, Channel>;
-    step<T>(name: string, fn: (arg: StepArg<Channel>) => T | Promise<T>, opts?: StepOpts): FlowBuilder<I, Awaited<T>>;
-    version(version: number): FlowBuilder<I, Channel>;
+    }) => O2): TerminalFlowBuilder<I, O2>;
+    signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T, Out>;
+    signal<T, R$1>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R$1): FlowBuilder<I, R$1, Out>;
+    sleep(duration: Duration): FlowBuilder<I, Channel, Out>;
+    step<T>(name: string, fn: (arg: StepArg<Channel>) => T | Promise<T>, opts?: StepOpts): FlowBuilder<I, Awaited<T>, Out>;
+    version(version: number): FlowBuilder<I, Channel, Out>;
 }
 
 // @public
@@ -195,6 +210,14 @@ export interface FlowContext {
     signal<T = unknown>(name: string, opts?: SignalOpts<T>): Promise<T>;
     sleep(duration: Duration): Promise<void>;
     step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, opts?: StepOpts): Promise<T>;
+}
+
+// @public
+export interface FlowContract<I, O> {
+    readonly __output?: O;
+    readonly input?: StandardSchemaV1<unknown, I>;
+    readonly name: string;
+    readonly version: number;
 }
 
 // @public

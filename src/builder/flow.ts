@@ -1,6 +1,7 @@
 import type { FlowContext, SignalOpts, StepArg, StepOpts } from "../engine/types";
 import type { Duration } from "../util/duration";
 import type { StandardSchemaV1 } from "../util/standard-schema";
+import type { FlowContract } from "./contract";
 import type { FlowDefinition, FlowNode, StepNode } from "./types";
 
 interface FlowState {
@@ -90,21 +91,23 @@ class TerminalFlowBuilder<I, O> {
 
 /**
  * Fluent flow builder. Every method returns a NEW instance so chains never
- * mutate one another. `Channel` tracks the value threaded between steps.
+ * mutate one another. `Channel` tracks the value threaded between steps; `Out`
+ * is the contract-imposed upper bound on `.output(...)` (`unknown` — no bound —
+ * for `flow(name)`; the contract's output type for `flow(contract)`).
  */
-class FlowBuilder<I, Channel> {
+class FlowBuilder<I, Channel, Out = unknown> {
   /** @internal */ constructor(private readonly state: FlowState) {}
 
-  private withState<NewI, NewChannel>(state: FlowState): FlowBuilder<NewI, NewChannel> {
-    return new FlowBuilder<NewI, NewChannel>(state);
+  private withState<NewI, NewChannel>(state: FlowState): FlowBuilder<NewI, NewChannel, Out> {
+    return new FlowBuilder<NewI, NewChannel, Out>(state);
   }
 
-  private append<NewChannel>(node: FlowNode): FlowBuilder<I, NewChannel> {
+  private append<NewChannel>(node: FlowNode): FlowBuilder<I, NewChannel, Out> {
     return this.withState<I, NewChannel>({ ...this.state, nodes: [...this.state.nodes, node] });
   }
 
   /** Set the schema version. Bump when you reshape the body; must not regress. */
-  version(version: number): FlowBuilder<I, Channel> {
+  version(version: number): FlowBuilder<I, Channel, Out> {
     if (!Number.isInteger(version) || version < 1) {
       throw new Error(
         `flow("${this.state.name}").version: must be a positive integer, got ${version}`,
@@ -119,7 +122,7 @@ class FlowBuilder<I, Channel> {
   }
 
   /** Attach a Standard Schema validator for the run input. Resets the channel type to the input. */
-  input<I2>(schema: StandardSchemaV1<unknown, I2>): FlowBuilder<I2, I2> {
+  input<I2>(schema: StandardSchemaV1<unknown, I2>): FlowBuilder<I2, I2, Out> {
     return this.withState<I2, I2>({
       ...this.state,
       input: schema as StandardSchemaV1<unknown, unknown>,
@@ -131,7 +134,7 @@ class FlowBuilder<I, Channel> {
     name: string,
     fn: (arg: StepArg<Channel>) => T | Promise<T>,
     opts?: StepOpts,
-  ): FlowBuilder<I, Awaited<T>> {
+  ): FlowBuilder<I, Awaited<T>, Out> {
     return this.append<Awaited<T>>({
       kind: "step",
       name,
@@ -141,7 +144,7 @@ class FlowBuilder<I, Channel> {
   }
 
   /** Append a sleep — pauses the run until `duration` elapses. Channel is unchanged. */
-  sleep(duration: Duration): FlowBuilder<I, Channel> {
+  sleep(duration: Duration): FlowBuilder<I, Channel, Out> {
     return this.append<Channel>({ kind: "sleep", duration });
   }
 
@@ -149,7 +152,7 @@ class FlowBuilder<I, Channel> {
   loop(
     opts: { until: (input: Channel) => boolean },
     body: (sub: FlowBuilder<I, Channel>) => FlowBuilder<I, Channel>,
-  ): FlowBuilder<I, Channel> {
+  ): FlowBuilder<I, Channel, Out> {
     const seed: FlowState = {
       name: this.state.name,
       version: this.state.version,
@@ -164,19 +167,19 @@ class FlowBuilder<I, Channel> {
   }
 
   /** Append a signal await. The delivered payload becomes the next channel value. */
-  signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T>;
+  signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T, Out>;
   /** Append a signal await with a custom `merge` that combines the channel and payload. */
   signal<T, R>(
     name: string,
     opts: SignalOpts<T>,
     merge: (input: Channel, payload: T) => R,
-  ): FlowBuilder<I, R>;
+  ): FlowBuilder<I, R, Out>;
   signal(
     name: string,
     /* eslint-disable @typescript-eslint/no-explicit-any */
     opts?: SignalOpts<any>,
     merge?: (input: any, payload: any) => any,
-  ): FlowBuilder<I, any> {
+  ): FlowBuilder<I, any, Out> {
     /* eslint-enable @typescript-eslint/no-explicit-any */
     return this.append({
       kind: "signal",
@@ -186,9 +189,13 @@ class FlowBuilder<I, Channel> {
     });
   }
 
-  /** Set a final transform run on the channel value before the run completes. */
-  output<O>(fn: (arg: { input: Channel }) => O): TerminalFlowBuilder<I, O> {
-    return new TerminalFlowBuilder<I, O>({
+  /**
+   * Set a final transform run on the channel value before the run completes.
+   * For a contract-seeded flow the returned value is constrained to the
+   * contract's output type (`O2 extends Out`); for `flow(name)` it is inferred.
+   */
+  output<O2 extends Out>(fn: (arg: { input: Channel }) => O2): TerminalFlowBuilder<I, O2> {
+    return new TerminalFlowBuilder<I, O2>({
       ...this.state,
       outputFn: fn as FlowState["outputFn"],
     });
@@ -204,8 +211,26 @@ class FlowBuilder<I, Channel> {
  * Start a new flow builder. Each chaining call returns a NEW builder instance —
  * branches don't share state, so `const a = flow("x"); const b = a.step(...);`
  * leaves `a` untouched.
+ *
+ * Pass a {@link FlowContract} instead of a name to seed `name`/`version`/`input`
+ * from the contract and constrain `.output(...)` to the contract's output type —
+ * the worker's body then cannot drift from the enqueue-only `.start` callers.
  */
-export const flow = (name: string): FlowBuilder<unknown, undefined> =>
-  new FlowBuilder<unknown, undefined>({ name, version: 1, nodes: [] });
+export function flow(name: string): FlowBuilder<unknown, undefined, unknown>;
+/** Seed a builder from a {@link FlowContract} — pins `name`/`version`/`input` and constrains `.output(...)` to the contract's output type. */
+export function flow<I, O>(contract: FlowContract<I, O>): FlowBuilder<I, I, O>;
+export function flow(
+  arg: string | FlowContract<unknown, unknown>,
+): FlowBuilder<unknown, unknown, unknown> {
+  if (typeof arg === "string") {
+    return new FlowBuilder({ name: arg, version: 1, nodes: [] });
+  }
+  return new FlowBuilder({
+    name: arg.name,
+    version: arg.version,
+    input: arg.input as StandardSchemaV1<unknown, unknown> | undefined,
+    nodes: [],
+  });
+}
 
 export type { FlowBuilder, TerminalFlowBuilder };
