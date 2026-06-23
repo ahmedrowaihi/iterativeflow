@@ -1,6 +1,6 @@
 {
   "name": "iterativeflow",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "description": "Durable, iterative workflows on your own Postgres. Steps, sleeps, signals, loops, cron — runs resident in your Node app or serverless (Vercel/Lambda/Cloudflare) on graphile-worker + drizzle-orm.",
   "keywords": [
     "cron",
