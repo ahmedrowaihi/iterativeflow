@@ -2,7 +2,7 @@
 
 Durable, iterative flows on your own Postgres.
 
-Inspired by [Trigger.dev](https://trigger.dev) and [Temporal](https://temporal.io) — same idea (write a flow as code, suspend for hours or days, survive crashes), but it runs **inside your Node app** on [graphile-worker](https://worker.graphile.org) + [drizzle-orm](https://orm.drizzle.team). No separate service to host.
+Inspired by [Trigger.dev](https://trigger.dev) and [Temporal](https://temporal.io) — same idea (write a flow as code, suspend for hours or days, survive crashes), but it runs **inside your Node app** on [graphile-worker](https://worker.graphile.org) + [drizzle-orm](https://orm.drizzle.team) — or **serverless** on Vercel / Lambda / Cloudflare against your own Postgres ([guide](docs/serverless.md)). No separate service to host; state never leaves your database.
 
 Schemas use [Standard Schema](https://standardschema.dev) — any compliant validator works (zod, valibot, arktype, …).
 
@@ -235,6 +235,8 @@ await ctx.step("charge", async () => {
   }
 });
 ```
+
+**Serverless.** No long-lived process? Run on Vercel / Lambda / Cloudflare against your own Postgres — including scale-to-zero databases — with `engine.handleRun` driven by an HTTP route and a wake outbox instead of the resident worker. State never leaves your DB. See **[docs/serverless.md](docs/serverless.md)**.
 
 Full concepts, versioning, failure modes, and reference: **[docs/guide.md](docs/guide.md)**.
 

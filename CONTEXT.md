@@ -43,6 +43,12 @@ A run status that doesn't move again: `done`, `failed`, `canceled`. The engine f
 **Storage**
 The Postgres-backed persistence interface that runs through drizzle-orm. Tx-scoped (`AtomicStorage`) and root-scoped (`Storage`) ops share their implementation via a closure-style builder. Don't add a second adapter unless something actually needs to vary across it.
 
+**Dispatcher**
+The seam that _drives_ runs: pulls work and calls `handleRun`. The default `GraphileDispatcher` owns a resident poll loop; a serverless host uses `createServerlessDispatcher` (no-op) and calls `engine.handleRun` from an HTTP route. State (the `Storage` above) is invariant across deployments; the **Dispatcher** is the line where the driver varies. See [ADR 0003](./docs/adr/0003-pluggable-scheduling-deployment-matrix.md).
+
+**Wake**
+A request to advance a run — start, resume, sleep (a future `run_at`), or signal. The seam is `TxEnqueue`, written inside the run's transaction: graphile `add_job` by default, swapped by the serverless adapters for the **wake outbox** (an adapter-owned table) or a pgmq message, drained externally. Say "wake", not "job".
+
 ## Stable, not negotiable
 
 - The schema name `workflow` and the LISTEN channel `flow_terminal` are wire-level commitments — do not rename without a major version + migration.

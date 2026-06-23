@@ -126,3 +126,5 @@ export const startGraphileWorker = async (opt: GraphileWorkerOpts): Promise<Grap
 };
 
 const buildMatchPattern = (schedule: string): string => schedule;
+
+export { createGraphileDispatcher, type GraphileDispatcherOpts } from "./dispatcher";

@@ -75,6 +75,24 @@ export interface DefineFlowOpts<I, O> {
 }
 
 // @public
+export interface Dispatcher {
+    running(): boolean;
+    start(opts: DispatcherStartOpts): Promise<void>;
+    stop(): Promise<void>;
+}
+
+// @public
+export interface DispatcherStartOpts {
+    crons: CronSpec[];
+    flows: ReadonlyArray<{
+        name: string;
+        version: number;
+    }>;
+    handleRun: (runId: string) => Promise<void>;
+    runCron: (name: string, fn: () => Promise<void>) => Promise<void>;
+}
+
+// @public
 export const dropFlowSchema: (db: WorkflowDb) => Promise<void>;
 
 // @public
@@ -95,6 +113,7 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
         status: RunStatus;
     }>;
     enqueueHandle<I, O>(contract: FlowContract<I, O>): FlowHandle<I, O>;
+    handleRun(runId: string): Promise<void>;
     health(): Promise<HealthReport>;
     listen(): Promise<void>;
     listRuns(opt?: ListRunsOpts): Promise<ListRunsPage<T>>;
@@ -107,6 +126,9 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
         status?: ReadonlyArray<"done" | "failed" | "canceled">;
         batchSize?: number;
     }): Promise<number>;
+    reconcile(): Promise<{
+        reEnqueued: number;
+    }>;
     register<I, O>(def: FlowDefinition<I, O> | DefineFlowOpts<I, O>): FlowHandle<I, O>;
     retry(runId: string): Promise<RetryResult>;
     signal(runId: string, signalName: string, payload?: unknown): Promise<SignalDeliveryResult>;
@@ -117,6 +139,7 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
 // @public
 export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
     db: WorkflowDb;
+    dispatcher?: Dispatcher;
     limits?: {
         maxRunAttempts?: number;
         defaultStepTimeoutMs?: number;
@@ -134,6 +157,7 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
         graceMs?: number;
         runningStuckMs?: number;
     };
+    results?: "listen" | "poll";
     retention?: false | {
         runsOlderThan?: Duration;
         eventsOlderThan?: Duration;
@@ -195,7 +219,7 @@ export class FlowBuilder<I, Channel, Out = unknown> {
         input: Channel;
     }) => O2): TerminalFlowBuilder<I, O2>;
     signal<T>(name: string, opts?: SignalOpts<T>): FlowBuilder<I, T, Out>;
-    signal<T, R$1>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R$1): FlowBuilder<I, R$1, Out>;
+    signal<T, R>(name: string, opts: SignalOpts<T>, merge: (input: Channel, payload: T) => R): FlowBuilder<I, R, Out>;
     sleep(duration: Duration): FlowBuilder<I, Channel, Out>;
     step<T>(name: string, fn: (arg: StepArg<Channel>) => T | Promise<T>, opts?: StepOpts): FlowBuilder<I, Awaited<T>, Out>;
     version(version: number): FlowBuilder<I, Channel, Out>;

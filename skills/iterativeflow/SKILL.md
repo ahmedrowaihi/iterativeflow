@@ -123,12 +123,14 @@ const out = await handle.result(runId); // resolves when the run is terminal
 **Engine** — `createEngine({ db, pool, … })`:
 `register(def)→handle` · `enqueueHandle(contract)→handle` · `enqueue(name, version, input, opts?)` ·
 `defineCron(spec)` · `listen()` · `stop()` · `attachShutdownSignals()` ·
+`handleRun(runId)` (advance one run one cycle — serverless) · `reconcile()` (re-enqueue orphans) ·
 `signal(runId, name, payload?)` · `cancel(runId, reason?)` · `retry(runId)` ·
 `status(runId)` · `health()` · `listRuns({ tag, status, since })` ·
 `pruneRuns({ olderThan })` · `pruneEvents({ olderThan })`
 
 **Handle** — `start(input, opts?)→{runId, status}` · `output(runId)` ·
-`result(runId, {timeoutMs?})` (blocks until terminal via LISTEN/NOTIFY) ·
+`result(runId, {timeoutMs?})` (blocks until terminal via LISTEN/NOTIFY; throws
+under `results: "poll"` — poll `status()` on serverless) ·
 `wait(runId, { until: { step } | { signal }, timeoutMs? })`
 
 **`StartOpts`**: `idempotencyKey` · `priority` · `delay` · `tags`.
@@ -249,6 +251,30 @@ untyped escape hatch.
 | Worker slot stuck forever                                  | step fn hung without `timeoutMs`              | set `StepOpts.timeoutMs`                     |
 | `events` table growing unbounded                           | no retention                                  | set `EngineOpts.retention` or a pruning cron |
 
+## Serverless (no resident worker)
+
+On Vercel / Lambda / Cloudflare there is no long-lived process to `listen()`.
+State stays in Postgres; an external trigger drives execution one cycle at a time
+via `engine.handleRun(runId)`. Configure with the `iterativeflow/serverless`
+(or `iterativeflow/pgmq`) subpath:
+
+```ts
+import { createOutboxEnqueue, createServerlessDispatcher } from "iterativeflow/serverless";
+const engine = createEngine({
+  db,
+  pool,
+  worker: { enqueue: createOutboxEnqueue() }, // wakes → a transactional outbox table
+  dispatcher: createServerlessDispatcher(), // no-op; don't call listen()
+  results: "poll", // result()/wait() throw → poll status() instead
+});
+```
+
+A scheduled `/drain` route calls `drainAndRun(engine, db)` (or `drainAndRunPgmq`)
+to advance every due run; a `/cron` route calls `engine.reconcile()` (orphan
+recovery — **you must schedule it**) and `pruneRuns`/`pruneEvents`. Sleeps and
+signals wake through the same outbox (a sleep is a future `run_at`). Full guide:
+`docs/serverless.md`.
+
 ## What you DON'T get
 
 Exactly-once (it's at-least-once) · automatic whole-run retry (failed = terminal)
@@ -260,4 +286,6 @@ or `defineFlow`) · per-flow concurrency limits (one global `concurrency`).
 `docs/guide.md` (lifecycle, durability, reconciler, full `EngineOpts` reference) ·
 `docs/replay-semantics.md` (cursor keys, memoization, non-determinism traps) ·
 `docs/signals.md` (delivery kinds, single-consumer semantics) ·
-`docs/adr/` (per-flow task routing, enqueue-only handles) · `CONTEXT.md` (glossary).
+`docs/serverless.md` (serverless presets, outbox, pgmq, the deployment flowchart) ·
+`docs/adr/` (per-flow task routing, enqueue-only handles, pluggable scheduling) ·
+`CONTEXT.md` (glossary).
