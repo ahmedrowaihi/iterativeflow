@@ -1,5 +1,9 @@
 # iterativeflow
 
+[![npm version](https://img.shields.io/npm/v/iterativeflow?labelColor=171717&color=FF570A)](https://www.npmjs.com/package/iterativeflow)
+[![license](https://img.shields.io/npm/l/iterativeflow?labelColor=171717&color=FF570A)](./LICENSE)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/ahmedrowaihi/iterativeflow?utm_source=oss&utm_medium=github&utm_campaign=ahmedrowaihi%2Fiterativeflow&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+
 Durable, iterative flows on your own Postgres.
 
 Inspired by [Trigger.dev](https://trigger.dev) and [Temporal](https://temporal.io) — same idea (write a flow as code, suspend for hours or days, survive crashes), but it runs **inside your Node app** on [graphile-worker](https://worker.graphile.org) + [drizzle-orm](https://orm.drizzle.team) — or **serverless** on Vercel / Lambda / Cloudflare against your own Postgres ([guide](docs/serverless.md)). No separate service to host; state never leaves your database.
