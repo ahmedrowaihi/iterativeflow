@@ -46,6 +46,7 @@ export type { Duration, DurationString } from "./util/duration";
 export type { BackoffPolicy } from "./util/backoff";
 export type { WorkflowDb } from "./storage/db";
 export type { TxEnqueue } from "./storage/drizzle";
+export type { Dispatcher, DispatcherStartOpts } from "./engine/scheduler";
 export {
   EVENT_TYPES,
   FLOW_ERROR_CODES,

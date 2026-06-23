@@ -2,11 +2,11 @@ import type { Pool } from "pg";
 import type { FlowContract } from "../builder/contract";
 import type { FlowDefinition } from "../builder/types";
 import {
+  createGraphileDispatcher,
   createGraphileTxEnqueue,
-  type GraphileWorker,
-  startGraphileWorker,
   validateCron,
 } from "../adapters/graphile";
+import type { Dispatcher } from "./scheduler";
 import type { WorkflowDb } from "../storage/db";
 import { createDrizzleStorage, noopEnqueue, type TxEnqueue } from "../storage/drizzle";
 import { type Duration, toMs } from "../util/duration";
@@ -102,6 +102,24 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
   };
 
   /**
+   * Override the run {@link Dispatcher} (advanced — defaults to the resident
+   * graphile worker). Swap for a serverless dispatcher that exposes
+   * `engine.handleRun` to an HTTP route instead of polling.
+   */
+  dispatcher?: Dispatcher;
+
+  /**
+   * How `handle.result()` / `handle.wait()` deliver completion.
+   *
+   * - `"listen"` (default) — block on the `flow_terminal` LISTEN channel; needs
+   *   a resident process.
+   * - `"poll"` — there is no resident listener (serverless): `result()`/`wait()`
+   *   on a non-terminal run throw, directing callers to `engine.status(runId)`
+   *   or a terminal webhook. `result()` on an already-terminal run still returns.
+   */
+  results?: "listen" | "poll";
+
+  /**
    * Orphan reconciler — re-enqueues runs whose status looks stuck. **ON by
    * default.** Pass `false` to disable, or an object to tune.
    */
@@ -184,6 +202,13 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
   ): Promise<{ runId: string; status: RunStatus }>;
   /** Register a cron task. Must be called before {@link Engine.listen}. */
   defineCron(spec: CronSpec): void;
+  /**
+   * Run one stateless claim → replay → run-to-suspend → persist cycle for a
+   * run. The resident dispatcher calls this from its poll loop; a serverless
+   * dispatcher exposes it to an HTTP route so one invocation advances the run,
+   * then exits.
+   */
+  handleRun(runId: string): Promise<void>;
   /** Start consuming the queue. Idempotent. */
   listen(): Promise<void>;
   /** Drain in-flight runs and stop dispatching. Idempotent. */
@@ -205,6 +230,13 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
    * the run was actually queued, missing, or not in `failed` status.
    */
   retry(runId: string): Promise<RetryResult>;
+  /**
+   * Re-enqueue runs whose status looks stuck (orphaned by a crash between a
+   * drain and `handleRun`, or a worker that died mid-run). The resident
+   * dispatcher runs this on a cron; a serverless host drives it from a scheduled
+   * `/cron` trigger. Returns how many runs were re-enqueued.
+   */
+  reconcile(): Promise<{ reEnqueued: number }>;
   /** Snapshot of run + steps + timers + signals. */
   status(runId: string): Promise<RunDetail<T> | undefined>;
   /** Liveness ping. */
@@ -324,13 +356,20 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     logger,
   });
 
+  const pollResults = opt.results === "poll";
   const buildHandle = createHandleFactory({
     storage,
     metrics,
     schemaCheck,
     terminalWaiters,
     progressWaiters,
-    ensureListen: () => listenLoop.start(),
+    ensureListen: pollResults
+      ? () => {
+          throw new Error(
+            "result()/wait() need the resident LISTEN dispatcher; with results: 'poll', poll engine.status(runId) or use a terminal webhook instead",
+          );
+        }
+      : () => listenLoop.start(),
     maxInputBytes: limits.maxInputBytes,
   });
 
@@ -349,7 +388,18 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     startChild,
   });
 
-  let worker: GraphileWorker | null = null;
+  const dispatcher: Dispatcher =
+    opt.dispatcher ??
+    createGraphileDispatcher({
+      pool: opt.pool,
+      db: opt.db,
+      logger,
+      schema: workerCfg.schema,
+      concurrency: workerCfg.concurrency,
+      pollInterval: workerCfg.pollInterval,
+    });
+  const handleRun = (runId: string): Promise<void> => runLifecycle.execute(runId);
+
   let startPromise: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
   let startedAt: Date | undefined;
@@ -415,6 +465,8 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
       cronSpecs.push(spec);
     },
 
+    handleRun,
+
     async listen() {
       if (startPromise !== null) return startPromise;
       startPromise = (async () => {
@@ -435,17 +487,11 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
           allCrons.push(buildRetentionCron({ storage, retention }));
         }
 
-        worker = await startGraphileWorker({
-          pool: opt.pool,
-          db: opt.db,
-          schema: workerCfg.schema,
-          concurrency: workerCfg.concurrency,
-          pollInterval: workerCfg.pollInterval,
-          logger,
+        await dispatcher.start({
+          handleRun,
           crons: allCrons,
           flows: registry.list(),
           runCron: (name, fn) => withTaskSpan("cron", name, fn),
-          runWorkflow: (runId) => runLifecycle.execute(runId),
         });
         startedAt = new Date();
         listenLoop.start();
@@ -461,10 +507,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     async stop() {
       if (stopPromise !== null) return stopPromise;
       stopPromise = (async () => {
-        if (worker) {
-          await worker.stop();
-          worker = null;
-        }
+        await dispatcher.stop();
         await listenLoop.stop();
         startedAt = undefined;
       })();
@@ -500,6 +543,15 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
 
     retry: (runId) => storage.retryRun(runId),
 
+    async reconcile() {
+      const reEnqueued = await storage.reenqueueOrphans({
+        olderThan: new Date(Date.now() - reconciler.graceMs),
+        runningStuckOlderThan: new Date(Date.now() - reconciler.stuckMs),
+      });
+      metrics.reconcilerSweep?.({ scanned: reEnqueued, reEnqueued });
+      return { reEnqueued };
+    },
+
     async health() {
       let db = false;
       try {
@@ -510,7 +562,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
           message: err instanceof Error ? err.message : String(err),
         });
       }
-      const workerOk = worker !== null;
+      const workerOk = dispatcher.running();
       const listen = listenLoop.state() === "listening";
       return { ok: db && workerOk, db, worker: workerOk, listen, startedAt };
     },

@@ -1,7 +1,7 @@
 {
   "name": "iterativeflow",
   "version": "5.1.0",
-  "description": "Durable, iterative workflows on your own Postgres. Steps, sleeps, hooks, loops, cron — runs inside your Node app on graphile-worker + drizzle-orm.",
+  "description": "Durable, iterative workflows on your own Postgres. Steps, sleeps, signals, loops, cron — runs resident in your Node app or serverless (Vercel/Lambda/Cloudflare) on graphile-worker + drizzle-orm.",
   "keywords": [
     "cron",
     "drizzle",
@@ -12,6 +12,7 @@
     "orchestration",
     "postgres",
     "saga",
+    "serverless",
     "temporal",
     "trigger.dev",
     "workflow"
@@ -39,6 +40,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./serverless": {
+      "types": "./dist/serverless.d.ts",
+      "import": "./dist/serverless.js"
+    },
+    "./pgmq": {
+      "types": "./dist/pgmq.d.ts",
+      "import": "./dist/pgmq.js"
     },
     "./package.json": "./package.json"
   },
