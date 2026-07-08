@@ -10,6 +10,8 @@ is one self-contained HTML file served by the handler, no framework, no build
 step. Pass your own `CronSpec[]` as `crons` and the dashboard also lists them
 and lets you trigger one on demand — see [Crons](#crons).
 
+![Runs list](./assets/dashboard-runs.png)
+
 ```
 createFlowsDashboard({ engine, crons? }).fetch
         │
@@ -106,6 +108,8 @@ The engine has no public API to enumerate the crons registered on it, so the
 dashboard doesn't try to read them back — pass the same `CronSpec[]` you gave
 to `engine.defineCron(...)` as `crons`, and it lists them with a **Run now**
 button:
+
+![Crons panel, showing a successful trigger and a failed one](./assets/dashboard-crons.png)
 
 ```ts
 import { createFlowsDashboard } from "iterativeflow/dashboard";
