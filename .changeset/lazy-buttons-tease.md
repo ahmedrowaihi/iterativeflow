@@ -13,3 +13,10 @@ with confirmation. It consumes only the public Engine API, mounts at any
 path behind the host app's auth, and requires `content-type:
 application/json` on mutations. Ships with a `jsonCap` option bounding how
 much of any jsonb payload reaches the browser.
+
+Pass a `crons` option — the same `CronSpec[]` given to `engine.defineCron`
+— and the dashboard also lists them and lets you trigger one on demand,
+capping and displaying its return value the same way as a step result.
+Since the engine has no public API to enumerate its own crons, the specs
+are supplied by the host rather than read back from `engine`; triggering
+calls `run()` directly, bypassing the engine's own overlap lock.

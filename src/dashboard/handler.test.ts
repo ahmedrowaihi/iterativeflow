@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createEngine } from "../engine/engine";
 import type { Engine } from "../engine/engine";
+import type { CronSpec } from "../engine/types";
 import { silentLogger } from "../engine/test-helpers";
 import type { WorkflowDb } from "../storage/db";
 import { applyFlowSchema } from "../storage/setup";
@@ -288,6 +289,72 @@ describe("flows dashboard handler", () => {
       new Request(`${BASE}/api/runs/${randomUUID()}`, { method: "DELETE" }),
     );
     expect(del.status).toBe(405);
+  });
+
+  // ---- crons ---------------------------------------------------------------
+
+  const testCrons: CronSpec[] = [
+    { name: "sweep", schedule: "*/5 * * * *", run: () => ({ swept: 3 }) },
+    {
+      name: "boom-cron",
+      schedule: "0 * * * *",
+      run: () => {
+        throw new Error("cron exploded");
+      },
+    },
+  ];
+
+  it("returns an empty list when no crons are configured", async () => {
+    expect(await getJson(dash, "/api/crons")).toEqual({ crons: [] });
+  });
+
+  it("lists configured crons with defaults filled in, and never ships run", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    const body = await getJson(withCrons, "/api/crons");
+    expect(body.crons).toEqual([
+      { name: "sweep", schedule: "*/5 * * * *", timezone: "UTC", overlap: "skip", jitterMs: 0, backfillPeriod: 0 },
+      { name: "boom-cron", schedule: "0 * * * *", timezone: "UTC", overlap: "skip", jitterMs: 0, backfillPeriod: 0 },
+    ]);
+    for (const c of body.crons) expect(c).not.toHaveProperty("run");
+  });
+
+  it("triggers a cron and returns its capped result", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    const res = await post(withCrons, "/api/crons/sweep/run");
+    expect(res.status).toBe(200);
+    const body = await readJson(res);
+    expect(body.ok).toBe(true);
+    expect(body.result.truncated).toBe(false);
+    expect(JSON.parse(body.result.preview)).toEqual({ swept: 3 });
+  });
+
+  it("404s an unknown cron name", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    expect((await post(withCrons, "/api/crons/nope/run")).status).toBe(404);
+  });
+
+  it("surfaces a thrown error from the cron body as a 500", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    const res = await post(withCrons, "/api/crons/boom-cron/run");
+    expect(res.status).toBe(500);
+    expect((await readJson(res)).error).toBe("cron exploded");
+  });
+
+  it("rejects a trigger without a JSON content type", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    const res = await post(withCrons, "/api/crons/sweep/run", {
+      headers: { "content-type": "text/plain" },
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it("405s wrong methods on crons routes", async () => {
+    const withCrons = createFlowsDashboard({ engine, crons: testCrons });
+    expect((await post(withCrons, "/api/crons")).status).toBe(405);
+    const wrongMethod = await withCrons.fetch(
+      new Request(`${BASE}/api/crons/sweep/run`, { method: "GET" }),
+    );
+    expect(wrongMethod.status).toBe(405);
   });
 
   // ---- health --------------------------------------------------------------

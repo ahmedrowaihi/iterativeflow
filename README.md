@@ -242,7 +242,7 @@ await ctx.step("charge", async () => {
 
 **Serverless.** No long-lived process? Run on Vercel / Lambda / Cloudflare against your own Postgres — including scale-to-zero databases — with `engine.handleRun` driven by an HTTP route and a wake outbox instead of the resident worker. State never leaves your DB. See **[docs/serverless.md](docs/serverless.md)**.
 
-**Dashboard.** `createFlowsDashboard({ engine })` from `iterativeflow/dashboard` returns a fetch handler serving an observability UI — runs list with filters, run detail (steps, sleeps, signals), cancel/retry — as one dependency-free HTML page. Mount it at any path behind your own auth. See **[docs/dashboard.md](docs/dashboard.md)**.
+**Dashboard.** `createFlowsDashboard({ engine })` from `iterativeflow/dashboard` returns a fetch handler serving an observability UI — runs list with filters, run detail (steps, sleeps, signals), cancel/retry, and (pass your own `crons`) a manual cron trigger — as one dependency-free HTML page. Mount it at any path behind your own auth. See **[docs/dashboard.md](docs/dashboard.md)**.
 
 Full concepts, versioning, failure modes, and reference: **[docs/guide.md](docs/guide.md)**.
 

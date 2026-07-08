@@ -7,17 +7,20 @@ sleeps, signals, capped input/output payloads), and two management actions —
 (`listRuns`, `status`, `health`, `cancel`, `retry`), so it works against any
 deployment the engine works against, and it adds **no dependencies**: the UI
 is one self-contained HTML file served by the handler, no framework, no build
-step.
+step. Pass your own `CronSpec[]` as `crons` and the dashboard also lists them
+and lets you trigger one on demand — see [Crons](#crons).
 
 ```
-createFlowsDashboard({ engine }).fetch
+createFlowsDashboard({ engine, crons? }).fetch
         │
         ├── GET  <mount>/…           → the app (single HTML page, hash-routed)
         ├── GET  <mount>/api/health  → engine.health()
         ├── GET  <mount>/api/runs    → engine.listRuns(...)  (filters + cursor)
         ├── GET  <mount>/api/runs/:id           → engine.status(runId)
         ├── POST <mount>/api/runs/:id/cancel    → engine.cancel(runId, reason?)
-        └── POST <mount>/api/runs/:id/retry     → engine.retry(runId)
+        ├── POST <mount>/api/runs/:id/retry     → engine.retry(runId)
+        ├── GET  <mount>/api/crons              → the crons you passed in
+        └── POST <mount>/api/crons/:name/run    → calls that cron's run() now
 ```
 
 ## Mount it
@@ -97,6 +100,38 @@ confirmation dialog:
   [replay semantics](./replay-semantics.md)). The dashboard maps the
   `RetryResult` to HTTP: `queued` → 200, `missing` → 404, `not_failed` → 409.
 
+## Crons
+
+The engine has no public API to enumerate the crons registered on it, so the
+dashboard doesn't try to read them back — pass the same `CronSpec[]` you gave
+to `engine.defineCron(...)` as `crons`, and it lists them with a **Run now**
+button:
+
+```ts
+import { createFlowsDashboard } from "iterativeflow/dashboard";
+
+const crons = [
+  { name: "nightly-sweep", schedule: "0 2 * * *", run: async () => ({ synced: 0 }) },
+  // ...whatever you also pass to engine.defineCron
+];
+
+for (const cron of crons) engine.defineCron(cron);
+
+const dashboard = createFlowsDashboard({ engine, crons });
+```
+
+`GET <mount>/api/crons` returns `name`/`schedule`/`timezone`/`overlap`/
+`jitterMs`/`backfillPeriod` for each — never `run`, which isn't serializable
+and shouldn't reach the browser anyway. `POST <mount>/api/crons/:name/run`
+calls that cron's `run()` immediately and returns `{ ok: true, result }` with
+`result` capped the same way as a step result; an unknown name 404s and a
+thrown error surfaces as a 500 with its message.
+
+Triggering this way calls `run()` directly — it does **not** go through
+the engine's scheduler, so it skips the advisory lock behind
+`overlap: "skip"`. A manual run can therefore execute alongside a scheduled
+fire of the same cron even when overlap is set to skip.
+
 ## Payload capping
 
 Run inputs/outputs, step results, and signal payloads are `jsonb` and can be
@@ -125,6 +160,8 @@ All timestamps are ISO-8601 strings.
 | `GET  api/runs/:id`        | —                                                                                                         | run + steps + timers + signals, JSON values capped |
 | `POST api/runs/:id/cancel` | `{ "reason"?: string }`                                                                                   | `{ ok: true }`                                     |
 | `POST api/runs/:id/retry`  | `{}`                                                                                                      | `RetryResult`; 409 when the run isn't `failed`     |
+| `GET  api/crons`           | —                                                                                                         | `{ crons: [...] }` (no `run`)                       |
+| `POST api/crons/:name/run` | `{}`                                                                                                      | `{ ok: true, result }`; 404 if unknown, 500 on throw |
 
 Invalid filters return 400 with `{ error }`; unknown runs 404; wrong methods
 405; mutations without a JSON content type 415.

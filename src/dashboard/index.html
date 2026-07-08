@@ -187,6 +187,7 @@
     runs: [], next: null, pages: 0,
     detail: null, expanded: new Set(),
     loading: false, error: null,
+    crons: [], cronResults: {}, cronExpanded: new Set(),
   };
 
   // ---- data loading ----------------------------------------------------
@@ -228,6 +229,15 @@
     render();
   };
 
+  const loadCrons = async () => {
+    try {
+      state.crons = (await api("api/crons")).crons;
+      render();
+    } catch {
+      // Crons are a secondary panel — leave the runs list usable if this fails.
+    }
+  };
+
   const loadHealth = async () => {
     try {
       const h = await api("api/health");
@@ -259,6 +269,40 @@
       html += '<button data-action="retry" data-id="' + esc(run.id) + '" data-name="' + esc(run.name) + '">Retry</button>';
     }
     return html || (where === "list" ? '<span class="muted">—</span>' : "");
+  };
+
+  const renderCrons = () => {
+    if (!state.crons.length) return "";
+    const rows = state.crons.map((c) => {
+      const res = state.cronResults[c.name];
+      const open = state.cronExpanded.has(c.name);
+      return "<tr class='rowlink' data-cron='" + esc(c.name) + "'>" +
+        "<td class='mono'>" + esc(c.name) + "</td>" +
+        "<td class='mono'>" + esc(c.schedule) + "</td>" +
+        "<td>" + esc(c.timezone) + "</td>" +
+        "<td>" + esc(c.overlap) + "</td>" +
+        "<td>" + (res ? (open ? "▾" : "▸") : "") + "</td>" +
+        "<td data-stop><button data-cronrun='" + esc(c.name) + "'>Run now</button></td>" +
+        "</tr>" +
+        (open && res
+          ? "<tr class='exp'><td colspan='6'>" +
+            "<div class='muted'>" + esc(fmtAbs(res.at)) + "</div>" +
+            (res.error
+              ? "<div class='muted'>error: " + esc(res.error) + "</div>"
+              : res.result
+                ? "<pre class='json' data-cron-json='" + esc(c.name) + "'></pre>" +
+                  (res.result.truncated ? "<div class='capnote'>truncated preview — " + esc(res.result.size.toLocaleString()) + " chars total</div>" : "")
+                : "<div class='muted'>no return value</div>") +
+            "</td></tr>"
+          : "");
+    }).join("");
+
+    return '<section class="block"><h3>Crons (' + state.crons.length + ')</h3><div class="panel"><div class="tablewrap"><table>' +
+      "<thead><tr><th>Name</th><th>Schedule</th><th>Timezone</th><th>Overlap</th><th></th><th>Action</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "</table></div>" +
+      "<div class='capnote'>Triggering here runs the task directly, bypassing the engine overlap lock — it can run concurrently with a scheduled fire even when overlap is skip.</div>" +
+      "</div></section>";
   };
 
   const renderList = () => {
@@ -295,7 +339,8 @@
         (state.pages > 1 ? '<span title="auto-refresh pauses while paged past page 1">paused auto-refresh</span>' : "") +
         '<span class="spacer"></span>' +
         (state.next ? '<button id="loadmore"' + (state.loading ? " disabled" : "") + ">Load more</button>" : "") +
-      "</div></div>";
+      "</div></div>" +
+      renderCrons();
 
     $("#f-name").onchange = (e) => { state.filters.name = e.target.value.trim(); loadList(); };
     $("#f-status").onchange = (e) => { state.filters.status = e.target.value; loadList(); };
@@ -308,6 +353,20 @@
       tr.onclick = (e) => {
         if (e.target.closest("[data-stop]")) return;
         location.hash = "#/runs/" + tr.dataset.goto;
+      };
+    }
+
+    for (const el of document.querySelectorAll("[data-cron-json]")) {
+      const name = el.dataset.cronJson;
+      el.textContent = state.cronResults[name].result.preview;
+    }
+    for (const tr of document.querySelectorAll("tr[data-cron]")) {
+      tr.onclick = (e) => {
+        if (e.target.closest("[data-stop]")) return;
+        const name = tr.dataset.cron;
+        if (!state.cronResults[name]) return;
+        state.cronExpanded.has(name) ? state.cronExpanded.delete(name) : state.cronExpanded.add(name);
+        render();
       };
     }
   };
@@ -483,6 +542,27 @@
         state.view === "list" ? loadList() : loadDetail(state.runId);
       };
     }
+    for (const btn of document.querySelectorAll("button[data-cronrun]")) {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const name = btn.dataset.cronrun;
+        const okAsked = await confirmModal("Run now", name + " — runs immediately, outside its regular schedule.", false);
+        if (!okAsked) return;
+        try {
+          const data = await post("api/crons/" + encodeURIComponent(name) + "/run", {});
+          state.cronResults[name] = { result: data.result, at: new Date().toISOString() };
+          toast("cron triggered: " + name);
+        } catch (err) {
+          state.cronResults[name] = { error: err.message, at: new Date().toISOString() };
+          toast("trigger failed: " + err.message);
+        }
+        state.cronExpanded.add(name);
+        // A trigger can enqueue a new run (or several, for a fan-out cron) —
+        // refresh the list so it shows up without waiting for the next poll.
+        if (state.view === "list" && state.pages <= 1) loadList();
+        else render();
+      };
+    }
   };
 
   // ---- routing + polling ------------------------------------------------
@@ -529,6 +609,7 @@
 
   window.addEventListener("hashchange", applyHash);
   loadHealth();
+  loadCrons();
   applyHash();
 })();
 </script>

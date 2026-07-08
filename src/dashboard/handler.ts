@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Engine } from "../engine/engine";
-import type { DefaultFlowTables, FlowTables, ListRunsOpts } from "../engine/types";
+import type { CronSpec, DefaultFlowTables, FlowTables, ListRunsOpts } from "../engine/types";
 import type { FlowError, RunRow, RunStatus, SignalRow, StepRow, TimerRow } from "../storage/schema";
 import { RUN_STATUSES } from "../storage/schema";
 import { locateShippedAsset } from "../util/asset-locate";
@@ -21,6 +21,16 @@ export interface FlowsDashboardOpts<T extends FlowTables = DefaultFlowTables> {
    * preview and flagged `truncated`. Default 20 000.
    */
   jsonCap?: number;
+  /**
+   * Cron specs the host has registered with the engine — the same objects
+   * passed to `engine.defineCron(...)` — so the dashboard can list them and
+   * trigger one on demand. The engine has no public API to enumerate its own
+   * crons, so these are supplied directly rather than read back from
+   * `engine`. Triggering here calls `run()` directly: it bypasses the
+   * engine's own overlap lock, so a manual run can run alongside a scheduled
+   * one even when `overlap: "skip"` is set. Omit to hide the crons panel.
+   */
+  crons?: CronSpec[];
 }
 
 /**
@@ -202,12 +212,15 @@ const isJsonRequest = (req: Request): boolean =>
  * Create a mountable flows dashboard for an engine. Consumes only the public
  * Engine API (`listRuns`, `status`, `health`, `cancel`, `retry`) — no direct
  * table access — so it works against any deployment the engine works against.
+ * If the host also passes `crons`, the dashboard lists them and can trigger
+ * one on demand; those specs are host-supplied, not read from `engine`.
  */
 export const createFlowsDashboard = <T extends FlowTables = DefaultFlowTables>(
   opts: FlowsDashboardOpts<T>,
 ): FlowsDashboard => {
   const { engine } = opts;
   const cap = opts.jsonCap ?? 20_000;
+  const crons = opts.crons ?? [];
 
   let htmlSource: string | undefined;
   const loadHtml = (): string => {
@@ -275,6 +288,25 @@ export const createFlowsDashboard = <T extends FlowTables = DefaultFlowTables>(
     }
   };
 
+  const getCrons = (): Response =>
+    json(200, {
+      crons: crons.map((c) => ({
+        name: c.name,
+        schedule: c.schedule,
+        timezone: c.timezone ?? "UTC",
+        overlap: c.overlap ?? "skip",
+        jitterMs: c.jitterMs ?? 0,
+        backfillPeriod: c.backfillPeriod ?? 0,
+      })),
+    });
+
+  const postCronRun = async (name: string): Promise<Response> => {
+    const spec = crons.find((c) => c.name === name);
+    if (!spec) return json(404, { error: "cron not found" });
+    const result = await spec.run();
+    return json(200, { ok: true, result: capJson(result, cap) });
+  };
+
   const handleApi = async (req: Request, segments: string[]): Promise<Response> => {
     const method = req.method.toUpperCase();
 
@@ -302,6 +334,20 @@ export const createFlowsDashboard = <T extends FlowTables = DefaultFlowTables>(
           return json(415, { error: "content-type must be application/json" });
         }
         return segments[2] === "cancel" ? postCancel(req, runId) : postRetry(runId);
+      }
+    }
+
+    if (segments[0] === "crons") {
+      if (segments.length === 1) {
+        if (method !== "GET") return json(405, { error: "method not allowed" });
+        return getCrons();
+      }
+      if (segments.length === 3 && segments[2] === "run") {
+        if (method !== "POST") return json(405, { error: "method not allowed" });
+        if (!isJsonRequest(req)) {
+          return json(415, { error: "content-type must be application/json" });
+        }
+        return postCronRun(segments[1]);
       }
     }
 
