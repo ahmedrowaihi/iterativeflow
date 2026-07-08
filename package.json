@@ -49,6 +49,10 @@
       "types": "./dist/pgmq.d.ts",
       "import": "./dist/pgmq.js"
     },
+    "./dashboard": {
+      "types": "./dist/dashboard.d.ts",
+      "import": "./dist/dashboard.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

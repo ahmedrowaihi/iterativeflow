@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="./">
+<title>Flows — iterativeflow</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --border: #e3e6ea; --text: #1b2430;
+    --muted: #66707d; --accent: #2563eb; --accent-text: #ffffff;
+    --danger: #dc2626; --ok: #16a34a; --warn: #d97706;
+    --badge-pending: #64748b; --badge-running: #2563eb; --badge-sleeping: #7c3aed;
+    --badge-awaiting_signal: #d97706; --badge-retrying: #ea580c;
+    --badge-done: #16a34a; --badge-failed: #dc2626; --badge-canceled: #64748b;
+    --badge-ok: #16a34a; --badge-failed_retry: #ea580c; --badge-failed_terminal: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419; --panel: #161d26; --border: #26303c; --text: #e5eaf0;
+      --muted: #8b96a3; --accent: #3b82f6; --accent-text: #ffffff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .brand { font-weight: 700; font-size: 15px; }
+  .brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #health { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; background: var(--muted); vertical-align: baseline; }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--danger); }
+  .spacer { flex: 1; }
+  .controls { display: flex; align-items: center; gap: 10px; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger { color: var(--danger); }
+  button.danger:hover { border-color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .filters input, .filters select {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  .filters input:focus, .filters select:focus { outline: none; border-color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--border); white-space: nowrap; }
+  thead th { border-top: none; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr.rowlink { cursor: pointer; }
+  tbody tr.rowlink:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; color: #fff; text-transform: none;
+  }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 999px; margin-right: 4px;
+    font-size: 11.5px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .muted { color: var(--muted); }
+  .listfoot { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  .banner { border: 1px solid var(--danger); color: var(--danger); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; display: flex; gap: 12px; align-items: center; }
+  .empty { padding: 32px; text-align: center; color: var(--muted); }
+  .crumbs { margin-bottom: 12px; font-size: 13px; }
+  .runhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .runhead h2 { margin: 0; font-size: 18px; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 20px; padding: 12px 16px; }
+  .meta div { min-width: 0; }
+  .meta dt { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  .meta dd { margin: 2px 0 0; overflow-wrap: anywhere; white-space: normal; }
+  section.block { margin-top: 18px; }
+  section.block > h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  pre.json {
+    margin: 0; padding: 12px 14px; overflow-x: auto; font-family: var(--mono);
+    font-size: 12.5px; background: color-mix(in srgb, var(--border) 30%, transparent);
+    white-space: pre; max-height: 340px; overflow-y: auto;
+  }
+  .capnote { padding: 4px 14px 10px; color: var(--warn); font-size: 12px; }
+  .errpanel { border: 1px solid var(--danger); border-radius: 8px; overflow: hidden; margin-top: 18px; }
+  .errpanel .errhead { padding: 10px 14px; color: var(--danger); font-weight: 600; }
+  details.stack summary { padding: 0 14px 10px; cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  details.stack pre { max-height: 260px; }
+  tr.exp td { white-space: normal; }
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; width: min(420px, 90vw); }
+  .modal h3 { margin: 0 0 8px; font-size: 15px; }
+  .modal p { margin: 0 0 16px; color: var(--muted); }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 10px; }
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px;
+    font-size: 13px; z-index: 30; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+  @media (max-width: 640px) { .meta { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">iterativeflow<small>flows dashboard</small></span>
+  <span id="health" title="engine.health() — worker/listen reflect this process only"></span>
+  <span class="spacer"></span>
+  <div class="controls">
+    <label class="toggle"><input type="checkbox" id="autorefresh"> auto-refresh</label>
+    <button id="refresh" title="Refresh now">Refresh</button>
+  </div>
+</header>
+<main>
+  <div id="banner"></div>
+  <div id="view"></div>
+</main>
+<div id="modal-root"></div>
+<div id="toast"></div>
+<script>
+"use strict";
+(() => {
+  const POLL_MS = 5000;
+  const PAGE_SIZE = 25;
+  const RUN_STATUSES = ["pending", "running", "sleeping", "awaiting_signal", "retrying", "done", "failed", "canceled"];
+  const ACTIVE = new Set(["pending", "running", "sleeping", "awaiting_signal", "retrying"]);
+
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  const fmtAbs = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
+  const rel = (iso) => {
+    if (!iso) return "—";
+    const diff = Date.now() - new Date(iso).getTime();
+    const past = diff >= 0;
+    const s = Math.round(Math.abs(diff) / 1000);
+    const txt = s < 60 ? s + "s" : s < 3600 ? Math.round(s / 60) + "m"
+      : s < 86400 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d";
+    return past ? txt + " ago" : "in " + txt;
+  };
+  const dur = (fromIso, toIso) => {
+    if (!fromIso) return "—";
+    const ms = (toIso ? new Date(toIso) : new Date()).getTime() - new Date(fromIso).getTime();
+    if (ms < 0) return "—";
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+    return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  };
+  const statusBadge = (status) =>
+    '<span class="badge" style="background: var(--badge-' + esc(status) + ', var(--muted))">' +
+    esc(String(status).replace(/_/g, " ")) + "</span>";
+  const shortId = (id) => String(id).slice(0, 8);
+
+  const api = async (path, init) => {
+    const res = await fetch(path, init);
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON error body */ }
+    if (!res.ok) throw new Error((body && body.error) || (res.status + " " + res.statusText));
+    return body;
+  };
+  const post = (path, body) => api(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const state = {
+    view: "list", runId: null,
+    filters: { name: "", status: "", tag: "" },
+    runs: [], next: null, pages: 0,
+    detail: null, expanded: new Set(),
+    loading: false, error: null,
+  };
+
+  // ---- data loading ----------------------------------------------------
+
+  const listQuery = (cursor) => {
+    const p = new URLSearchParams();
+    if (state.filters.name) p.set("name", state.filters.name);
+    if (state.filters.status) p.set("status", state.filters.status);
+    if (state.filters.tag) p.set("tag", state.filters.tag);
+    p.set("limit", String(PAGE_SIZE));
+    if (cursor) { p.set("cursorCreatedAt", cursor.createdAt); p.set("cursorId", cursor.id); }
+    return "api/runs?" + p.toString();
+  };
+
+  const loadList = async ({ append } = {}) => {
+    state.loading = true;
+    render();
+    try {
+      const data = await api(listQuery(append ? state.next : null));
+      state.runs = append ? state.runs.concat(data.runs) : data.runs;
+      state.pages = append ? state.pages + 1 : 1;
+      state.next = data.next;
+      state.error = null;
+    } catch (err) {
+      state.error = err.message;
+    }
+    state.loading = false;
+    render();
+  };
+
+  const loadDetail = async (runId) => {
+    try {
+      state.detail = await api("api/runs/" + encodeURIComponent(runId));
+      state.error = null;
+    } catch (err) {
+      state.detail = null;
+      state.error = err.message;
+    }
+    render();
+  };
+
+  const loadHealth = async () => {
+    try {
+      const h = await api("api/health");
+      $("#health").innerHTML =
+        '<span><span class="dot ' + (h.db ? "on" : "off") + '"></span>db</span>' +
+        '<span><span class="dot ' + (h.worker ? "on" : "") + '"></span>worker <span title="whether THIS process consumes the queue">(this process)</span></span>' +
+        '<span><span class="dot ' + (h.listen ? "on" : "") + '"></span>listen</span>';
+    } catch {
+      $("#health").innerHTML = '<span><span class="dot off"></span>api unreachable</span>';
+    }
+  };
+
+  // ---- rendering -------------------------------------------------------
+
+  const banner = () => {
+    $("#banner").innerHTML = state.error
+      ? '<div class="banner"><span>' + esc(state.error) + '</span><span class="spacer"></span><button id="banner-retry">Retry</button></div>'
+      : "";
+    const retry = $("#banner-retry");
+    if (retry) retry.onclick = () => (state.view === "list" ? loadList() : loadDetail(state.runId));
+  };
+
+  const actionButtons = (run, where) => {
+    let html = "";
+    if (ACTIVE.has(run.status)) {
+      html += '<button class="danger" data-action="cancel" data-id="' + esc(run.id) + '" data-name="' + esc(run.name) + '">Cancel</button>';
+    }
+    if (run.status === "failed") {
+      html += '<button data-action="retry" data-id="' + esc(run.id) + '" data-name="' + esc(run.name) + '">Retry</button>';
+    }
+    return html || (where === "list" ? '<span class="muted">—</span>' : "");
+  };
+
+  const renderList = () => {
+    const rows = state.runs.map((r) => {
+      const running = ACTIVE.has(r.status) && r.startedAt && !r.completedAt;
+      return "<tr class='rowlink' data-goto='" + esc(r.id) + "'>" +
+        "<td class='mono' title='" + esc(r.id) + "'>" + esc(shortId(r.id)) + "</td>" +
+        "<td>" + esc(r.name) + " <span class='muted'>v" + esc(r.version) + "</span></td>" +
+        "<td>" + statusBadge(r.status) + (r.error ? " <span class='muted' title='" + esc(r.error.code + ": " + r.error.message) + "'>ⓘ</span>" : "") + "</td>" +
+        "<td>" + esc(r.attempts) + "</td>" +
+        "<td>" + (r.tags || []).map((t) => "<span class='tag'>" + esc(t) + "</span>").join("") + "</td>" +
+        "<td title='" + esc(fmtAbs(r.createdAt)) + "'>" + esc(rel(r.createdAt)) + "</td>" +
+        "<td>" + esc(r.completedAt ? dur(r.startedAt || r.createdAt, r.completedAt) : running ? dur(r.startedAt, null) : "—") + "</td>" +
+        "<td data-stop>" + actionButtons(r, "list") + "</td>" +
+        "</tr>";
+    }).join("");
+
+    $("#view").innerHTML =
+      '<div class="filters">' +
+        '<input id="f-name" placeholder="flow name" value="' + esc(state.filters.name) + '">' +
+        '<select id="f-status">' +
+          '<option value="">any status</option>' +
+          RUN_STATUSES.map((s) => '<option value="' + s + '"' + (state.filters.status === s ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>").join("") +
+        "</select>" +
+        '<input id="f-tag" placeholder="tag" value="' + esc(state.filters.tag) + '">' +
+        '<button id="f-clear">Clear</button>' +
+      "</div>" +
+      '<div class="panel"><div class="tablewrap"><table>' +
+        "<thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Attempts</th><th>Tags</th><th>Created</th><th>Duration</th><th>Actions</th></tr></thead>" +
+        "<tbody>" + (rows || '<tr><td colspan="8"><div class="empty">' + (state.loading ? "Loading…" : "No runs match.") + "</div></td></tr>") + "</tbody>" +
+      "</table></div>" +
+      '<div class="listfoot">' +
+        "<span>" + state.runs.length + " run" + (state.runs.length === 1 ? "" : "s") + "</span>" +
+        (state.pages > 1 ? '<span title="auto-refresh pauses while paged past page 1">paused auto-refresh</span>' : "") +
+        '<span class="spacer"></span>' +
+        (state.next ? '<button id="loadmore"' + (state.loading ? " disabled" : "") + ">Load more</button>" : "") +
+      "</div></div>";
+
+    $("#f-name").onchange = (e) => { state.filters.name = e.target.value.trim(); loadList(); };
+    $("#f-status").onchange = (e) => { state.filters.status = e.target.value; loadList(); };
+    $("#f-tag").onchange = (e) => { state.filters.tag = e.target.value.trim(); loadList(); };
+    $("#f-clear").onclick = () => { state.filters = { name: "", status: "", tag: "" }; loadList(); };
+    const more = $("#loadmore");
+    if (more) more.onclick = () => loadList({ append: true });
+
+    for (const tr of document.querySelectorAll("tr[data-goto]")) {
+      tr.onclick = (e) => {
+        if (e.target.closest("[data-stop]")) return;
+        location.hash = "#/runs/" + tr.dataset.goto;
+      };
+    }
+  };
+
+  const jsonBlock = (label, capped) => {
+    if (!capped) return "";
+    return '<section class="block"><h3>' + esc(label) + '</h3><div class="panel">' +
+      '<pre class="json"></pre>' +
+      (capped.truncated ? '<div class="capnote">truncated preview — ' + esc(capped.size.toLocaleString()) + " chars total</div>" : "") +
+      "</div></section>";
+  };
+
+  const renderDetail = () => {
+    const d = state.detail;
+    if (!d) {
+      $("#view").innerHTML = '<div class="crumbs"><a id="back" href="#/">&larr; All runs</a></div>' +
+        '<div class="empty">' + (state.error ? "" : "Loading…") + "</div>";
+      wireBack();
+      return;
+    }
+    const r = d.run;
+    const stepRows = d.steps.map((s, i) => {
+      const open = state.expanded.has(s.cursorKey);
+      const hasBody = s.result || s.error;
+      return "<tr class='rowlink' data-step='" + esc(s.cursorKey) + "'>" +
+        "<td class='mono'>" + esc(s.cursorKey) + "</td>" +
+        "<td>" + statusBadge(s.status) + "</td>" +
+        "<td>" + esc(s.attempts) + "</td>" +
+        "<td title='" + esc(fmtAbs(s.startedAt)) + "'>" + esc(rel(s.startedAt)) + "</td>" +
+        "<td>" + esc(s.completedAt ? dur(s.startedAt, s.completedAt) : "—") + "</td>" +
+        "<td>" + (hasBody ? (open ? "▾" : "▸") : "") + "</td>" +
+        "</tr>" +
+        (open && hasBody
+          ? "<tr class='exp'><td colspan='6'>" +
+            (s.error ? "<div class='muted'>error: <span class='mono'>" + esc(s.error.code) + "</span> " + esc(s.error.message) + "</div>" : "") +
+            (s.result ? "<pre class='json' data-step-json='" + i + "'></pre>" +
+              (s.result.truncated ? "<div class='capnote'>truncated preview — " + esc(s.result.size.toLocaleString()) + " chars total</div>" : "") : "") +
+            "</td></tr>"
+          : "");
+    }).join("");
+
+    const timerRows = d.timers.map((t) =>
+      "<tr><td class='mono'>" + esc(t.cursorKey) + "</td>" +
+      "<td title='" + esc(fmtAbs(t.fireAt)) + "'>" + esc(rel(t.fireAt)) + "</td>" +
+      "<td>" + (t.firedAt ? esc(rel(t.firedAt)) : "<span class='muted'>pending</span>") + "</td></tr>").join("");
+
+    const signalRows = d.signals.map((s, i) =>
+      "<tr><td class='mono'>" + esc(s.cursorKey) + "</td>" +
+      "<td>" + (s.delivered ? statusBadge("done").replace(">done<", ">delivered<") : "<span class='muted'>waiting</span>") + "</td>" +
+      "<td title='" + esc(fmtAbs(s.createdAt)) + "'>" + esc(rel(s.createdAt)) + "</td>" +
+      "<td>" + (s.deliveredAt ? esc(rel(s.deliveredAt)) : "—") + "</td>" +
+      "<td>" + (s.expiresAt ? esc(rel(s.expiresAt)) : "—") + "</td>" +
+      "<td>" + (s.payload ? "<pre class='json' data-signal-json='" + i + "'></pre>" : "<span class='muted'>—</span>") + "</td></tr>").join("");
+
+    $("#view").innerHTML =
+      '<div class="crumbs"><a id="back" href="#/">&larr; All runs</a></div>' +
+      '<div class="runhead">' +
+        "<h2>" + esc(r.name) + ' <span class="muted">v' + esc(r.version) + "</span></h2>" +
+        statusBadge(r.status) +
+        '<span class="spacer"></span>' + actionButtons(r, "detail") +
+      "</div>" +
+      '<div class="panel"><dl class="meta">' +
+        '<div><dt>Run id</dt><dd class="mono" id="runid" title="click to copy" style="cursor:pointer">' + esc(r.id) + "</dd></div>" +
+        "<div><dt>Created</dt><dd title='" + esc(fmtAbs(r.createdAt)) + "'>" + esc(rel(r.createdAt)) + "</dd></div>" +
+        "<div><dt>Started</dt><dd title='" + esc(fmtAbs(r.startedAt)) + "'>" + esc(r.startedAt ? rel(r.startedAt) : "—") + "</dd></div>" +
+        "<div><dt>Completed</dt><dd title='" + esc(fmtAbs(r.completedAt)) + "'>" + esc(r.completedAt ? rel(r.completedAt) : "—") + "</dd></div>" +
+        "<div><dt>Duration</dt><dd>" + esc(r.completedAt ? dur(r.startedAt || r.createdAt, r.completedAt) : ACTIVE.has(r.status) && r.startedAt ? dur(r.startedAt, null) : "—") + "</dd></div>" +
+        "<div><dt>Attempts</dt><dd>" + esc(r.attempts) + "</dd></div>" +
+        (r.parentRunId ? "<div><dt>Parent run</dt><dd class='mono'><a href='#/runs/" + esc(r.parentRunId) + "' data-nav>" + esc(shortId(r.parentRunId)) + "</a></dd></div>" : "") +
+        (r.idempotencyKey ? "<div><dt>Idempotency key</dt><dd class='mono'>" + esc(r.idempotencyKey) + "</dd></div>" : "") +
+        ((r.tags || []).length ? "<div><dt>Tags</dt><dd>" + r.tags.map((t) => "<span class='tag'>" + esc(t) + "</span>").join("") + "</dd></div>" : "") +
+      "</dl></div>" +
+      (r.error
+        ? '<div class="errpanel"><div class="errhead"><span class="mono">' + esc(r.error.code) + "</span> — " + esc(r.error.message) + "</div>" +
+          (r.error.stack ? '<details class="stack"><summary>stack</summary><pre class="json" id="err-stack"></pre></details>' : "") +
+          "</div>"
+        : "") +
+      jsonBlock("Input", r.input).replace('<pre class="json">', '<pre class="json" id="run-input">') +
+      jsonBlock("Output", r.output).replace('<pre class="json">', '<pre class="json" id="run-output">') +
+      '<section class="block"><h3>Steps (' + d.steps.length + ')</h3><div class="panel"><div class="tablewrap"><table>' +
+        "<thead><tr><th>Cursor key</th><th>Status</th><th>Attempts</th><th>Started</th><th>Duration</th><th></th></tr></thead>" +
+        "<tbody>" + (stepRows || '<tr><td colspan="6"><div class="empty">No steps yet.</div></td></tr>') + "</tbody>" +
+      "</table></div></div></section>" +
+      (d.timers.length
+        ? '<section class="block"><h3>Sleeps (' + d.timers.length + ')</h3><div class="panel"><div class="tablewrap"><table>' +
+          "<thead><tr><th>Cursor key</th><th>Fires</th><th>Fired</th></tr></thead><tbody>" + timerRows + "</tbody></table></div></div></section>"
+        : "") +
+      (d.signals.length
+        ? '<section class="block"><h3>Signals (' + d.signals.length + ')</h3><div class="panel"><div class="tablewrap"><table>' +
+          "<thead><tr><th>Cursor key</th><th>State</th><th>Armed</th><th>Delivered</th><th>Expires</th><th>Payload</th></tr></thead><tbody>" + signalRows + "</tbody></table></div></div></section>"
+        : "");
+
+    // JSON goes in via textContent — payload content never touches innerHTML.
+    if (r.error && r.error.stack) { const el = $("#err-stack"); if (el) el.textContent = r.error.stack; }
+    if (r.input) { const el = $("#run-input"); if (el) el.textContent = r.input.preview; }
+    if (r.output) { const el = $("#run-output"); if (el) el.textContent = r.output.preview; }
+    for (const el of document.querySelectorAll("[data-step-json]")) {
+      el.textContent = d.steps[Number(el.dataset.stepJson)].result.preview;
+    }
+    for (const el of document.querySelectorAll("[data-signal-json]")) {
+      el.textContent = d.signals[Number(el.dataset.signalJson)].payload.preview;
+    }
+
+    wireBack();
+    const runid = $("#runid");
+    if (runid) runid.onclick = () => {
+      navigator.clipboard?.writeText(r.id).then(() => toast("run id copied"));
+    };
+    for (const tr of document.querySelectorAll("tr[data-step]")) {
+      tr.onclick = () => {
+        const key = tr.dataset.step;
+        state.expanded.has(key) ? state.expanded.delete(key) : state.expanded.add(key);
+        render();
+      };
+    }
+    for (const a of document.querySelectorAll("a[data-nav]")) {
+      a.onclick = (e) => { e.preventDefault(); location.hash = a.getAttribute("href"); };
+    }
+  };
+
+  const wireBack = () => {
+    const back = $("#back");
+    if (back) back.onclick = (e) => { e.preventDefault(); location.hash = "#/"; };
+  };
+
+  const render = () => {
+    banner();
+    state.view === "list" ? renderList() : renderDetail();
+    wireActions();
+  };
+
+  // ---- actions (cancel / retry) ----------------------------------------
+
+  const confirmModal = (title, message, danger) => new Promise((resolve) => {
+    const root = $("#modal-root");
+    root.innerHTML =
+      '<div class="modal-overlay"><div class="modal">' +
+      "<h3>" + esc(title) + "</h3><p>" + esc(message) + "</p>" +
+      '<div class="actions"><button id="m-no">Keep it</button>' +
+      '<button id="m-yes" class="' + (danger ? "danger" : "primary") + '">' + esc(title) + "</button></div>" +
+      "</div></div>";
+    const done = (v) => { root.innerHTML = ""; resolve(v); };
+    $("#m-no").onclick = () => done(false);
+    $("#m-yes").onclick = () => done(true);
+    root.querySelector(".modal-overlay").onclick = (e) => { if (e.target === e.currentTarget) done(false); };
+  });
+
+  let toastTimer;
+  const toast = (msg) => {
+    const el = $("#toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2500);
+  };
+
+  const wireActions = () => {
+    for (const btn of document.querySelectorAll("button[data-action]")) {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const { action, id, name } = btn.dataset;
+        const verb = action === "cancel" ? "Cancel run" : "Retry run";
+        const okAsked = await confirmModal(verb, name + " · " + shortId(id) +
+          (action === "cancel" ? " — the run stops and will not resume." : " — replays from the failed step; memoized steps are kept."),
+          action === "cancel");
+        if (!okAsked) return;
+        try {
+          await post("api/runs/" + encodeURIComponent(id) + "/" + action, {});
+          toast(action === "cancel" ? "run canceled" : "retry queued");
+        } catch (err) {
+          toast(action + " failed: " + err.message);
+        }
+        state.view === "list" ? loadList() : loadDetail(state.runId);
+      };
+    }
+  };
+
+  // ---- routing + polling ------------------------------------------------
+
+  const applyHash = () => {
+    const m = location.hash.match(/^#\/runs\/([^/]+)/);
+    if (m) {
+      state.view = "detail";
+      state.runId = decodeURIComponent(m[1]);
+      state.detail = null;
+      state.expanded = new Set();
+      loadDetail(state.runId);
+    } else {
+      state.view = "list";
+      state.runId = null;
+      loadList();
+    }
+  };
+
+  const AUTOREFRESH_KEY = "iterativeflow.dashboard.autorefresh";
+  const autorefreshBox = $("#autorefresh");
+  autorefreshBox.checked = localStorage.getItem(AUTOREFRESH_KEY) !== "off";
+  autorefreshBox.onchange = () => {
+    localStorage.setItem(AUTOREFRESH_KEY, autorefreshBox.checked ? "on" : "off");
+  };
+
+  setInterval(() => {
+    if (document.hidden || !autorefreshBox.checked || state.loading) return;
+    // Re-rendering would destroy focus while someone is typing a filter.
+    if (document.activeElement && document.activeElement.closest(".filters")) return;
+    if (state.view === "list") {
+      // Refreshing would collapse pagination back to page 1 — stay put.
+      if (state.pages <= 1) loadList();
+    } else if (state.detail && ACTIVE.has(state.detail.run.status)) {
+      loadDetail(state.runId);
+    }
+    loadHealth();
+  }, POLL_MS);
+
+  $("#refresh").onclick = () => {
+    state.view === "list" ? loadList() : loadDetail(state.runId);
+    loadHealth();
+  };
+
+  window.addEventListener("hashchange", applyHash);
+  loadHealth();
+  applyHash();
+})();
+</script>
+</body>
+</html>
