@@ -9,6 +9,9 @@ const DIST = new URL("../dist/", import.meta.url).pathname;
 const walk = (dir) => {
   const out = [];
   for (const entry of readdirSync(dir)) {
+    // The dashboard/ dir is a bundled browser app (Preact + Tailwind), not part
+    // of the library's Node surface — budget it separately from the API bundle.
+    if (entry === "dashboard") continue;
     const p = join(dir, entry);
     const s = statSync(p);
     if (s.isDirectory()) out.push(...walk(p));

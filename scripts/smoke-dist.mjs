@@ -93,10 +93,11 @@ try {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// 4. Dashboard: subpath export + shipped HTML asset + handler smoke
+// 4. Dashboard: subpath export + built Vite UI + handler smoke
 assert.ok(pkgJson.exports["./dashboard"], "./dashboard subpath missing");
 assert.ok(existsSync(join(repo, "dist/dashboard.js")), "dist/dashboard.js missing");
-assert.ok(existsSync(join(repo, "dist/dashboard.html")), "dist/dashboard.html asset missing");
+assert.ok(existsSync(join(repo, "dist/dashboard/index.html")), "built dashboard index.html missing");
+assert.ok(existsSync(join(repo, "dist/dashboard/assets")), "built dashboard assets dir missing");
 
 const dash = await import("../dist/dashboard.js");
 assert.equal(typeof dash.createFlowsDashboard, "function", "createFlowsDashboard missing");
@@ -109,6 +110,28 @@ const htmlRes = await dashboard.fetch(new Request("http://smoke.test/admin/flows
 assert.equal(htmlRes.status, 200, "dashboard HTML route not 200");
 const htmlBody = await htmlRes.text();
 assert.match(htmlBody, /<base href="\/admin\/flows\/">/, "mount-path <base> not injected");
+
+// The built shell references a hashed JS asset; the handler must serve it.
+const assetName = htmlBody.match(/assets\/([\w.-]+\.js)/)?.[1];
+assert.ok(assetName, "built shell has no hashed JS asset reference");
+const assetRes = await dashboard.fetch(
+  new Request(`http://smoke.test/admin/flows/assets/${assetName}`),
+);
+assert.equal(assetRes.status, 200, "dashboard asset route not 200");
+assert.match(
+  assetRes.headers.get("content-type") ?? "",
+  /javascript/,
+  "asset content-type not JS",
+);
+
+const cssName = htmlBody.match(/assets\/([\w.-]+\.css)/)?.[1];
+assert.ok(cssName, "built shell has no hashed CSS asset reference");
+const cssRes = await dashboard.fetch(
+  new Request(`http://smoke.test/admin/flows/assets/${cssName}`),
+);
+assert.equal(cssRes.status, 200, "dashboard CSS route not 200");
+assert.match(cssRes.headers.get("content-type") ?? "", /text\/css/, "asset content-type not CSS");
+
 const healthRes = await dashboard.fetch(new Request("http://smoke.test/admin/flows/api/health"));
 assert.equal(healthRes.status, 200, "dashboard health route not 200");
 const health = await healthRes.json();

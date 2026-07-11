@@ -2,21 +2,35 @@
 "iterativeflow": minor
 ---
 
-Add `iterativeflow/dashboard` — a mountable observability UI for flows.
+Add `iterativeflow/dashboard` — a mountable operations console for your flows.
+Mount one fetch handler behind your own auth and browse everything the engine
+knows, with no extra services and no runtime dependencies added to your app.
 
-`createFlowsDashboard({ engine })` returns a WHATWG fetch handler that serves
-a JSON API plus a single self-contained HTML page (no framework, no build
-step, zero new dependencies): a runs list with status/name/tag filters and
-keyset pagination, a run detail view (steps, sleeps, signals, capped
-input/output payloads), a per-process health strip, and cancel/retry actions
-with confirmation. It consumes only the public Engine API, mounts at any
-path behind the host app's auth, and requires `content-type:
-application/json` on mutations. Ships with a `jsonCap` option bounding how
-much of any jsonb payload reaches the browser.
+![Runs list with filters and pagination](docs/assets/dashboard-runs.png)
 
-Pass a `crons` option — the same `CronSpec[]` given to `engine.defineCron`
-— and the dashboard also lists them and lets you trigger one on demand,
-capping and displaying its return value the same way as a step result.
-Since the engine has no public API to enumerate its own crons, the specs
-are supplied by the host rather than read back from `engine`; triggering
-calls `run()` directly, bypassing the engine's own overlap lock.
+- **Runs** — browse, filter (flow, status, tag, date range), and page through
+  every run.
+- **Run detail** — steps, sleeps, signals, and capped input/output payloads in a
+  slide-over sheet, with highlighted JSON and copy buttons.
+- **Act on a run** — cancel, retry, or deliver a signal (with a JSON payload) to
+  a run that's waiting on one.
+- **Crons** — trigger a cron on demand and see the runs it started.
+- **Overview** — status distribution, recent runs, and active crons at a glance.
+- **Shareable & refresh-safe** — the open run/cron sheet and active filters live
+  in the URL, so a reload or a shared link restores exactly what you were looking
+  at.
+
+```ts
+import { createFlowsDashboard } from "iterativeflow/dashboard";
+
+const dashboard = createFlowsDashboard({ engine, crons });
+// dashboard.fetch: (req: Request) => Promise<Response> — mount it behind your auth
+```
+
+Pass `crons` for the crons view, `jsonCap` to bound payload previews, and
+`theme` to match your app.
+
+![Run detail — steps, error, payloads](docs/assets/dashboard-run-detail.png)
+![A cron and the runs it started](docs/assets/dashboard-crons.png)
+
+Thanks [@ramisalem](https://github.com/ramisalem) for kicking this off in #14.

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createEngine } from "../engine/engine";
 import type { Engine } from "../engine/engine";
 import type { CronSpec } from "../engine/types";
@@ -89,6 +90,12 @@ describe("flows dashboard handler", () => {
         .step("second", () => "after nap")
         .build(),
     );
+    engine.register(
+      flow("approval")
+        .step("queue", () => "queued")
+        .signal("approve", { schema: z.object({ approverId: z.string(), approved: z.boolean() }) })
+        .build(),
+    );
 
     dash = createFlowsDashboard({ engine });
   });
@@ -117,7 +124,11 @@ describe("flows dashboard handler", () => {
     return runId;
   };
 
-  // ---- UI serving --------------------------------------------------------
+  const startAwaitingSignal = async () => {
+    const { runId } = await engine.enqueue("approval", 1, {});
+    await tick();
+    return runId;
+  };
 
   it("serves the app on GET with a <base> pinned to the mount path", async () => {
     const res = await get(dash, "");
@@ -143,7 +154,41 @@ describe("flows dashboard handler", () => {
     expect(res.status).toBe(405);
   });
 
-  // ---- list --------------------------------------------------------------
+  it("serves the app (not 404) when the mount path itself contains /api/", async () => {
+    const res = await dash.fetch(new Request("http://dashboard.test/api/flows/"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
+  it("still routes the dashboard's own /api/ under an /api/-containing mount", async () => {
+    const res = await dash.fetch(new Request("http://dashboard.test/api/flows/api/health"));
+    expect(res.status).toBe(200);
+  });
+
+  it("generates :root/.dark token blocks from the typed theme, after the built-in stylesheet", async () => {
+    const themed = createFlowsDashboard({
+      engine,
+      theme: {
+        light: { primary: "hotpink", "status-done": "#0f0" },
+        dark: { primary: "deeppink" },
+        css: ".badge { letter-spacing: .02em; }",
+      },
+    });
+    const body = await (await themed.fetch(new Request(BASE))).text();
+    expect(body).toContain(
+      '<style id="iflow-theme">:root { --primary: hotpink; --status-done: #0f0; }',
+    );
+    expect(body).toContain(".dark { --primary: deeppink; }");
+    expect(body).toContain(".badge { letter-spacing: .02em; }");
+    // Override lives in <head>, before the app mount point in <body>.
+    expect(body.indexOf('id="iflow-theme"')).toBeGreaterThan(-1);
+    expect(body.indexOf('id="iflow-theme"')).toBeLessThan(body.indexOf('id="app"'));
+  });
+
+  it("omits the theme tag when no theme is given", async () => {
+    const body = await (await get(dash, "")).text();
+    expect(body).not.toContain('id="iflow-theme"');
+  });
 
   it("lists runs without heavy fields and with an error summary", async () => {
     await startDone({ big: "x".repeat(50) });
@@ -202,8 +247,6 @@ describe("flows dashboard handler", () => {
     expect((await get(dash, "/api/runs?cursorId=abc")).status).toBe(400);
   });
 
-  // ---- detail ------------------------------------------------------------
-
   it("returns run detail with capped JSON payloads", async () => {
     const runId = await startDone({ hello: "world" });
 
@@ -246,8 +289,6 @@ describe("flows dashboard handler", () => {
     expect((await get(dash, `/api/runs/${randomUUID()}`)).status).toBe(404);
   });
 
-  // ---- cancel / retry ------------------------------------------------------
-
   it("cancels an active run", async () => {
     const runId = await startSleeping();
 
@@ -273,6 +314,36 @@ describe("flows dashboard handler", () => {
     expect((await post(dash, `/api/runs/${randomUUID()}/retry`)).status).toBe(404);
   });
 
+  it("delivers a signal to a run awaiting one", async () => {
+    const runId = await startAwaitingSignal();
+    expect((await engine.status(runId))?.run.status).toBe("awaiting_signal");
+
+    const res = await post(dash, `/api/runs/${runId}/signal`, {
+      body: JSON.stringify({ name: "approve", payload: { approverId: "u1", approved: true } }),
+    });
+    expect(res.status).toBe(200);
+    expect((await readJson(res)).kind).toBe("delivered");
+  });
+
+  it("422s a signal payload that fails the declared schema", async () => {
+    const runId = await startAwaitingSignal();
+
+    const res = await post(dash, `/api/runs/${runId}/signal`, {
+      body: JSON.stringify({ name: "approve", payload: { approverId: 42 } }),
+    });
+    expect(res.status).toBe(422);
+    expect((await readJson(res)).kind).toBe("invalid_payload");
+    expect((await engine.status(runId))?.run.status).toBe("awaiting_signal");
+  });
+
+  it("400s a signal without a name", async () => {
+    const runId = await startAwaitingSignal();
+    const res = await post(dash, `/api/runs/${runId}/signal`, {
+      body: JSON.stringify({ payload: { approverId: "u1" } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects mutations without a JSON content type", async () => {
     const runId = await startSleeping();
     const res = await post(dash, `/api/runs/${runId}/cancel`, {
@@ -290,8 +361,6 @@ describe("flows dashboard handler", () => {
     );
     expect(del.status).toBe(405);
   });
-
-  // ---- crons ---------------------------------------------------------------
 
   const testCrons: CronSpec[] = [
     { name: "sweep", schedule: "*/5 * * * *", run: () => ({ swept: 3 }) },
@@ -312,8 +381,22 @@ describe("flows dashboard handler", () => {
     const withCrons = createFlowsDashboard({ engine, crons: testCrons });
     const body = await getJson(withCrons, "/api/crons");
     expect(body.crons).toEqual([
-      { name: "sweep", schedule: "*/5 * * * *", timezone: "UTC", overlap: "skip", jitterMs: 0, backfillPeriod: 0 },
-      { name: "boom-cron", schedule: "0 * * * *", timezone: "UTC", overlap: "skip", jitterMs: 0, backfillPeriod: 0 },
+      {
+        name: "sweep",
+        schedule: "*/5 * * * *",
+        timezone: "UTC",
+        overlap: "skip",
+        jitterMs: 0,
+        backfillPeriod: 0,
+      },
+      {
+        name: "boom-cron",
+        schedule: "0 * * * *",
+        timezone: "UTC",
+        overlap: "skip",
+        jitterMs: 0,
+        backfillPeriod: 0,
+      },
     ]);
     for (const c of body.crons) expect(c).not.toHaveProperty("run");
   });
@@ -356,8 +439,6 @@ describe("flows dashboard handler", () => {
     );
     expect(wrongMethod.status).toBe(405);
   });
-
-  // ---- health --------------------------------------------------------------
 
   it("passes health through", async () => {
     const res = await get(dash, "/api/health");

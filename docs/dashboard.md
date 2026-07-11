@@ -1,26 +1,32 @@
 # Flows dashboard
 
-`iterativeflow/dashboard` is a mountable observability UI for an engine: a
-runs list with filters and keyset pagination, a run detail view (steps,
-sleeps, signals, capped input/output payloads), and two management actions —
-**cancel** and **retry**. It consumes only the public `Engine` API
-(`listRuns`, `status`, `health`, `cancel`, `retry`), so it works against any
-deployment the engine works against, and it adds **no dependencies**: the UI
-is one self-contained HTML file served by the handler, no framework, no build
-step. Pass your own `CronSpec[]` as `crons` and the dashboard also lists them
-and lets you trigger one on demand — see [Crons](#crons).
+`iterativeflow/dashboard` is a mountable observability UI for an engine —
+an overview, a runs list with filters and keyset pagination, and a crons view,
+across three pages. Open any run for a detail panel (steps, sleeps, signals,
+capped input/output payloads) and act on it: **cancel**, **retry**, or
+**deliver a signal** to a run that's waiting on one. The open panel and active
+filters live in the URL, so a refresh or a shared link restores your view.
+
+It consumes only the public `Engine` API (`listRuns`, `status`, `health`,
+`cancel`, `retry`, `signal`), so it works against any deployment the engine
+works against, and adds **no runtime dependencies** to your app: a pre-built
+single-page UI is shipped in the package and served as a hashed JS/CSS bundle.
+Pass your own `CronSpec[]` as `crons` and the dashboard also lists them and lets
+you trigger one on demand — see [Crons](#crons).
 
 ![Runs list](./assets/dashboard-runs.png)
 
-```
+```text
 createFlowsDashboard({ engine, crons? }).fetch
         │
-        ├── GET  <mount>/…           → the app (single HTML page, hash-routed)
+        ├── GET  <mount>/…           → the app shell (hash-routed SPA)
+        ├── GET  <mount>/assets/…    → hashed JS/CSS build assets
         ├── GET  <mount>/api/health  → engine.health()
         ├── GET  <mount>/api/runs    → engine.listRuns(...)  (filters + cursor)
         ├── GET  <mount>/api/runs/:id           → engine.status(runId)
         ├── POST <mount>/api/runs/:id/cancel    → engine.cancel(runId, reason?)
         ├── POST <mount>/api/runs/:id/retry     → engine.retry(runId)
+        ├── POST <mount>/api/runs/:id/signal    → engine.signal(runId, name, payload?)
         ├── GET  <mount>/api/crons              → the crons you passed in
         └── POST <mount>/api/crons/:name/run    → calls that cron's run() now
 ```
@@ -90,8 +96,8 @@ a whole.
 
 ## What the actions do
 
-Cancel and retry are the engine's own semantics, surfaced with a
-confirmation dialog:
+Cancel, retry, and signal are the engine's own semantics, surfaced from the
+run's detail panel:
 
 - **Cancel** (any non-terminal run) — marks the run `canceled`; if the run is
   mid-step in the same process, its `AbortSignal` fires. From another process
@@ -101,6 +107,10 @@ confirmation dialog:
   resets to `pending` and replays from the failing step (see
   [replay semantics](./replay-semantics.md)). The dashboard maps the
   `RetryResult` to HTTP: `queued` → 200, `missing` → 404, `not_failed` → 409.
+- **Signal** (a run awaiting one) — delivers a named signal with an optional
+  JSON payload via `engine.signal(runId, name, payload)`. The dashboard maps
+  the `SignalDeliveryResult`: `delivered`/`buffered`/`duplicate` → 200,
+  `invalid_payload` → 422, `expired` → 409. See [signals](./signals.md).
 
 ## Crons
 
@@ -109,7 +119,11 @@ dashboard doesn't try to read them back — pass the same `CronSpec[]` you gave
 to `engine.defineCron(...)` as `crons`, and it lists them with a **Run now**
 button:
 
-![Crons panel, showing a successful trigger and a failed one](./assets/dashboard-crons.png)
+Opening a cron shows its sheet: a **Run now** trigger, the last trigger's
+result, and the runs it started — the dashboard lists those by filtering runs
+tagged `cron:<name>`, so tag the runs your cron starts to see them here.
+
+![A cron's sheet: the runs it started, tagged cron:<name>, plus a Run now trigger](./assets/dashboard-crons.png)
 
 ```ts
 import { createFlowsDashboard } from "iterativeflow/dashboard";
@@ -152,27 +166,54 @@ const dashboard = createFlowsDashboard({ engine, jsonCap: 5_000 });
 The runs _list_ omits `input`/`output` entirely (and trims errors to
 `code` + `message`); full payloads appear only in the detail view.
 
+## Theming
+
+The UI is styled on the shadcn/ui token contract: `--background`/`--foreground`,
+`--card`, `--primary`, `--muted`, `--accent`, `--destructive`, `--border`,
+`--input`, `--ring`, plus a `--radius` scale. It follows the OS light/dark
+preference, with a header toggle to override and persist your choice, via a
+`.dark` class. Run and attempt statuses have no
+shadcn equivalent, so they use an extension palette: `--status-pending`,
+`--status-running`, `--status-sleeping`, `--status-awaiting_signal`,
+`--status-retrying`, `--status-done`, `--status-failed`, `--status-canceled`,
+plus `--status-ok` and `--status-warn`.
+
+Pass `theme` to make it match your app. Token names are typed (no `--`
+prefix); values are HSL channels (the shadcn/Franken convention, no color
+function). The generated CSS is injected into `<head>` after the built-in
+stylesheet, so it wins.
+
+```ts
+import { createFlowsDashboard } from "iterativeflow/dashboard";
+
+const dashboard = createFlowsDashboard({
+  engine,
+  theme: {
+    light: { primary: "240 60% 45%", radius: "0.5rem" },
+    dark: { primary: "240 55% 65%" },
+  },
+});
+```
+
+`light` maps onto `:root`, `dark` onto `.dark`. For anything the token maps
+can't express, a `css` string is appended verbatim — trusted host config, so
+don't build it from untrusted input.
+
 ## JSON API
 
 The UI is a thin client over these endpoints; script against them freely.
 All timestamps are ISO-8601 strings.
 
-| Route                      | Query / body                                                                                              | Returns                                            |
-| -------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `GET  api/health`          | —                                                                                                         | `HealthReport` (per-process)                       |
-| `GET  api/runs`            | `name`, `status` (comma-separated), `tag`, `since`, `until`, `limit` (≤500), `cursorCreatedAt`+`cursorId` | `{ runs: [...], next: { createdAt, id } \| null }` |
-| `GET  api/runs/:id`        | —                                                                                                         | run + steps + timers + signals, JSON values capped |
-| `POST api/runs/:id/cancel` | `{ "reason"?: string }`                                                                                   | `{ ok: true }`                                     |
-| `POST api/runs/:id/retry`  | `{}`                                                                                                      | `RetryResult`; 409 when the run isn't `failed`     |
-| `GET  api/crons`           | —                                                                                                         | `{ crons: [...] }` (no `run`)                       |
-| `POST api/crons/:name/run` | `{}`                                                                                                      | `{ ok: true, result }`; 404 if unknown, 500 on throw |
+| Route                      | Query / body                                                                                              | Returns                                                  |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `GET  api/health`          | —                                                                                                         | `HealthReport` (per-process)                             |
+| `GET  api/runs`            | `name`, `status` (comma-separated), `tag`, `since`, `until`, `limit` (≤500), `cursorCreatedAt`+`cursorId` | `{ runs: [...], next: { createdAt, id } \| null }`       |
+| `GET  api/runs/:id`        | —                                                                                                         | run + steps + timers + signals, JSON values capped       |
+| `POST api/runs/:id/cancel` | `{ "reason"?: string }`                                                                                   | `{ ok: true }`                                           |
+| `POST api/runs/:id/retry`  | `{}`                                                                                                      | `RetryResult`; 409 when the run isn't `failed`           |
+| `POST api/runs/:id/signal` | `{ "name": string, "payload"?: unknown }`                                                                 | `SignalDeliveryResult`; 422 invalid payload, 409 expired |
+| `GET  api/crons`           | —                                                                                                         | `{ crons: [...] }` (no `run`)                            |
+| `POST api/crons/:name/run` | `{}`                                                                                                      | `{ ok: true, result }`; 404 if unknown, 500 on throw     |
 
 Invalid filters return 400 with `{ error }`; unknown runs 404; wrong methods
 405; mutations without a JSON content type 415.
-
-## Freshness
-
-The UI polls every 5 seconds (pausing when the tab is hidden, while you type
-in a filter, or once you page past page 1) and refreshes a run's detail view
-only while the run is active. Polling — not SSE/WebSockets — is deliberate:
-a mounted handler must stay request/response to work on serverless hosts.
