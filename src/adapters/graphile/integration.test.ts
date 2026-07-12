@@ -1,7 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeWorkerUtils } from "graphile-worker";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { flow } from "../../builder/flow";
 import { createEngine, type Engine } from "../../engine/engine";
@@ -9,9 +8,7 @@ import { reapOrphanedCronJobs } from "./cron";
 import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-
-const externalUrl = process.env.ITERATIVE_PG_URL;
-const skipContainers = process.env.SKIP_TESTCONTAINERS === "1";
+import { acquireTestDb, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -27,22 +24,14 @@ interface Harness {
 }
 
 const setup = async (): Promise<Harness> => {
-  if (externalUrl) {
-    const pool = new Pool({ connectionString: externalUrl });
-    return {
-      pool,
-      db: drizzle({ client: pool }) as unknown as WorkflowDb,
-      cleanup: () => pool.end(),
-    };
-  }
-  const container = await new PostgreSqlContainer("postgres:16-alpine").start();
-  const pool = new Pool({ connectionString: container.getConnectionUri() });
+  const testDb = await acquireTestDb();
+  const pool = new Pool({ connectionString: testDb.url });
   return {
     pool,
     db: drizzle({ client: pool }) as unknown as WorkflowDb,
     cleanup: async () => {
       await pool.end();
-      await container.stop();
+      await testDb.close();
     },
   };
 };
@@ -60,7 +49,7 @@ const waitFor = async <T>(
   throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 };
 
-describe.skipIf(skipContainers && !externalUrl)("real-pg integration", () => {
+describe.skipIf(pgUnavailable)("real-pg integration", () => {
   let h: Harness;
 
   beforeAll(async () => {

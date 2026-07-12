@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "strict": true,
+    "skipLibCheck": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": [],
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./*"],
+      "react": ["../../../node_modules/preact/compat/"],
+      "react-dom": ["../../../node_modules/preact/compat/"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["vite.config.ts", "vite.dev.config.ts", "dev-mock.ts"]
+}

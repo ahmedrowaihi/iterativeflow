@@ -1,7 +1,7 @@
 import { defineConfig } from "tsdown";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/cli.ts", "src/serverless.ts", "src/pgmq.ts"],
+  entry: ["src/index.ts", "src/cli.ts", "src/serverless.ts", "src/pgmq.ts", "src/dashboard.ts"],
   format: ["esm"],
   dts: true,
   clean: true,

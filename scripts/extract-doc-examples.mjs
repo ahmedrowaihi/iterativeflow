@@ -11,7 +11,7 @@ const outDir = join(repo, "tests", "docs-examples");
 // Clear stale snippets without nuking the tsconfig / globals.d.ts beside them.
 mkdirSync(outDir, { recursive: true });
 for (const f of readdirSync(outDir)) {
-  if (/^(?:README|guide|replay-semantics|signals|serverless)-\d+\.ts$/.test(f)) {
+  if (/^(?:README|guide|replay-semantics|signals|serverless|dashboard)-\d+\.ts$/.test(f)) {
     rmSync(join(outDir, f), { force: true });
   }
 }
