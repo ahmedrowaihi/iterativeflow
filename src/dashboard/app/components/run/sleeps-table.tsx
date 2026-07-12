@@ -14,7 +14,7 @@ export const SleepsTable = ({ timers }: { timers: TimerRow[] }) => (
     </Thead>
     <Tbody>
       {timers.map((t) => (
-        <Tr>
+        <Tr key={t.cursorKey}>
           <Td class="font-mono">{t.cursorKey}</Td>
           <Td title={fmtAbs(t.fireAt)}>{rel(t.fireAt)}</Td>
           <Td>{t.firedAt ? rel(t.firedAt) : <span class="text-muted-foreground">pending</span>}</Td>

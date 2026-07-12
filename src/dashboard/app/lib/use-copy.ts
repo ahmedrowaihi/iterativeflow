@@ -3,5 +3,8 @@ import { showToast } from "@/lib/store";
 
 export const useCopy = () =>
   useCallback((text: string, message = "copied") => {
-    navigator.clipboard?.writeText(text).then(() => showToast(message));
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => showToast(message))
+      .catch(() => showToast("copy failed"));
   }, []);

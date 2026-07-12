@@ -31,7 +31,7 @@ export const CronsPage = (_props: { path?: string }) => {
         {error ? (
           <EmptyRow colSpan={5}>Failed to load.</EmptyRow>
         ) : cs.length ? (
-          cs.map((c) => <CronRow cron={c} />)
+          cs.map((c) => <CronRow key={c.name} cron={c} />)
         ) : (
           <EmptyRow colSpan={5}>{data ? "No crons registered." : "Loading…"}</EmptyRow>
         )}

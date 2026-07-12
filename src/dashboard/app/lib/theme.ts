@@ -15,5 +15,9 @@ export const toggleTheme = (): void => {
   const next: Theme = theme.value === "dark" ? "light" : "dark";
   theme.value = next;
   document.documentElement.classList.toggle("dark", next === "dark");
-  localStorage.setItem(THEME_KEY, next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // storage blocked — the class toggle still applies for this session
+  }
 };

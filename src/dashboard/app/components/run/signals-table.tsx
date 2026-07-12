@@ -22,7 +22,7 @@ export const SignalsTable = ({ runId, signals }: { runId: string; signals: Signa
     </Thead>
     <Tbody>
       {signals.map((s) => (
-        <Tr>
+        <Tr key={s.cursorKey}>
           <Td class="font-mono" title={s.cursorKey}>
             {s.name}
           </Td>

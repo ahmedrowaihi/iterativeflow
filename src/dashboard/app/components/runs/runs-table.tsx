@@ -20,7 +20,7 @@ export const RunsTable = ({ runs, empty }: { runs: RunListItem[]; empty: Compone
     </Thead>
     <Tbody>
       {runs.length ? (
-        runs.map((run) => <RunRow run={run} />)
+        runs.map((run) => <RunRow key={run.id} run={run} />)
       ) : (
         <EmptyRow colSpan={8}>{empty}</EmptyRow>
       )}

@@ -20,7 +20,9 @@ export const RunsFilters = () => {
       >
         <option value="">any status</option>
         {RUN_STATUSES.map((s) => (
-          <option value={s}>{s.replace(/_/g, " ")}</option>
+          <option key={s} value={s}>
+            {s.replace(/_/g, " ")}
+          </option>
         ))}
       </Select>
       <Input

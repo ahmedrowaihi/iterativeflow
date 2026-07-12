@@ -51,6 +51,9 @@ export const readDashboardUi = (baseDir: string): DashboardUi => {
   return uiCache;
 };
 
+const escapeAttr = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 export const createAssetServer = (ui: DashboardUi, themeTag: string) => {
   const assetResponse = (name: string): Response | null => {
     const asset = ui.assets.get(name);
@@ -69,7 +72,10 @@ export const createAssetServer = (ui: DashboardUi, themeTag: string) => {
   // the handler is mounted at.
   const htmlResponse = (pathname: string): Response => {
     const basePath = pathname.endsWith("/") ? pathname : `${pathname}/`;
-    let body = ui.indexHtml.replace(/<base href="\.\/"\s*\/?>/, `<base href="${basePath}">`);
+    let body = ui.indexHtml.replace(
+      /<base href="\.\/"\s*\/?>/,
+      `<base href="${escapeAttr(basePath)}">`,
+    );
     if (themeTag) body = body.replace("</head>", `${themeTag}</head>`);
     return new Response(body, {
       status: 200,

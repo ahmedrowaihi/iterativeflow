@@ -50,7 +50,9 @@ export const RunOverview = ({ run }: { run: RunFull }) => (
         <Field label="Tags">
           <div class="flex flex-wrap gap-1.5">
             {(run.tags ?? []).map((t) => (
-              <Badge variant="secondary">{t}</Badge>
+              <Badge key={t} variant="secondary">
+                {t}
+              </Badge>
             ))}
           </div>
         </Field>

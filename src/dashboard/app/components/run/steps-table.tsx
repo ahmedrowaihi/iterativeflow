@@ -18,7 +18,7 @@ export const StepsTable = ({ steps }: { steps: StepData[] }) => (
     </Thead>
     <Tbody>
       {steps.length ? (
-        steps.map((s) => <StepRow step={s} />)
+        steps.map((s) => <StepRow key={s.cursorKey} step={s} />)
       ) : (
         <EmptyRow colSpan={6}>No steps yet.</EmptyRow>
       )}

@@ -23,7 +23,9 @@ export const RunRow = ({ run }: { run: RunListItem }) => (
     <Td>
       <div class="flex flex-wrap gap-1.5">
         {(run.tags ?? []).map((t) => (
-          <Badge variant="secondary">{t}</Badge>
+          <Badge key={t} variant="secondary">
+            {t}
+          </Badge>
         ))}
       </div>
     </Td>

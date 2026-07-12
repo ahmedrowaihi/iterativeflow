@@ -94,12 +94,21 @@ export const sendSignal = async (runId: string, name: string, payload?: unknown)
 };
 
 export const AUTOREFRESH_KEY = "iterativeflow.dashboard.autorefresh";
-export const autoRefresh = signal(
-  typeof localStorage !== "undefined" && localStorage.getItem(AUTOREFRESH_KEY) !== "off",
-);
+const readAutoRefresh = (): boolean => {
+  try {
+    return localStorage.getItem(AUTOREFRESH_KEY) !== "off";
+  } catch {
+    return true;
+  }
+};
+export const autoRefresh = signal(readAutoRefresh());
 export const setAutoRefresh = (on: boolean): void => {
   autoRefresh.value = on;
-  localStorage.setItem(AUTOREFRESH_KEY, on ? "on" : "off");
+  try {
+    localStorage.setItem(AUTOREFRESH_KEY, on ? "on" : "off");
+  } catch {
+    // storage blocked (private mode / sandboxed) — keep the in-memory value
+  }
 };
 
 export const cancelRun = async (run: RunListItem): Promise<void> => {

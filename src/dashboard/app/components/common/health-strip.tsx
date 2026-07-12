@@ -21,7 +21,7 @@ export const HealthStrip = () => {
   return (
     <div class="flex items-center gap-3 text-xs text-muted-foreground">
       {items.map(([label, tone]) => (
-        <span class="flex items-center gap-1.5">
+        <span key={label} class="flex items-center gap-1.5">
           <StatusDot tone={TONE[tone]} />
           {label}
         </span>

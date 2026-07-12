@@ -11,6 +11,7 @@ export const StatusBar = ({ runs }: { runs: RunListItem[] }) => {
           const n = runs.filter((r) => r.status === s).length;
           return (
             <div
+              key={s}
               style={`width:${(n / total) * 100}%;background:var(--status-${s})`}
               title={`${s}: ${n}`}
             />
@@ -19,7 +20,7 @@ export const StatusBar = ({ runs }: { runs: RunListItem[] }) => {
       </div>
       <div class="flex flex-wrap gap-x-4 gap-y-2">
         {present.map((s) => (
-          <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span key={s} class="flex items-center gap-1.5 text-xs text-muted-foreground">
             <StatusDot tone={`var(--status-${s})`} />
             {s.replace(/_/g, " ")}{" "}
             <span class="text-foreground">{runs.filter((r) => r.status === s).length}</span>
