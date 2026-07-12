@@ -1,16 +1,13 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeWorkerUtils } from "graphile-worker";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { flow } from "../../builder/flow";
 import { createEngine, type Engine } from "../../engine/engine";
 import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-
-const externalUrl = process.env.ITERATIVE_PG_URL;
-const skipContainers = process.env.SKIP_TESTCONTAINERS === "1";
+import { acquireTestDb, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -29,18 +26,11 @@ interface MultiHarness {
 }
 
 const setup = async (): Promise<MultiHarness> => {
-  let url: string;
-  let container: StartedPostgreSqlContainer | undefined;
-  if (externalUrl) {
-    url = externalUrl;
-  } else {
-    container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    url = container.getConnectionUri();
-  }
-  const poolA = new Pool({ connectionString: url });
-  const poolB = new Pool({ connectionString: url });
+  const testDb = await acquireTestDb();
+  const poolA = new Pool({ connectionString: testDb.url });
+  const poolB = new Pool({ connectionString: testDb.url });
   return {
-    url,
+    url: testDb.url,
     poolA,
     poolB,
     dbA: drizzle({ client: poolA }) as unknown as WorkflowDb,
@@ -48,7 +38,7 @@ const setup = async (): Promise<MultiHarness> => {
     cleanup: async () => {
       await poolA.end();
       await poolB.end();
-      if (container) await container.stop();
+      await testDb.close();
     },
   };
 };
@@ -88,7 +78,7 @@ const cancelDef = flow("xinst-cancel")
   .step("never-runs", () => "no")
   .build();
 
-describe.skipIf(skipContainers && !externalUrl)("multi-instance (two engines, same DB)", () => {
+describe.skipIf(pgUnavailable)("multi-instance (two engines, same DB)", () => {
   let h: MultiHarness;
   let engineA: Engine;
   let engineB: Engine;

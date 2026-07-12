@@ -8,3 +8,6 @@ npm-debug.log*
 .claude
 tests/docs-examples/*.ts
 !tests/docs-examples/globals.d.ts
+# dashboard local dev server (mock API + HMR)
+src/dashboard/app/dev-mock.ts
+src/dashboard/app/vite.dev.config.ts

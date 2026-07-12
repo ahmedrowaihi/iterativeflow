@@ -60,7 +60,10 @@ assert.ok(typeof def.body === "function");
 const pkgJson = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
 assert.equal(pkgJson.exports["./schema"], undefined, "v3: ./schema subpath must be removed");
 assert.equal(pkgJson.exports["./relations"], undefined, "v3: ./relations subpath must be removed");
-assert.ok(!existsSync(join(repo, "dist/storage/schema.js")), "v3: dist/storage/schema.js should not be emitted");
+assert.ok(
+  !existsSync(join(repo, "dist/storage/schema.js")),
+  "v3: dist/storage/schema.js should not be emitted",
+);
 
 // 3. CLI: bin entry + functional smoke
 assert.ok(pkgJson.bin?.iterativeflow, "v3: bin.iterativeflow missing");
@@ -76,10 +79,62 @@ try {
   assert.equal(result.status, 0, `CLI exited non-zero:\n${result.stderr}`);
   const generated = readFileSync(join(tmp, "schema.ts"), "utf8");
   assert.match(generated, /export const flowTables/, "generated file missing flowTables");
-  assert.match(generated, /export const runs = flowSchema\.table/, "generated file missing runs table");
-  assert.match(generated, /Initialized by `npx iterativeflow generate-schema`/, "generated file missing header");
+  assert.match(
+    generated,
+    /export const runs = flowSchema\.table/,
+    "generated file missing runs table",
+  );
+  assert.match(
+    generated,
+    /Initialized by `npx iterativeflow generate-schema`/,
+    "generated file missing header",
+  );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
+
+// 4. Dashboard: subpath export + built Vite UI + handler smoke
+assert.ok(pkgJson.exports["./dashboard"], "./dashboard subpath missing");
+assert.ok(existsSync(join(repo, "dist/dashboard.js")), "dist/dashboard.js missing");
+assert.ok(existsSync(join(repo, "dist/dashboard/index.html")), "built dashboard index.html missing");
+assert.ok(existsSync(join(repo, "dist/dashboard/assets")), "built dashboard assets dir missing");
+
+const dash = await import("../dist/dashboard.js");
+assert.equal(typeof dash.createFlowsDashboard, "function", "createFlowsDashboard missing");
+
+const stubEngine = {
+  health: async () => ({ ok: true, db: true, worker: false, listen: false }),
+};
+const dashboard = dash.createFlowsDashboard({ engine: stubEngine });
+const htmlRes = await dashboard.fetch(new Request("http://smoke.test/admin/flows"));
+assert.equal(htmlRes.status, 200, "dashboard HTML route not 200");
+const htmlBody = await htmlRes.text();
+assert.match(htmlBody, /<base href="\/admin\/flows\/">/, "mount-path <base> not injected");
+
+// The built shell references a hashed JS asset; the handler must serve it.
+const assetName = htmlBody.match(/assets\/([\w.-]+\.js)/)?.[1];
+assert.ok(assetName, "built shell has no hashed JS asset reference");
+const assetRes = await dashboard.fetch(
+  new Request(`http://smoke.test/admin/flows/assets/${assetName}`),
+);
+assert.equal(assetRes.status, 200, "dashboard asset route not 200");
+assert.match(
+  assetRes.headers.get("content-type") ?? "",
+  /javascript/,
+  "asset content-type not JS",
+);
+
+const cssName = htmlBody.match(/assets\/([\w.-]+\.css)/)?.[1];
+assert.ok(cssName, "built shell has no hashed CSS asset reference");
+const cssRes = await dashboard.fetch(
+  new Request(`http://smoke.test/admin/flows/assets/${cssName}`),
+);
+assert.equal(cssRes.status, 200, "dashboard CSS route not 200");
+assert.match(cssRes.headers.get("content-type") ?? "", /text\/css/, "asset content-type not CSS");
+
+const healthRes = await dashboard.fetch(new Request("http://smoke.test/admin/flows/api/health"));
+assert.equal(healthRes.status, 200, "dashboard health route not 200");
+const health = await healthRes.json();
+assert.equal(health.db, true, "health payload not passed through");
 
 console.log("dist smoke ok");

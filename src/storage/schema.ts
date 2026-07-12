@@ -13,19 +13,10 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import { RUN_STATUSES, type RunStatus } from "./run-statuses";
+
 /** Run lifecycle states. Terminal: `done`, `failed`, `canceled`. */
-export const RUN_STATUSES = [
-  "pending",
-  "running",
-  "sleeping",
-  "awaiting_signal",
-  "retrying",
-  "done",
-  "failed",
-  "canceled",
-] as const;
-/** Run lifecycle states. Terminal: `done`, `failed`, `canceled`. */
-export type RunStatus = (typeof RUN_STATUSES)[number];
+export { ACTIVE_RUN_STATUSES, RUN_STATUSES, type RunStatus } from "./run-statuses";
 
 /** Step lifecycle states. Terminal: `ok`, `failed_terminal`. */
 export const STEP_STATUSES = ["running", "ok", "failed_retry", "failed_terminal"] as const;

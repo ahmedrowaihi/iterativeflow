@@ -1,7 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeWorkerUtils } from "graphile-worker";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineContract } from "../../builder/contract";
@@ -10,9 +9,7 @@ import { createEngine, type Engine } from "../../engine/engine";
 import type { Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-
-const externalUrl = process.env.ITERATIVE_PG_URL;
-const skipContainers = process.env.SKIP_TESTCONTAINERS === "1";
+import { acquireTestDb, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -55,27 +52,20 @@ interface Harness {
 }
 
 const setup = async (): Promise<Harness> => {
-  let url: string;
-  let container: StartedPostgreSqlContainer | undefined;
-  if (externalUrl) {
-    url = externalUrl;
-  } else {
-    container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    url = container.getConnectionUri();
-  }
+  const testDb = await acquireTestDb();
   const pools: Pool[] = [];
   return {
-    url,
+    url: testDb.url,
     pools,
     db: (pool) => drizzle({ client: pool }) as unknown as WorkflowDb,
     cleanup: async () => {
       for (const p of pools) await p.end();
-      if (container) await container.stop();
+      await testDb.close();
     },
   };
 };
 
-describe.skipIf(skipContainers && !externalUrl)("enqueue-only handles (flow contract)", () => {
+describe.skipIf(pgUnavailable)("enqueue-only handles (flow contract)", () => {
   let h: Harness;
 
   const newPool = (): Pool => {
