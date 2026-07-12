@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { flowTables as defaultTables } from "../schema";
-import type { AtomicStorage, Storage } from "../types";
+import type { AtomicStorage, StartRunSpec, Storage } from "../types";
 import type { WorkflowDb } from "../db";
 import type { EnqueueRun } from "./types";
 import { claimRun } from "./claim";
@@ -39,19 +39,45 @@ export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
   const deps: StorageSliceDeps = { db, tables, enqueue: enqueueRun, logger };
   const root = buildOps({ db, tables, enqueue: enqueueRun });
 
+  const atomicOver = (scoped: WorkflowDb): AtomicStorage => {
+    const inner = buildOps({ db: scoped, tables, enqueue: enqueueRun });
+    return { ...inner.ops, lockRun: inner.lockRun, enqueue: inner.enqueue };
+  };
+
+  const runStart = async (atomic: AtomicStorage, spec: StartRunSpec) => {
+    const { runId, status, created } = await atomic.createRun({
+      name: spec.name,
+      version: spec.version,
+      input: spec.input,
+      idempotencyKey: spec.idempotencyKey,
+      tags: spec.tags,
+      parentRunId: spec.parentRunId,
+      parentCursorKey: spec.parentCursorKey,
+    });
+    if (created) {
+      await atomic.recordEvent({
+        runId,
+        type: "started",
+        payload: spec.parentRunId
+          ? { parent: spec.parentRunId, parentCursorKey: spec.parentCursorKey }
+          : { idempotent: false },
+      });
+      await atomic.enqueue(runId, { runAt: spec.runAt, priority: spec.priority });
+    }
+    return { runId, status, created };
+  };
+
   return {
     ...root.ops,
 
     async transaction(fn) {
-      return db.transaction(async (tx) => {
-        const inner = buildOps({ db: tx, tables, enqueue: enqueueRun });
-        const atomic: AtomicStorage = {
-          ...inner.ops,
-          lockRun: inner.lockRun,
-          enqueue: inner.enqueue,
-        };
-        return fn(atomic);
-      });
+      return db.transaction((inner) => fn(atomicOver(inner)));
+    },
+
+    startRun(spec, tx) {
+      return tx
+        ? runStart(atomicOver(tx), spec)
+        : db.transaction((inner) => runStart(atomicOver(inner), spec));
     },
 
     claimRun: claimRun(deps),
