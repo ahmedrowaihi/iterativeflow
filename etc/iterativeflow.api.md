@@ -561,6 +561,7 @@ export interface StartOpts {
     idempotencyKey?: string;
     priority?: number;
     tags?: ReadonlyArray<string>;
+    tx?: WorkflowDb;
 }
 
 // @public

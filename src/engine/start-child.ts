@@ -18,24 +18,14 @@ export const createStartChild =
     invokeOpts: InvokeOpts | undefined,
   ): Promise<string> => {
     const idemSeed = `${parentRunId}:${parentCursorKey}`;
-    return storage.transaction(async (tx) => {
-      const { runId, created } = await tx.createRun({
-        name: childHandle.name,
-        version: childHandle.version,
-        input,
-        idempotencyKey: invokeOpts?.idempotencyKey ?? idemSeed,
-        tags: invokeOpts?.tags,
-        parentRunId,
-        parentCursorKey,
-      });
-      if (created) {
-        await tx.recordEvent({
-          runId,
-          type: "started",
-          payload: { parent: parentRunId, parentCursorKey },
-        });
-        await tx.enqueue(runId);
-      }
-      return runId;
+    const { runId } = await storage.startRun({
+      name: childHandle.name,
+      version: childHandle.version,
+      input,
+      idempotencyKey: invokeOpts?.idempotencyKey ?? idemSeed,
+      tags: invokeOpts?.tags,
+      parentRunId,
+      parentCursorKey,
     });
+    return runId;
   };

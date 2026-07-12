@@ -1,3 +1,4 @@
+import type { WorkflowDb } from "./db";
 import type {
   EventType,
   FlowError,
@@ -98,6 +99,21 @@ export interface ListRunsPage {
   next?: { createdAt: Date; id: string };
 }
 
+/** Everything `Storage.startRun` needs to insert a run, record its started event, and enqueue. */
+export interface StartRunSpec {
+  name: string;
+  version: number;
+  input: unknown;
+  idempotencyKey?: string;
+  tags?: ReadonlyArray<string>;
+  parentRunId?: string;
+  parentCursorKey?: string;
+  /** First-run delay, already resolved to an absolute instant. */
+  runAt?: Date;
+  /** Queue priority passed through to `enqueue`. */
+  priority?: number;
+}
+
 export interface StorageOps {
   createRun(opt: {
     name: string;
@@ -151,6 +167,11 @@ export interface AtomicStorage extends StorageOps {
 
 export interface Storage extends StorageOps {
   transaction<T>(fn: (tx: AtomicStorage) => Promise<T>): Promise<T>;
+  /** Insert a run, record its `started` event, and enqueue — atomically. Joins `tx` when supplied (caller owns the commit), else opens its own transaction. */
+  startRun(
+    spec: StartRunSpec,
+    tx?: WorkflowDb,
+  ): Promise<{ runId: string; status: RunStatus; created: boolean }>;
   claimRun(runId: string): Promise<ClaimResult>;
   deliverSignal(runId: string, signalName: string, payload: unknown): Promise<SignalDeliveryResult>;
   armOrConsumeSignal(runId: string, cursorKey: string, expiresAt?: Date): Promise<ArmResult>;

@@ -1,6 +1,7 @@
 import type { BackoffPolicy } from "../util/backoff";
 import type { Duration } from "../util/duration";
 import type { StandardSchemaV1 } from "../util/standard-schema";
+import type { WorkflowDb } from "../storage/db";
 import type { EventRow, RunRow, RunStatus, SignalRow, StepRow, TimerRow } from "../storage/schema";
 import type { SignalDeliveryResult } from "../storage/types";
 
@@ -162,6 +163,14 @@ export interface StartOpts {
   delay?: Duration;
   /** Free-form tags for filtering via `engine.listRuns({ tag })`. */
   tags?: ReadonlyArray<string>;
+  /**
+   * Enqueue inside this caller-owned transaction so the run-row insert and add-job commit
+   * atomically with the caller's own rows. The caller owns the commit boundary — `start()`
+   * writes into `tx` but never commits or rolls back. Must be a handle on the same database
+   * as the workflow tables (no cross-database transaction). Omit to use the engine's own
+   * transaction.
+   */
+  tx?: WorkflowDb;
 }
 
 /**

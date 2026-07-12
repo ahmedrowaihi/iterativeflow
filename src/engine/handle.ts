@@ -48,26 +48,19 @@ export const createHandleFactory =
       }
       enforcePayloadCap(`Flow "${name}" input`, validated, deps.maxInputBytes);
       await deps.schemaCheck.ensure();
-      const runAt = startOpts.delay ? toFireAt(startOpts.delay) : undefined;
 
-      const result = await deps.storage.transaction(async (tx) => {
-        const { runId, status, created } = await tx.createRun({
+      const result = await deps.storage.startRun(
+        {
           name,
           version,
           input: validated,
           idempotencyKey: startOpts.idempotencyKey,
           tags: startOpts.tags,
-        });
-        if (created) {
-          await tx.recordEvent({
-            runId,
-            type: "started",
-            payload: { idempotent: false },
-          });
-          await tx.enqueue(runId, { runAt, priority: startOpts.priority });
-        }
-        return { runId, status, created };
-      });
+          runAt: startOpts.delay ? toFireAt(startOpts.delay) : undefined,
+          priority: startOpts.priority,
+        },
+        startOpts.tx,
+      );
       if (result.created) deps.metrics.runStarted?.({ name, version });
       return { runId: result.runId, status: result.status };
     },
