@@ -1,9 +1,10 @@
-export {
+import {
   ACTIVE_RUN_STATUSES as ACTIVE_STATUSES,
   RUN_STATUSES,
   type RunStatus,
 } from "../../../storage/run-statuses";
-import type { RunStatus } from "../../../storage/run-statuses";
+
+export { ACTIVE_STATUSES, RUN_STATUSES, type RunStatus };
 
 export interface CappedJson {
   preview: string;
