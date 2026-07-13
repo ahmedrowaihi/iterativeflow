@@ -1,5 +1,11 @@
 # iterativeflow
 
+## 5.4.1
+
+### Patch Changes
+
+- cfa1ebd: fix copy schema regression
+
 ## 5.4.0
 
 ### Minor Changes
