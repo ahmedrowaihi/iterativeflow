@@ -278,6 +278,12 @@ export interface FlowHandle<I, O> {
         runId: string;
         status: RunStatus;
     }>;
+    startMany(items: ReadonlyArray<StartManyItem<I>>, opts?: {
+        tx?: WorkflowDb;
+    }): Promise<Array<{
+        runId: string;
+        status: RunStatus;
+    }>>;
     readonly version: number;
     wait(runId: string, opts: {
         until: WaitUntil;
@@ -556,6 +562,15 @@ export interface SleepNode {
 }
 
 // @public
+export interface StartManyItem<I> {
+    delay?: Duration;
+    idempotencyKey?: string;
+    input: I;
+    priority?: number;
+    tags?: ReadonlyArray<string>;
+}
+
+// @public
 export interface StartOpts {
     delay?: Duration;
     idempotencyKey?: string;
@@ -650,14 +665,21 @@ export interface TimerRow {
 // @public
 export const toFlowError: (err: unknown) => FlowError;
 
-// Warning: (ae-forgotten-export) The symbol "EnqueueOpts" needs to be exported by the entry point index.d.ts
-//
 // @public
-export type TxEnqueue = (tx: WorkflowDb, job: {
-    runId: string;
-    name: string;
-    version: number;
-}, opts?: EnqueueOpts) => Promise<void>;
+export interface TxEnqueue {
+    // Warning: (ae-forgotten-export) The symbol "EnqueueOpts" needs to be exported by the entry point index.d.ts
+    //
+    // (undocumented)
+    (tx: WorkflowDb, job: {
+        runId: string;
+        name: string;
+        version: number;
+    }, opts?: EnqueueOpts): Promise<void>;
+    // Warning: (ae-forgotten-export) The symbol "EnqueueJob" needs to be exported by the entry point index.d.ts
+    //
+    // (undocumented)
+    many?(tx: WorkflowDb, jobs: ReadonlyArray<EnqueueJob>): Promise<void>;
+}
 
 // @public
 export type WaitUntil = {

@@ -3,16 +3,29 @@ import type { WorkflowDb } from "../db";
 import type { events, runs, signals, steps, timers } from "../schema";
 import type { EnqueueOpts } from "../types";
 
+/** A single enqueue target: the run's identity plus its scheduling opts. */
+export interface EnqueueJob {
+  job: { runId: string; name: string; version: number };
+  opts?: EnqueueOpts;
+}
+
 /**
  * Transaction-scoped enqueue routed by flow identity. The runtime supplies the
  * active `tx` (or root db). `name`/`version` select the per-flow graphile task
  * identifier so only a worker that registered the flow can claim the job.
+ *
+ * `many` is an optional bulk path: adapters that can enqueue N jobs in one
+ * round-trip implement it; callers fall back to looping the single form when
+ * it's absent.
  */
-export type TxEnqueue = (
-  tx: WorkflowDb,
-  job: { runId: string; name: string; version: number },
-  opts?: EnqueueOpts,
-) => Promise<void>;
+export interface TxEnqueue {
+  (
+    tx: WorkflowDb,
+    job: { runId: string; name: string; version: number },
+    opts?: EnqueueOpts,
+  ): Promise<void>;
+  many?(tx: WorkflowDb, jobs: ReadonlyArray<EnqueueJob>): Promise<void>;
+}
 
 /**
  * Storage-internal enqueue keyed by `runId` alone. {@link createDrizzleStorage}

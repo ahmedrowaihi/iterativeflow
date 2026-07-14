@@ -36,6 +36,7 @@ export type {
   SignalIssue,
   FlowTables,
   SignalOpts,
+  StartManyItem,
   StartOpts,
   StepArg,
   StepOpts,

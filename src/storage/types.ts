@@ -172,6 +172,11 @@ export interface Storage extends StorageOps {
     spec: StartRunSpec,
     tx?: WorkflowDb,
   ): Promise<{ runId: string; status: RunStatus; created: boolean }>;
+  /** Batch form of {@link startRun}: insert N runs, their started events, and enqueue them in a handful of statements. Atomic — joins `tx` when supplied, else opens its own transaction. Results are returned in input order. */
+  startManyRuns(
+    specs: ReadonlyArray<StartRunSpec>,
+    tx?: WorkflowDb,
+  ): Promise<Array<{ runId: string; status: RunStatus; created: boolean }>>;
   claimRun(runId: string): Promise<ClaimResult>;
   deliverSignal(runId: string, signalName: string, payload: unknown): Promise<SignalDeliveryResult>;
   armOrConsumeSignal(runId: string, cursorKey: string, expiresAt?: Date): Promise<ArmResult>;
