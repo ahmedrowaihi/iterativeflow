@@ -154,6 +154,7 @@ describe("workflow engine (pglite)", () => {
         name: "child",
         version: 1,
         start: async () => ({ runId: "x", status: "pending" as const }),
+        startMany: async () => [],
         output: async () => undefined,
         result: async () => {
           throw new Error("not invoked in test");
@@ -195,6 +196,7 @@ describe("workflow engine (pglite)", () => {
         name: "child",
         version: 1,
         start: async () => ({ runId: "x", status: "pending" as const }),
+        startMany: async () => [],
         output: async () => undefined,
         result: async () => {
           throw new Error("not invoked in test");

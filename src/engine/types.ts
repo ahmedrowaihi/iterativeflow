@@ -173,6 +173,20 @@ export interface StartOpts {
   tx?: WorkflowDb;
 }
 
+/** One run in a {@link FlowHandle.startMany} batch. Per-run start params; the batch shares a single `tx`. */
+export interface StartManyItem<I> {
+  /** This run's input. */
+  input: I;
+  /** Idempotency key scoped under `(flowName, flowVersion)`. */
+  idempotencyKey?: string;
+  /** Graphile-worker priority (-32768..32767, lower = sooner). */
+  priority?: number;
+  /** Delay this run by this duration. */
+  delay?: Duration;
+  /** Free-form tags for filtering via `engine.listRuns({ tag })`. */
+  tags?: ReadonlyArray<string>;
+}
+
 /**
  * Wait condition for {@link FlowHandle.wait}. Either a step name (first
  * occurrence — cursor key matches the step name exactly) or a signal name
@@ -188,6 +202,16 @@ export interface FlowHandle<I, O> {
   readonly version: number;
   /** Insert a row and enqueue. The worker (started by `engine.listen()`) consumes it. */
   start(input: I, opts?: StartOpts): Promise<{ runId: string; status: RunStatus }>;
+  /**
+   * Batch form of {@link FlowHandle.start}: insert and enqueue many runs atomically in a
+   * handful of statements (vs. one round-trip per run). All-or-nothing — pass a
+   * `tx` to commit the batch with your own rows. Results are returned in input
+   * order; idempotent duplicates return the original run with `status`.
+   */
+  startMany(
+    items: ReadonlyArray<StartManyItem<I>>,
+    opts?: { tx?: WorkflowDb },
+  ): Promise<Array<{ runId: string; status: RunStatus }>>;
   /** Resolved output if the run is `done`, else `undefined`. */
   output(runId: string): Promise<O | undefined>;
   /**
@@ -276,6 +300,7 @@ export type {
   RunSnapshot,
   SignalDeliveryResult,
   SignalIssue,
+  StartRunSpec,
   Storage,
   StorageOps,
 } from "../storage/types";

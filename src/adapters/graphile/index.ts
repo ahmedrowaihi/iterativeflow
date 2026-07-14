@@ -24,7 +24,7 @@ export const flowTaskId = (name: string, version: number): string => `flow:run:$
 
 export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"): TxEnqueue => {
   const schema = sql.identifier(workerSchema);
-  return async (tx, job, opts) => {
+  const enqueue: TxEnqueue = async (tx, job, opts) => {
     const jobKey = `flow:${job.runId}`;
     const runAt = opts?.runAt ? ts(opts.runAt) : sql`NULL`;
     await tx.execute(sql`
@@ -38,6 +38,30 @@ export const createGraphileTxEnqueue = (workerSchema: string = "graphile_worker"
       )
     `);
   };
+
+  // add_job (not the newer bulk add_jobs) so the fragment stays valid across graphile-worker versions.
+  enqueue.many = async (tx, jobs) => {
+    if (jobs.length === 0) return;
+    const rows = jobs.map(
+      ({ job, opts }) =>
+        sql`(${flowTaskId(job.name, job.version)}, ${job.runId}, ${
+          opts?.runAt ? opts.runAt.toISOString() : null
+        }::timestamptz, ${opts?.priority ?? null}::int, ${`flow:${job.runId}`})`,
+    );
+    await tx.execute(sql`
+      SELECT ${schema}.add_job(
+        identifier => v.identifier,
+        payload => json_build_object('runId', v.run_id),
+        run_at => v.run_at,
+        priority => v.priority,
+        job_key => v.job_key,
+        job_key_mode => ${"replace"}
+      )
+      FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(identifier, run_id, run_at, priority, job_key)
+    `);
+  };
+
+  return enqueue;
 };
 
 export interface GraphileWorkerOpts {
