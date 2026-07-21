@@ -7,7 +7,7 @@ import { createEngine, type Engine } from "../../engine/engine";
 import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-import { acquireTestDb, pgUnavailable } from "./pg-test-db";
+import { acquireTestDb, makePool, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -27,8 +27,8 @@ interface MultiHarness {
 
 const setup = async (): Promise<MultiHarness> => {
   const testDb = await acquireTestDb();
-  const poolA = new Pool({ connectionString: testDb.url });
-  const poolB = new Pool({ connectionString: testDb.url });
+  const poolA = makePool(testDb.url);
+  const poolB = makePool(testDb.url);
   return {
     url: testDb.url,
     poolA,
