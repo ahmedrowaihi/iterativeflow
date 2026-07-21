@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { eq } from "drizzle-orm";
 import type { WorkflowDb } from "../storage/db";
 import { createDrizzleStorage, type TxEnqueue } from "../storage/drizzle";
-import { events, runs } from "../storage/schema";
+import { events, RETRY_TIMER_CURSOR, runs } from "../storage/schema";
 import { applyFlowSchema } from "../storage/setup";
 import { RuntimeFlowContext } from "./context";
 import { FlowRegistry } from "./registry";
@@ -920,6 +920,46 @@ describe("defineWorkflow (low-level API)", () => {
       expect(r.status).toBe("completed");
       const out = (await h.storage.loadRun(runId))?.output as Array<{ from: string; text: string }>;
       expect(out.map((t) => t.text)).toEqual(["hello", "echo: hello", "again", "echo: again"]);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("retry backoff timer", () => {
+  it("arms a __retry timer on step backoff and fires it when the run resumes", async () => {
+    const h = await setup();
+    try {
+      let attempts = 0;
+      register(h.registry, "flaky", async (ctx) => {
+        await ctx.step(
+          "call",
+          () => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("transient");
+            return "ok";
+          },
+          { retries: 1 },
+        );
+        return "done";
+      });
+      const runId = await createRun(h.storage, "flaky", {});
+
+      // Pass 1: the step throws → the run suspends into retrying with a durable
+      // backoff deadline (a timer), not just a queue job.
+      const first = await h.runOnce(runId);
+      expect(first.status).toBe("suspended");
+      expect((await h.storage.loadRun(runId))?.status).toBe("retrying");
+      const armed = await h.storage.loadTimer(runId, RETRY_TIMER_CURSOR);
+      expect(armed).toBeDefined();
+      expect(armed?.firedAt).toBeNull();
+      expect(armed?.fireAt.getTime()).toBeGreaterThan(Date.now());
+
+      // Pass 2: claiming the run fires the backoff timer; the retry succeeds.
+      const second = await h.runOnce(runId);
+      expect(second.status).toBe("completed");
+      expect((await h.storage.loadRun(runId))?.status).toBe("done");
+      expect((await h.storage.loadTimer(runId, RETRY_TIMER_CURSOR))?.firedAt).not.toBeNull();
     } finally {
       await h.close();
     }

@@ -47,6 +47,15 @@ const ageRun = async (db: WorkflowDb, runId: string, ageMs: number) => {
 
 const stuckCutoff = (): Date => new Date(Date.now() - 10 * 60_000);
 
+const setAttempts = async (db: WorkflowDb, runId: string, attempts: number) => {
+  await db.execute(sql`UPDATE workflow.runs SET attempts = ${attempts} WHERE id = ${runId}::uuid`);
+};
+
+const eventTypes = async (db: WorkflowDb, runId: string): Promise<string[]> => {
+  const rows = await db.select({ type: events.type }).from(events).where(eq(events.runId, runId));
+  return rows.map((r) => r.type);
+};
+
 describe("storage durability", () => {
   let h: Harness;
   beforeEach(async () => {
@@ -311,6 +320,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(1);
       expect(h.enqueues).toEqual([{ runId, runAt: undefined }]);
@@ -329,6 +339,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -347,6 +358,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -366,6 +378,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -384,6 +397,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -394,6 +408,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -411,6 +426,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: new Date(Date.now() - 10 * 60_000),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(1);
       expect(h.enqueues[0]?.runId).toBe(runId);
@@ -428,6 +444,7 @@ describe("storage durability", () => {
       await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: new Date(Date.now() - 10 * 60_000),
+        maxRunAttempts: 100,
       });
 
       expect((await h.storage.claimRun(runId)).kind).toBe("claimed");
@@ -445,6 +462,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: new Date(Date.now() - 10 * 60_000),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
@@ -462,6 +480,7 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: new Date(0),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(0);
       expect(runId).toBeTruthy();
@@ -479,11 +498,90 @@ describe("storage durability", () => {
       const n = await h.storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - 60_000),
         runningStuckOlderThan: stuckCutoff(),
+        maxRunAttempts: 100,
       });
       expect(n).toBe(0);
       expect(h.enqueues.length).toBe(0);
       const rows = await h.db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId));
       expect(rows[0]?.status).toBe("done");
+    });
+
+    const reconcileOpts = (maxRunAttempts = 100) => ({
+      olderThan: new Date(Date.now() - 60_000),
+      runningStuckOlderThan: stuckCutoff(),
+      maxRunAttempts,
+    });
+
+    // A retrying run whose backoff timer is overdue and unfired: its wake was
+    // lost (fired then the worker died before re-dispatch). This is the orphan.
+    const seedRetryOrphan = async (name: string) => {
+      const { runId } = await h.storage.createRun({ name, version: 1, input: {} });
+      await h.storage.markRetrying(runId);
+      await h.storage.armRetryTimer(runId, new Date(Date.now() - 5 * 60_000));
+      await ageRun(h.db, runId, 15 * 60_000);
+      return runId;
+    };
+
+    it("re-enqueues a retrying run whose backoff timer is overdue (orphaned wake)", async () => {
+      const runId = await seedRetryOrphan("retry-orphan");
+      const n = await h.storage.reenqueueOrphans(reconcileOpts());
+      expect(n).toBe(1);
+      expect(h.enqueues.map((e) => e.runId)).toEqual([runId]);
+      expect((await h.storage.claimRun(runId)).kind).toBe("claimed");
+    });
+
+    it("skips a retrying run whose backoff timer is still in the future (healthy backoff)", async () => {
+      const { runId } = await h.storage.createRun({ name: "retry-healthy", version: 1, input: {} });
+      await h.storage.markRetrying(runId);
+      await h.storage.armRetryTimer(runId, new Date(Date.now() + 30 * 60_000));
+      await ageRun(h.db, runId, 15 * 60_000);
+
+      const n = await h.storage.reenqueueOrphans(reconcileOpts());
+      expect(n).toBe(0);
+      expect(h.enqueues.length).toBe(0);
+    });
+
+    it("fails a stuck retrying orphan whose attempts are exhausted instead of re-enqueuing", async () => {
+      const runId = await seedRetryOrphan("retry-doomed");
+      await setAttempts(h.db, runId, 3);
+
+      const n = await h.storage.reenqueueOrphans(reconcileOpts(3));
+      expect(n).toBe(1);
+      expect(h.enqueues.length).toBe(0);
+      const [row] = await h.db
+        .select({ status: runs.status, error: runs.error })
+        .from(runs)
+        .where(eq(runs.id, runId));
+      expect(row?.status).toBe("failed");
+      expect((row?.error as { code?: string } | null)?.code).toBe("RUN_ATTEMPTS_EXHAUSTED");
+      expect(await eventTypes(h.db, runId)).toContain("failed");
+    });
+  });
+
+  describe("retry timer", () => {
+    it("armRetryTimer upserts one __retry timer, moving fire_at forward and clearing fired_at", async () => {
+      const { runId } = await h.storage.createRun({ name: "arm", version: 1, input: {} });
+      const first = new Date(Date.now() + 60_000);
+      await h.storage.armRetryTimer(runId, first);
+      let t = await h.storage.loadTimer(runId, "__retry");
+      expect(t?.fireAt.getTime()).toBe(first.getTime());
+
+      const second = new Date(Date.now() + 5 * 60_000);
+      await h.storage.armRetryTimer(runId, second);
+      const all = await h.db.select().from(timers).where(eq(timers.runId, runId));
+      expect(all).toHaveLength(1); // upserted, not duplicated
+      expect(all[0]?.fireAt.getTime()).toBe(second.getTime());
+      expect(all[0]?.firedAt).toBeNull();
+    });
+
+    it("claiming a retrying run fires its __retry timer so it can't read as overdue later", async () => {
+      const { runId } = await h.storage.createRun({ name: "consume", version: 1, input: {} });
+      await h.storage.markRetrying(runId);
+      await h.storage.armRetryTimer(runId, new Date(Date.now() - 1_000));
+
+      expect((await h.storage.claimRun(runId)).kind).toBe("claimed");
+      const t = await h.storage.loadTimer(runId, "__retry");
+      expect(t?.firedAt).not.toBeNull();
     });
   });
 

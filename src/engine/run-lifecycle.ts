@@ -97,6 +97,9 @@ const handleSuspend = async (
       await tx.markAwaitingSignal(runId);
     } else if (err.reason === "step_retry") {
       await tx.markRetrying(runId);
+      // Durable backoff deadline the reconciler recovers against if the wake
+      // below is lost — the queue job alone leaves nothing in workflow.* to see.
+      if (err.wakeAt) await tx.armRetryTimer(runId, err.wakeAt);
     } else {
       await tx.markSleeping(runId);
     }
