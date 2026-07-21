@@ -148,6 +148,8 @@ export interface StorageOps {
   loadTimer(runId: string, cursorKey: string): Promise<TimerRow | undefined>;
   createTimer(runId: string, cursorKey: string, fireAt: Date): Promise<void>;
   fireTimer(runId: string, cursorKey: string): Promise<TimerRow>;
+  /** Upsert the run's retry-backoff timer to `fireAt` (unfired). One per run; the durable deadline the reconciler recovers against. */
+  armRetryTimer(runId: string, fireAt: Date): Promise<void>;
 
   loadSignal(runId: string, cursorKey: string): Promise<SignalRow | undefined>;
   preDeliverSignal(runId: string, cursorKey: string, payload: unknown): Promise<boolean>;
@@ -191,6 +193,7 @@ export interface Storage extends StorageOps {
   reenqueueOrphans(opt: {
     olderThan: Date;
     runningStuckOlderThan: Date;
+    maxRunAttempts: number;
     batchSize?: number;
   }): Promise<number>;
   pruneEvents(opt: { olderThan: Date; batchSize?: number }): Promise<number>;

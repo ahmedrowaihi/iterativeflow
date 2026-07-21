@@ -188,6 +188,7 @@ flowchart TB
   scan -->|"sleeping + timer due"| enq
   scan -->|"awaiting_signal + delivered/expired"| enq
   scan -->|"running + idle past runningStuckMs"| enq
+  scan -->|"retrying + backoff timer overdue"| enq
   scan -->|"none"| nop["no-op"]
   enq --> dedupe["jobKey flow:runId, mode=replace<br/>dedupes against existing"]
 ```
@@ -199,16 +200,17 @@ Tune with `reconciler: { graceMs, runningStuckMs, schedule }`, or disable via
 
 What's persisted vs in-process:
 
-| State                                   | Survives restart?                                       |
-| --------------------------------------- | ------------------------------------------------------- |
-| `running` runs                          | Yes — reconciler re-enqueues after `runningStuckMs`     |
-| `sleeping` runs                         | Yes — `run_at` is in `graphile_worker.jobs`             |
-| `awaiting_signal` runs                  | Yes — signal arrives via DB, NOTIFY fans cross-instance |
-| Idempotency keys                        | Yes — scoped by `(name, version, key)` in DB            |
-| Cron advisory locks (`overlap: "skip"`) | Yes — released on process exit; next tick re-acquires   |
-| `handle.result(runId)` waiters          | **No** — in-process Promise; caller must retry          |
-| `handle.wait(runId, ...)` waiters       | **No** — same as above                                  |
-| In-flight `AbortController`             | **No** — `engine.cancel` on a crashed run is harmless   |
+| State                                   | Survives restart?                                                             |
+| --------------------------------------- | ----------------------------------------------------------------------------- |
+| `running` runs                          | Yes — reconciler re-enqueues after `runningStuckMs`                           |
+| `retrying` runs                         | Yes — backoff deadline is a timer; reconciler re-enqueues if the wake is lost |
+| `sleeping` runs                         | Yes — `run_at` is in `graphile_worker.jobs`                                   |
+| `awaiting_signal` runs                  | Yes — signal arrives via DB, NOTIFY fans cross-instance                       |
+| Idempotency keys                        | Yes — scoped by `(name, version, key)` in DB                                  |
+| Cron advisory locks (`overlap: "skip"`) | Yes — released on process exit; next tick re-acquires                         |
+| `handle.result(runId)` waiters          | **No** — in-process Promise; caller must retry                                |
+| `handle.wait(runId, ...)` waiters       | **No** — same as above                                                        |
+| In-flight `AbortController`             | **No** — `engine.cancel` on a crashed run is harmless                         |
 
 **Step semantics on restart are at-least-once.** A crash between step body
 completion and the `finishStep` commit re-runs the body on resume. Make

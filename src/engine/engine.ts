@@ -299,6 +299,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
 
   const workerCfg = opt.worker ?? {};
   const limits = opt.limits ?? {};
+  const maxRunAttempts = limits.maxRunAttempts ?? DEFAULT_MAX_RUN_ATTEMPTS;
   const reconciler = withReconcilerDefaults(opt.reconciler);
   const retention = opt.retention === false ? undefined : opt.retention;
 
@@ -380,7 +381,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
     metrics,
     terminalWaiters,
     runControllers,
-    maxRunAttempts: limits.maxRunAttempts ?? DEFAULT_MAX_RUN_ATTEMPTS,
+    maxRunAttempts,
     defaultStepTimeoutMs: limits.defaultStepTimeoutMs,
     maxStepResultBytes: limits.maxStepResultBytes,
     maxInvokeDepth: limits.maxInvokeDepth ?? DEFAULT_MAX_INVOKE_DEPTH,
@@ -480,6 +481,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
               schedule: reconciler.schedule,
               graceMs: reconciler.graceMs,
               stuckMs: reconciler.stuckMs,
+              maxRunAttempts,
             }),
           );
         }
@@ -547,6 +549,7 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
       const reEnqueued = await storage.reenqueueOrphans({
         olderThan: new Date(Date.now() - reconciler.graceMs),
         runningStuckOlderThan: new Date(Date.now() - reconciler.stuckMs),
+        maxRunAttempts,
       });
       metrics.reconcilerSweep?.({ scanned: reEnqueued, reEnqueued });
       return { reEnqueued };
