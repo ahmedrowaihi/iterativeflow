@@ -186,8 +186,9 @@ Three things can go wrong with an in-flight run:
 1. **Worker crashes mid-step.** The step row is in `status: running`. The run row's `updated_at` stops advancing. The reconciler cron picks it up after `runningStuckMs` (default 10 min) and re-enqueues. On resume, the failed step re-runs (memo only fires for `status: ok` or `status: failed_terminal`).
 2. **Worker crashes mid-suspend-write.** The transactional outbox (`storage.signalHook`, `claimRun`, the suspend handler) commits the state change + enqueue atomically. Either both happen or neither — the reconciler will catch the "neither" case.
 3. **Worker dies between mark and notify.** The state is persisted; the in-process LISTEN waiters don't fire, but the row update IS visible. `handle.result()` falls back to row-polling when LISTEN is degraded.
+4. **Worker crashes mid-retry.** A step failed retryably and the run went `retrying`. The backoff deadline is durably recorded as a `workflow.timers` row (`armRetryTimer`, symmetric with `ctx.sleep`) — the queue job is only the wake. If that wake is lost (fired but the worker died before re-dispatch), the timer goes overdue and unfired, so the reconciler recovers it on the same `retrying + timer due` path as sleep — re-enqueuing, or failing it if `maxRunAttempts` is exhausted. A healthy backoff has a future unfired timer and is left alone. The retry timer is fired when the run is claimed back out of `retrying`, so it can't linger and misfire on a later sleep.
 
-The reconciler is the safety net. It scans for runs whose `updated_at` is past the grace window AND are in a resumable state (`pending` with no fire, `sleeping` with a due timer, `awaiting_signal` with a delivered signal, `running` past the stuck threshold). Anything stranded gets re-enqueued.
+The reconciler is the safety net. It scans for runs whose `updated_at` is past the grace window AND are in a resumable state (`pending` with no fire, `sleeping`/`retrying` with a due timer, `awaiting_signal` with a delivered signal, `running` past the stuck threshold). Anything stranded gets re-enqueued.
 
 ## What's NOT durable
 

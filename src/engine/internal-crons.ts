@@ -14,6 +14,7 @@ export interface ReconcilerCronOpts {
   schedule?: string;
   graceMs: number;
   stuckMs: number;
+  maxRunAttempts: number;
 }
 
 /**
@@ -28,6 +29,7 @@ export const buildReconcilerCron = ({
   schedule,
   graceMs,
   stuckMs,
+  maxRunAttempts,
 }: ReconcilerCronOpts): CronSpec => ({
   name: RECONCILE_CRON_NAME,
   schedule: schedule ?? "* * * * *",
@@ -35,6 +37,7 @@ export const buildReconcilerCron = ({
     const reEnqueued = await storage.reenqueueOrphans({
       olderThan: new Date(Date.now() - graceMs),
       runningStuckOlderThan: new Date(Date.now() - stuckMs),
+      maxRunAttempts,
     });
     metrics.reconcilerSweep?.({ scanned: reEnqueued, reEnqueued });
   },

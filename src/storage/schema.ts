@@ -141,6 +141,14 @@ export const steps = flowSchema.table(
   (t) => [primaryKey({ columns: [t.runId, t.cursorKey] })],
 );
 
+/**
+ * Reserved timer cursor for a step's retry backoff deadline. One per run,
+ * upserted forward on each retry, fired when the run is claimed back out of
+ * `retrying`. Distinct from `ctx.sleep` cursors (which come from the run's
+ * cursor sequence) so the two never collide.
+ */
+export const RETRY_TIMER_CURSOR = "__retry";
+
 export const timers = flowSchema.table(
   "timers",
   {

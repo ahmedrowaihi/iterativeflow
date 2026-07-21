@@ -1,5 +1,6 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
+import { RETRY_TIMER_CURSOR } from "../schema";
 import type { ClaimResult, RunSnapshot } from "../types";
 import { type InternalTables, type StorageSliceDeps, TERMINAL } from "./types";
 
@@ -58,6 +59,21 @@ export const claimRun =
         .returning({ id: runs.id });
       if (updated.length === 0) {
         return { kind: "lost" } satisfies ClaimResult;
+      }
+      // Consume the retry backoff deadline: the wake it guarded has now landed,
+      // so it must not linger and read as an overdue timer on a later suspend.
+      if (row.status === "retrying") {
+        const { timers } = tables;
+        await tx
+          .update(timers)
+          .set({ firedAt: sql`NOW()` })
+          .where(
+            and(
+              eq(timers.runId, runId),
+              eq(timers.cursorKey, RETRY_TIMER_CURSOR),
+              isNull(timers.firedAt),
+            ),
+          );
       }
       const snapshot = await loadSnapshotIn(tx, tables, runId);
       return {

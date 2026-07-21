@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
-import type { StepRow, TimerRow } from "../schema";
+import { RETRY_TIMER_CURSOR, type StepRow, type TimerRow } from "../schema";
 import type { AtomicStorage, StorageOps } from "../types";
 import type { EnqueueRun, InternalTables } from "./types";
 
@@ -238,6 +238,16 @@ export const buildOps = ({
         .where(and(eq(timers.runId, runId), eq(timers.cursorKey, cursorKey)))
         .returning();
       return row as TimerRow;
+    },
+
+    async armRetryTimer(runId, fireAt) {
+      await db
+        .insert(timers)
+        .values({ runId, cursorKey: RETRY_TIMER_CURSOR, fireAt })
+        .onConflictDoUpdate({
+          target: [timers.runId, timers.cursorKey],
+          set: { fireAt, firedAt: null },
+        });
     },
 
     async loadSignal(runId, cursorKey) {
