@@ -7,7 +7,7 @@ import { createEngine, type Engine } from "../../engine/engine";
 import type { Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-import { acquireTestDb, pgUnavailable } from "./pg-test-db";
+import { acquireTestDb, makePool, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -64,7 +64,7 @@ describe.skipIf(pgUnavailable)("per-flow task routing", () => {
   let h: Harness;
 
   const newPool = (): Pool => {
-    const p = new Pool({ connectionString: h.url });
+    const p = makePool(h.url);
     h.pools.push(p);
     return p;
   };

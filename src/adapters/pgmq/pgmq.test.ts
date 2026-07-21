@@ -39,6 +39,9 @@ describe.skipIf(skipContainers)("pgmq serverless execution (real pgmq queue)", (
       url = container.getConnectionUri();
     }
     pool = new Pool({ connectionString: url, max: 6 });
+    // Swallow idle-client errors (e.g. Postgres 57P01 on shutdown) so a teardown
+    // connection drop doesn't fail an otherwise-green suite.
+    pool.on("error", () => {});
     db = drizzle({ client: pool }) as unknown as WorkflowDb;
     await applyFlowSchema(db);
     await db.execute(sql`CREATE EXTENSION IF NOT EXISTS pgmq`);

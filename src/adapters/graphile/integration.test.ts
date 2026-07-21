@@ -8,7 +8,7 @@ import { reapOrphanedCronJobs } from "./cron";
 import type { FlowHandle, Logger } from "../../engine/types";
 import { applyFlowSchema, dropFlowSchema } from "../../storage/setup";
 import type { WorkflowDb } from "../../storage/db";
-import { acquireTestDb, pgUnavailable } from "./pg-test-db";
+import { acquireTestDb, makePool, pgUnavailable } from "./pg-test-db";
 
 const silent: Logger = {
   debug: () => undefined,
@@ -25,7 +25,7 @@ interface Harness {
 
 const setup = async (): Promise<Harness> => {
   const testDb = await acquireTestDb();
-  const pool = new Pool({ connectionString: testDb.url });
+  const pool = makePool(testDb.url);
   return {
     pool,
     db: drizzle({ client: pool }) as unknown as WorkflowDb,

@@ -1,9 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Pool } from "pg";
+import { Pool, type PoolConfig } from "pg";
 
 const externalUrl = process.env.ITERATIVE_PG_URL;
 const skipContainers = process.env.SKIP_TESTCONTAINERS === "1";
+
+/**
+ * Pool with an idle-client error handler attached. When Postgres shuts down it
+ * sends a FATAL `57P01` ("terminating connection due to administrator command")
+ * to every open connection; node-postgres surfaces that as an `error` event on
+ * the idle client, which — unhandled — crashes the process and fails an
+ * otherwise-green suite at teardown. Swallowing it keeps teardown races from
+ * turning into spurious CI failures (active queries still reject normally).
+ */
+export const makePool = (connectionString: string, config?: PoolConfig): Pool => {
+  const pool = new Pool({ connectionString, ...config });
+  pool.on("error", () => {});
+  return pool;
+};
 
 /** True when there's no shared PG URL and testcontainers are disabled — skip the suite. */
 export const pgUnavailable = skipContainers && !externalUrl;
