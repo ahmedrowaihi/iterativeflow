@@ -585,6 +585,72 @@ describe("storage durability", () => {
     });
   });
 
+  describe("observability config (events / notify)", () => {
+    const noopEnqueue: TxEnqueue = async () => {};
+
+    it("events: 'lifecycle' skips per-step events but keeps run-level ones and step durability", async () => {
+      const s = createDrizzleStorage({
+        db: h.db,
+        logger: silent,
+        enqueue: noopEnqueue,
+        obs: { events: "lifecycle" },
+      });
+      const { runId } = await s.createRun({ name: "obs-lifecycle", version: 1, input: {} });
+      await s.recordEvent({ runId, type: "started" });
+      await s.startStep(runId, "a", 1);
+      await s.recordEvent({ runId, type: "step_started", cursorKey: "a" });
+      await s.finishStep({ runId, cursorKey: "a", status: "ok", result: 1, attempts: 1 });
+      await s.recordEvent({ runId, type: "step_ok", cursorKey: "a" });
+      await s.recordEvent({ runId, type: "completed" });
+
+      const types = await eventTypes(h.db, runId);
+      expect(types).toEqual(expect.arrayContaining(["started", "completed"]));
+      expect(types).not.toContain("step_started");
+      expect(types).not.toContain("step_ok");
+      // The step row itself — the resume source of truth — is untouched.
+      expect((await s.loadStep(runId, "a"))?.status).toBe("ok");
+    });
+
+    it("events: 'off' records nothing yet steps stay durable", async () => {
+      const s = createDrizzleStorage({
+        db: h.db,
+        logger: silent,
+        enqueue: noopEnqueue,
+        obs: { events: "off" },
+      });
+      const { runId } = await s.createRun({ name: "obs-off", version: 1, input: {} });
+      await s.recordEvent({ runId, type: "started" });
+      await s.startStep(runId, "a", 1);
+      await s.finishStep({ runId, cursorKey: "a", status: "ok", result: 1, attempts: 1 });
+
+      expect(await eventTypes(h.db, runId)).toEqual([]);
+      expect((await s.loadStep(runId, "a"))?.status).toBe("ok");
+    });
+
+    it("notify: false skips the terminal NOTIFY but still re-enqueues the parent (invoke wakeup)", async () => {
+      const enqueued: string[] = [];
+      const s = createDrizzleStorage({
+        db: h.db,
+        logger: silent,
+        enqueue: async (_tx, job) => {
+          enqueued.push(job.runId);
+        },
+        obs: { notify: false },
+      });
+      const parent = await s.createRun({ name: "obs-parent", version: 1, input: {} });
+      const child = await s.createRun({
+        name: "obs-child",
+        version: 1,
+        input: {},
+        parentRunId: parent.runId,
+        parentCursorKey: "invoke:obs-child@1",
+      });
+      await s.notifyTerminal(child.runId);
+      // The durability-critical parent re-enqueue runs even with NOTIFY off.
+      expect(enqueued).toContain(parent.runId);
+    });
+  });
+
   describe("loadRunDetail + loadOutput", () => {
     it("loadRunDetail.signals", async () => {
       const { runId } = await h.storage.createRun({

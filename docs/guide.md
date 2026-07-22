@@ -410,16 +410,19 @@ cascades to steps / timers / signals / events through FK.
 
 ### `EngineOpts`
 
-| Field        | Type              | Default  | Note                                                                  |
-| ------------ | ----------------- | -------- | --------------------------------------------------------------------- |
-| `db`         | `WorkflowDb`      | required | drizzle Postgres handle                                               |
-| `pool`       | `pg.Pool`         | required | shared with graphile-worker                                           |
-| `logger`     | `Logger`          | noop     | `{ debug, info, warn, error }`                                        |
-| `metrics`    | `MetricsRecorder` | —        | optional telemetry recorder                                           |
-| `worker`     | `object`          | —        | `{ schema, concurrency, pollInterval, enqueue }`                      |
-| `reconciler` | `false \| object` | on       | `false` to disable, or `{ schedule, graceMs, runningStuckMs }`        |
-| `retention`  | `false \| object` | off      | opt in with `{ runsOlderThan, eventsOlderThan, schedule, batchSize }` |
-| `limits`     | `object`          | —        | run caps + byte caps + invoke depth/fanout                            |
+| Field        | Type                            | Default  | Note                                                                                                        |
+| ------------ | ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `db`         | `WorkflowDb`                    | required | drizzle Postgres handle                                                                                     |
+| `pool`       | `pg.Pool`                       | required | shared with graphile-worker                                                                                 |
+| `logger`     | `Logger`                        | noop     | `{ debug, info, warn, error }`                                                                              |
+| `metrics`    | `MetricsRecorder`               | —        | optional telemetry recorder                                                                                 |
+| `worker`     | `object`                        | —        | `{ schema, concurrency, pollInterval, enqueue }`                                                            |
+| `reconciler` | `false \| object`               | on       | `false` to disable, or `{ schedule, graceMs, runningStuckMs }`                                              |
+| `retention`  | `false \| object`               | off      | opt in with `{ runsOlderThan, eventsOlderThan, schedule, batchSize }`                                       |
+| `limits`     | `object`                        | —        | run caps + byte caps + invoke depth/fanout                                                                  |
+| `results`    | `"listen" \| "poll"`            | `listen` | `poll` drops the resident LISTEN (serverless)                                                               |
+| `notify`     | `boolean`                       | `true`   | emit `pg_notify` for cross-process `result()`/`wait()`. `false` = poll-only (RDS Proxy); fewer round-trips  |
+| `events`     | `"all" \| "lifecycle" \| "off"` | `all`    | audit-event granularity in `workflow.events`; `lifecycle`/`off` cut per-step inserts (never read on resume) |
 
 `worker`:
 

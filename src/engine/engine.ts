@@ -120,6 +120,28 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
   results?: "listen" | "poll";
 
   /**
+   * Emit Postgres `NOTIFY` on state changes so `handle.result()` / `handle.wait()`
+   * wake across processes. Default `true`. Set `false` for connection-constrained
+   * or RDS-Proxy deployments (RDS Proxy pins LISTEN connections): pair with
+   * `results: "poll"` and drive completion via `engine.status()` or a terminal
+   * webhook. Removes one `pg_notify` round-trip per step, per signal, and per
+   * terminal transition. Durability is unaffected — the parent-invoke re-enqueue
+   * still runs; only the cross-process wakeup NOTIFY is skipped.
+   */
+  notify?: boolean;
+
+  /**
+   * Audit-event granularity in `workflow.events`. `"all"` (default) records every
+   * event; `"lifecycle"` drops the high-volume per-step events
+   * (`step_started` / `step_ok` / `step_failed` / `step_terminal`), keeping
+   * run-level ones; `"off"` records none. `workflow.events` is never read on the
+   * resume/claim/reconcile path, so any setting preserves durability and
+   * crash-resumability — it only trades observability for fewer DB round-trips
+   * (up to two inserts per step).
+   */
+  events?: "all" | "lifecycle" | "off";
+
+  /**
    * Orphan reconciler — re-enqueues runs whose status looks stuck. **ON by
    * default.** Pass `false` to disable, or an object to tune.
    */
@@ -320,7 +342,13 @@ export const createEngine = <T extends FlowTables = DefaultFlowTables>(
   const registry = new FlowRegistry();
   const enqueue: TxEnqueue = workerCfg.enqueue ?? createGraphileTxEnqueue(workerCfg.schema);
   const tables = opt.tables as unknown as InternalTables | undefined;
-  const storage: Storage = createDrizzleStorage({ db: opt.db, logger, enqueue, tables });
+  const storage: Storage = createDrizzleStorage({
+    db: opt.db,
+    logger,
+    enqueue,
+    tables,
+    obs: { notify: opt.notify, events: opt.events },
+  });
   const cronSpecs: CronSpec[] = [];
   const metrics = wrapMetrics(opt.metrics ?? {}, logger);
   const runControllers = new Map<string, AbortController>();

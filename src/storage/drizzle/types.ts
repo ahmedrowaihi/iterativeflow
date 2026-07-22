@@ -56,6 +56,33 @@ export interface InternalTables {
   events: typeof events;
 }
 
+/**
+ * Audit-event granularity. `workflow.events` is never read on the resume path,
+ * so any setting preserves durability — it only trades observability for fewer
+ * DB round-trips. `"lifecycle"` drops the high-volume per-step events
+ * (`step_started`/`step_ok`/…), keeping run-level ones; `"off"` records none.
+ *
+ * @internal
+ */
+export type EventPolicy = "all" | "lifecycle" | "off";
+
+/**
+ * Whether a `workflow.events` row of `type` should be written under `policy`.
+ * Step events are the per-step hot path; run-level events are low-volume.
+ *
+ * @internal
+ */
+export const shouldRecordEvent = (type: string, policy: EventPolicy): boolean =>
+  policy === "all" ? true : policy === "off" ? false : !type.startsWith("step_");
+
+/** Round-trip-reduction knobs shared across the storage slices. @internal */
+export interface ObsConfig {
+  /** Emit `pg_notify` on state changes for cross-process wakeups. Off = poll-only (RDS Proxy). */
+  notify: boolean;
+  /** Audit-event granularity. */
+  events: EventPolicy;
+}
+
 /** @internal */
 export interface DrizzleStorageOpts {
   db: WorkflowDb;
@@ -63,6 +90,8 @@ export interface DrizzleStorageOpts {
   enqueue: TxEnqueue;
   /** Override the internal tables — only needed when consumers customize names. */
   tables?: InternalTables;
+  /** Round-trip-reduction knobs. Defaults: `notify: true`, `events: "all"`. */
+  obs?: Partial<ObsConfig>;
 }
 
 /**
@@ -77,6 +106,7 @@ export interface StorageSliceDeps {
   tables: InternalTables;
   enqueue: EnqueueRun;
   logger: Logger;
+  obs: ObsConfig;
 }
 
 /** @internal */

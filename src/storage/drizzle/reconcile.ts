@@ -43,7 +43,7 @@ export const reenqueueOrphans =
     maxRunAttempts,
     batchSize = 100,
   }: ReconcileOpts): Promise<number> => {
-    const { db, tables, enqueue, logger } = deps;
+    const { db, tables, enqueue, logger, obs } = deps;
     const { runs, timers, signals } = tables;
     const notify = notifyTerminal(deps);
 
@@ -110,7 +110,7 @@ export const reenqueueOrphans =
           // A retrying orphan whose next claim would bump attempts past the cap
           // and fail on arrival — fail it here instead of bouncing a doomed run.
           if (status === "retrying" && attempts >= maxRunAttempts) {
-            const ops = buildOps({ db: tx, tables, enqueue }).ops;
+            const ops = buildOps({ db: tx, tables, enqueue, obs }).ops;
             await ops.markFailed(runId, {
               code: "RUN_ATTEMPTS_EXHAUSTED",
               message: `Run "${name}" exceeded maxRunAttempts=${maxRunAttempts}`,

@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
 import type { SignalRow } from "../schema";
 import type { ArmResult, SignalDeliveryResult } from "../types";
-import type { InternalTables, StorageSliceDeps } from "./types";
+import { type InternalTables, type StorageSliceDeps, shouldRecordEvent } from "./types";
 
 const lockRunIn = async (tx: WorkflowDb, tables: InternalTables, runId: string): Promise<void> => {
   const { runs } = tables;
@@ -16,7 +16,7 @@ const lockRunIn = async (tx: WorkflowDb, tables: InternalTables, runId: string):
  * @internal
  */
 export const deliverSignal =
-  ({ db, tables, enqueue }: StorageSliceDeps) =>
+  ({ db, tables, enqueue, obs }: StorageSliceDeps) =>
   async (runId: string, signalName: string, payload: unknown): Promise<SignalDeliveryResult> => {
     const canonicalKey = `signal:${signalName}`;
     const { signals, events } = tables;
@@ -58,14 +58,20 @@ export const deliverSignal =
           return { kind: "duplicate" } satisfies SignalDeliveryResult;
         }
 
-        await tx.insert(events).values({
-          runId,
-          type: "signal_delivered",
-          cursorKey: targetKey,
-          payload: { cursorKey: targetKey } as object,
-        });
+        if (shouldRecordEvent("signal_delivered", obs.events)) {
+          await tx.insert(events).values({
+            runId,
+            type: "signal_delivered",
+            cursorKey: targetKey,
+            payload: { cursorKey: targetKey } as object,
+          });
+        }
         await enqueue(tx, runId);
-        await tx.execute(sql`SELECT pg_notify('flow_progress', ${`signal:${runId}:${targetKey}`})`);
+        if (obs.notify) {
+          await tx.execute(
+            sql`SELECT pg_notify('flow_progress', ${`signal:${runId}:${targetKey}`})`,
+          );
+        }
         return { kind: "delivered", cursorKey: targetKey } satisfies SignalDeliveryResult;
       }
 
@@ -104,15 +110,19 @@ export const deliverSignal =
         return { kind: "duplicate" } satisfies SignalDeliveryResult;
       }
 
-      await tx.insert(events).values({
-        runId,
-        type: "signal_delivered",
-        cursorKey: canonicalKey,
-        payload: { cursorKey: canonicalKey, buffered: true } as object,
-      });
-      await tx.execute(
-        sql`SELECT pg_notify('flow_progress', ${`signal:${runId}:${canonicalKey}`})`,
-      );
+      if (shouldRecordEvent("signal_delivered", obs.events)) {
+        await tx.insert(events).values({
+          runId,
+          type: "signal_delivered",
+          cursorKey: canonicalKey,
+          payload: { cursorKey: canonicalKey, buffered: true } as object,
+        });
+      }
+      if (obs.notify) {
+        await tx.execute(
+          sql`SELECT pg_notify('flow_progress', ${`signal:${runId}:${canonicalKey}`})`,
+        );
+      }
       return { kind: "buffered", cursorKey: canonicalKey } satisfies SignalDeliveryResult;
     });
   };
