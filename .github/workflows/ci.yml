@@ -178,9 +178,6 @@ jobs:
 
       - name: publish v2 via oidc
         if: steps.v2changesets.outputs.hasChangesets == 'false'
-        # TODO(remove continue-on-error): first publish of the @iterativeflow/* packages must be
-        # manual; OIDC trusted publishing can only be configured on npm after they exist.
-        continue-on-error: true
         run: npx changeset publish
         env:
           NPM_CONFIG_PROVENANCE: "true"
