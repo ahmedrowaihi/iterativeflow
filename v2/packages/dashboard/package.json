@@ -1,6 +1,12 @@
 {
   "name": "@iterativeflow/dashboard",
   "version": "2.0.0-alpha.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git",
+    "directory": "v2/packages/dashboard"
+  },
   "files": [
     "dist"
   ],
