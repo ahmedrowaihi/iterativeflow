@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@iterativeflow/core": ["./packages/core/src/index.ts"],
+      "@iterativeflow/core/backend": ["./packages/core/src/backend.ts"],
+      "@iterativeflow/conformance": ["./packages/conformance/src/index.ts"],
+      "@iterativeflow/memory": ["./packages/memory/src/index.ts"],
+      "@iterativeflow/postgres": ["./packages/postgres/src/index.ts"],
+      "@iterativeflow/dynamodb": ["./packages/dynamodb/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,13 @@
+{
+  "mode": "pre",
+  "tag": "alpha",
+  "initialVersions": {
+    "@iterativeflow/conformance": "2.0.0-alpha.0",
+    "@iterativeflow/core": "2.0.0-alpha.0",
+    "@iterativeflow/dashboard": "2.0.0-alpha.0",
+    "@iterativeflow/dynamodb": "2.0.0-alpha.0",
+    "@iterativeflow/memory": "2.0.0-alpha.0",
+    "@iterativeflow/postgres": "2.0.0-alpha.0"
+  },
+  "changesets": ["six-engines-hum"]
+}

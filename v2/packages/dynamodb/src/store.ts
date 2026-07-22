@@ -1,0 +1,540 @@
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
+import {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  type ScanCommandInput,
+  TransactWriteCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+import {
+  type CronRow,
+  type DeliveredSignal,
+  type IdGen,
+  type RunSpec,
+  type StartResult,
+  type StepOutcome,
+  type Store,
+  type SuspendStatus,
+  TERMINAL_STATUSES,
+  isTerminal,
+  statusList,
+  zeroRunStats,
+} from "@iterativeflow/core/backend";
+import type { Doc } from "#client";
+import {
+  type CronItem,
+  type RunItem,
+  type RunPartitionItem,
+  type StepItem,
+  dec,
+  enc,
+  mapRun,
+  mapStep,
+  nextSeq,
+} from "#codec";
+import { key } from "#schema";
+import {
+  MAX_TX_ITEMS,
+  type TxItem,
+  applyOverflowSpawns,
+  buildRunItem,
+  cancellationReasons,
+  conditionFailedAt,
+  encodeSignalId,
+  enqueueParams,
+  outboxParts,
+  spawnTx,
+} from "#statements";
+
+const TERMINAL_VALUES: Record<string, string> = Object.fromEntries(
+  TERMINAL_STATUSES.map((s, i) => [`:t${i}`, s]),
+);
+const NOT_TERMINAL = `NOT (#status IN (${Object.keys(TERMINAL_VALUES).join(", ")}))`;
+
+/** @internal */
+export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => {
+  const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
+
+  const getRun = async (runId: string): Promise<RunItem | undefined> => {
+    const res = await send<{ Item?: RunItem }>(
+      new GetCommand({ TableName: table, Key: key.run(runId) }),
+    );
+    return res.Item;
+  };
+
+  const recover = async (markerRunId: string): Promise<StartResult> => {
+    const existing = await getRun(markerRunId);
+    if (!existing)
+      throw new Error(`startRun: idempotency marker points at missing run ${markerRunId}`);
+    return { runId: existing.id, created: false, status: existing.status };
+  };
+
+  const getStep = async (runId: string, cursorKey: string): Promise<StepOutcome | undefined> => {
+    const res = await send<{ Item?: StepItem }>(
+      new GetCommand({ TableName: table, Key: key.step(runId, cursorKey) }),
+    );
+    return res.Item ? mapStep(res.Item) : undefined;
+  };
+
+  const scanAll = async (params: ScanCommandInput): Promise<Record<string, unknown>[]> => {
+    const out: Record<string, unknown>[] = [];
+    let ExclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const res = await send<{
+        Items?: Record<string, unknown>[];
+        LastEvaluatedKey?: Record<string, unknown>;
+      }>(new ScanCommand({ ...params, ExclusiveStartKey }));
+      out.push(...(res.Items ?? []));
+      ExclusiveStartKey = res.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+    return out;
+  };
+
+  // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
+  const scanType = <T>(type: string): Promise<T[]> =>
+    scanAll({
+      TableName: table,
+      FilterExpression: "#type = :t",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":t": type },
+    }) as Promise<T[]>;
+
+  const startOne = async (spec: RunSpec): Promise<StartResult> => {
+    const runId = id();
+    if (!spec.idempotencyKey) {
+      await send(new PutCommand({ TableName: table, Item: buildRunItem(spec, runId) }));
+      return { runId, created: true, status: "pending" };
+    }
+    try {
+      await send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: table,
+                Item: {
+                  ...key.idem(spec.name, spec.version, spec.idempotencyKey),
+                  type: "idem",
+                  runId,
+                },
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+            { Put: { TableName: table, Item: buildRunItem(spec, runId) } },
+          ],
+        }),
+      );
+      return { runId, created: true, status: "pending" };
+    } catch (e) {
+      if (!conditionFailedAt(cancellationReasons(e), 0)) throw e;
+      const marker = await send<{ Item?: { runId: string } }>(
+        new GetCommand({
+          TableName: table,
+          Key: key.idem(spec.name, spec.version, spec.idempotencyKey),
+        }),
+      );
+      if (!marker.Item)
+        throw new Error(`startRun: idempotency marker missing for ${spec.idempotencyKey}`);
+      return recover(marker.Item.runId);
+    }
+  };
+
+  return {
+    startRun: startOne,
+
+    async startManyRuns(specs) {
+      // Resolve idempotency per spec, then land every *new* run in one all-or-nothing
+      // transaction; a batch may still mix created + already-existing (per-spec idempotency).
+      const results: StartResult[] = [];
+      const tx: TxItem[] = [];
+      for (const spec of specs) {
+        const runId = id();
+        if (spec.idempotencyKey) {
+          const marker = await send<{ Item?: { runId: string } }>(
+            new GetCommand({
+              TableName: table,
+              Key: key.idem(spec.name, spec.version, spec.idempotencyKey),
+            }),
+          );
+          if (marker.Item) {
+            results.push(await recover(marker.Item.runId));
+            continue;
+          }
+          tx.push({
+            Put: {
+              TableName: table,
+              Item: {
+                ...key.idem(spec.name, spec.version, spec.idempotencyKey),
+                type: "idem",
+                runId,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          });
+        }
+        tx.push({ Put: { TableName: table, Item: buildRunItem(spec, runId) } });
+        results.push({ runId, created: true, status: "pending" });
+      }
+      for (let i = 0; i < tx.length; i += MAX_TX_ITEMS) {
+        await send(new TransactWriteCommand({ TransactItems: tx.slice(i, i + MAX_TX_ITEMS) }));
+      }
+      return results;
+    },
+
+    async loadRun(runId) {
+      const res = await send<{ Items?: RunPartitionItem[] }>(
+        new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: "pk = :pk",
+          ExpressionAttributeValues: { ":pk": key.runPk(runId) },
+        }),
+      );
+      const items = res.Items ?? [];
+      const runItem = items.find((i) => i.type === "run");
+      if (runItem?.type !== "run") return undefined;
+      const steps = new Map<string, StepOutcome>();
+      const signals: DeliveredSignal[] = [];
+      for (const it of items) {
+        if (it.type === "step") steps.set(it.cursorKey, mapStep(it));
+        else if (it.type === "signal") {
+          signals.push({
+            id: encodeSignalId(it.pk, it.sk),
+            name: it.name,
+            payload: dec(it.payload),
+          });
+        }
+      }
+      return { run: mapRun(runItem), steps, signals };
+    },
+
+    async postSignal(runId, name, payload, opts) {
+      const sigId = id();
+      const seq = nextSeq();
+      const signalPut: TxItem = {
+        Put: {
+          TableName: table,
+          Item: {
+            ...key.signal(runId, seq, sigId),
+            type: "signal",
+            runId,
+            name,
+            payload: enc(payload),
+          },
+        },
+      };
+      const enqueue: TxItem = { Update: enqueueParams(table, runId) };
+      if (!opts?.idempotencyKey) {
+        await send(new TransactWriteCommand({ TransactItems: [signalPut, enqueue] }));
+        return { delivered: true };
+      }
+      try {
+        await send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: table,
+                  Item: { ...key.sigIdem(runId, opts.idempotencyKey), type: "sigidem", runId },
+                  ConditionExpression: "attribute_not_exists(pk)",
+                },
+              },
+              signalPut,
+              enqueue,
+            ],
+          }),
+        );
+        return { delivered: true };
+      } catch (e) {
+        if (conditionFailedAt(cancellationReasons(e), 0)) return { delivered: false };
+        throw e;
+      }
+    },
+
+    async markRunning(runId) {
+      try {
+        const res = await send<{ Attributes?: { attempts: number } }>(
+          new UpdateCommand({
+            TableName: table,
+            Key: key.run(runId),
+            UpdateExpression: "SET #status = :running ADD attempts :one",
+            ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
+            ExpressionAttributeNames: { "#status": "status" },
+            ExpressionAttributeValues: { ":running": "running", ":one": 1, ...TERMINAL_VALUES },
+            ReturnValues: "UPDATED_NEW",
+          }),
+        );
+        // `Attributes` is present because of `ReturnValues: "UPDATED_NEW"`; fall back to a read
+        // rather than assert, so a shape change fails diagnosably instead of with a raw TypeError.
+        const attempts = res.Attributes?.attempts;
+        if (attempts !== undefined) return attempts;
+        const fresh = await getRun(runId);
+        if (!fresh) throw new Error(`markRunning: run ${runId} not found`);
+        return fresh.attempts;
+      } catch (e) {
+        if (!(e instanceof ConditionalCheckFailedException)) throw e;
+        const cur = await getRun(runId);
+        if (!cur) throw new Error(`markRunning: run ${runId} not found`);
+        return cur.attempts; // terminal — hand back attempts unchanged, do not resurrect
+      }
+    },
+
+    async checkpointStep(c, fx) {
+      const stepItem: Record<string, unknown> = {
+        ...key.step(c.runId, c.cursorKey),
+        type: "step",
+        runId: c.runId,
+        cursorKey: c.cursorKey,
+        status: c.status,
+        result: enc(c.result),
+        error: enc(c.error),
+        attempts: c.attempts,
+      };
+      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const inlineBudget = Math.max(0, Math.floor((MAX_TX_ITEMS - 2 - nonSpawn.length) / 2));
+      const inlineCount = Math.min(spawns.length, inlineBudget);
+      const overflow = spawns.slice(inlineCount);
+      if (overflow.length > 0) stepItem.spawnChildIds = spawns.map((s) => s.runId);
+
+      const gate: TxItem[] = [
+        {
+          Put: {
+            TableName: table,
+            Item: stepItem,
+            ConditionExpression: "attribute_not_exists(pk)",
+          },
+        },
+        {
+          ConditionCheck: {
+            TableName: table,
+            Key: key.run(c.runId),
+            ConditionExpression: "attribute_exists(pk)",
+          },
+        },
+      ];
+      const inline = spawns.slice(0, inlineCount).flatMap((s) => spawnTx(table, s));
+
+      try {
+        await send(new TransactWriteCommand({ TransactItems: [...gate, ...nonSpawn, ...inline] }));
+        if (overflow.length > 0) await applyOverflowSpawns(doc, table, overflow);
+      } catch (e) {
+        const reasons = cancellationReasons(e);
+        if (!reasons) throw e;
+        // The run-exists check failed but the step slot was free ⇒ unknown run.
+        if (conditionFailedAt(reasons, 1) && !conditionFailedAt(reasons, 0)) {
+          throw new Error(`checkpointStep: run ${c.runId} not found`);
+        }
+        // Step already present ⇒ idempotent replay: skip the outbox, return the stored outcome.
+        if (!conditionFailedAt(reasons, 0)) throw e;
+      }
+      const stored = await getStep(c.runId, c.cursorKey);
+      if (!stored) throw new Error(`checkpointStep: step ${c.runId}/${c.cursorKey} vanished`);
+      return stored;
+    },
+
+    async suspendRun(runId, status: SuspendStatus, fx) {
+      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const gate: TxItem = {
+        Update: {
+          TableName: table,
+          Key: key.run(runId),
+          UpdateExpression: "SET #status = :status",
+          ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: { ":status": status, ...TERMINAL_VALUES },
+        },
+      };
+      const inline = spawns.flatMap((s) => spawnTx(table, s));
+      try {
+        await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
+      } catch (e) {
+        if (conditionFailedAt(cancellationReasons(e), 0)) return; // already terminal — no-op, outbox skipped
+        throw e;
+      }
+    },
+
+    async markTerminal(runId, outcome, fx) {
+      const set = ["#status = :status"];
+      const remove: string[] = [];
+      const values: Record<string, unknown> = {
+        ":status": outcome.status,
+        ":canceled": "canceled",
+      };
+      const output = outcome.status === "done" ? enc(outcome.output) : undefined;
+      const error = outcome.status === "done" ? undefined : enc(outcome.error);
+      if (output === undefined) remove.push("#output");
+      else {
+        set.push("#output = :output");
+        values[":output"] = output;
+      }
+      if (error === undefined) remove.push("#error");
+      else {
+        set.push("#error = :error");
+        values[":error"] = error;
+      }
+      const gate: TxItem = {
+        Update: {
+          TableName: table,
+          Key: key.run(runId),
+          UpdateExpression: `SET ${set.join(", ")}${remove.length ? ` REMOVE ${remove.join(", ")}` : ""}`,
+          ConditionExpression: "attribute_exists(pk) AND #status <> :canceled",
+          ExpressionAttributeNames: { "#status": "status", "#output": "output", "#error": "error" },
+          ExpressionAttributeValues: values,
+        },
+      };
+      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const inline = spawns.flatMap((s) => spawnTx(table, s));
+      try {
+        await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
+      } catch (e) {
+        if (conditionFailedAt(cancellationReasons(e), 0)) return; // canceled is sticky — outbox skipped
+        throw e;
+      }
+    },
+
+    async listRuns(filter, page) {
+      const statuses = statusList(filter.status);
+      const items = await scanType<RunItem>("run");
+      const matched = items
+        .filter(
+          (r) =>
+            (!statuses || statuses.includes(r.status)) &&
+            (!filter.name || r.name === filter.name) &&
+            (!filter.tag || (r.tags?.includes(filter.tag) ?? false)),
+        )
+        .sort((a, b) => b.seq - a.seq);
+      const before = page.cursor ? Number(page.cursor) : Number.POSITIVE_INFINITY;
+      const rows = matched.filter((r) => r.seq < before).slice(0, page.limit);
+      const last = rows[rows.length - 1];
+      const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
+      return { runs: rows.map(mapRun), cursor };
+    },
+
+    async childrenOf(runId) {
+      const items = await scanType<RunItem>("run");
+      return items.filter((r) => r.parentRunId === runId).map(mapRun);
+    },
+
+    async runStats() {
+      const stats = zeroRunStats();
+      for (const r of await scanType<RunItem>("run")) stats[r.status] += 1;
+      return stats;
+    },
+
+    async orphanedRuns(max) {
+      const [runs, jobItems, timerItems] = await Promise.all([
+        scanType<RunItem>("run"),
+        scanType<{ runId: string }>("job"),
+        scanType<{ runId: string }>("timer"),
+      ]);
+      const jobs = new Set(jobItems.map((j) => j.runId));
+      const timers = new Set(timerItems.map((t) => t.runId));
+      const stranded = (r: RunItem): boolean =>
+        ["pending", "running", "retrying", "sleeping"].includes(r.status) &&
+        !jobs.has(r.id) &&
+        !timers.has(r.id);
+      const lostParentWake = (r: RunItem): boolean =>
+        r.status === "awaiting_child" &&
+        !jobs.has(r.id) &&
+        runs.some((c) => c.parentRunId === r.id && isTerminal(c.status));
+      return runs
+        .filter((r) => stranded(r) || lostParentWake(r))
+        .sort((a, b) => a.seq - b.seq)
+        .slice(0, max)
+        .map((r) => r.id);
+    },
+
+    async retryRun(runId) {
+      try {
+        await send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Update: {
+                  TableName: table,
+                  Key: key.run(runId),
+                  UpdateExpression: "SET #status = :pending REMOVE #error",
+                  ConditionExpression: "attribute_exists(pk) AND #status = :failed",
+                  ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+                  ExpressionAttributeValues: { ":pending": "pending", ":failed": "failed" },
+                },
+              },
+              { Update: enqueueParams(table, runId) },
+            ],
+          }),
+        );
+        return { retried: true };
+      } catch (e) {
+        if (conditionFailedAt(cancellationReasons(e), 0)) return { retried: false };
+        throw e;
+      }
+    },
+
+    async upsertCron(spec) {
+      await send(
+        new UpdateCommand({
+          TableName: table,
+          Key: key.cron(spec.name),
+          UpdateExpression:
+            "SET #type = :type, cronName = :name, schedule = :schedule, flowName = :flowName, " +
+            "flowVersion = :flowVersion, cronInput = :input, overlap = :overlap, " +
+            "nextRunAt = if_not_exists(nextRunAt, :nextRunAt)",
+          ExpressionAttributeNames: { "#type": "type" },
+          ExpressionAttributeValues: {
+            ":type": "cron",
+            ":name": spec.name,
+            ":schedule": spec.schedule,
+            ":flowName": spec.flowName,
+            ":flowVersion": spec.flowVersion,
+            ":input": enc(spec.input) ?? null,
+            ":overlap": spec.overlap ?? "allow",
+            ":nextRunAt": spec.nextRunAt.getTime(),
+          },
+        }),
+      );
+    },
+
+    async dueCrons(now, max) {
+      const items = await scanType<CronItem>("cron");
+      return items
+        .filter((c) => c.nextRunAt <= now.getTime())
+        .sort((a, b) => a.nextRunAt - b.nextRunAt)
+        .slice(0, max)
+        .map(
+          (c): CronRow => ({
+            name: c.cronName,
+            schedule: c.schedule,
+            flowName: c.flowName,
+            flowVersion: c.flowVersion,
+            input: dec(c.cronInput),
+            overlap: c.overlap,
+            nextRunAt: new Date(c.nextRunAt),
+            lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
+          }),
+        );
+    },
+
+    async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
+      try {
+        await send(
+          new UpdateCommand({
+            TableName: table,
+            Key: key.cron(name),
+            UpdateExpression: "SET nextRunAt = :next, lastRunAt = :last",
+            ConditionExpression: "attribute_exists(pk) AND nextRunAt = :expected",
+            ExpressionAttributeValues: {
+              ":next": nextRunAt.getTime(),
+              ":last": lastRunAt.getTime(),
+              ":expected": expectedNextRunAt.getTime(),
+            },
+          }),
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof ConditionalCheckFailedException) return false;
+        throw e;
+      }
+    },
+  };
+};

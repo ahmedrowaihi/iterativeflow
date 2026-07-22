@@ -1,0 +1,135 @@
+/** The canonical run states, in lifecycle order. `RunStatus` is derived from this — one source. */
+export const RUN_STATUSES = [
+  "pending",
+  "running",
+  "sleeping",
+  "awaiting_signal",
+  "awaiting_child",
+  "retrying",
+  "done",
+  "failed",
+  "canceled",
+] as const;
+
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** The non-terminal states a running run can be parked in, each with its own wake path. */
+export type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
+
+/** Structured error persisted on failed runs/steps. */
+export interface FlowError {
+  code: string;
+  message: string;
+  stack?: string;
+}
+
+/** Everything needed to start (or idempotently re-find) a run. */
+export interface RunSpec {
+  name: string;
+  version: number;
+  input: unknown;
+  /** Idempotency key scoped under `(name, version)`. Repeats return the original run. */
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  parentRunId?: string;
+  parentCursorKey?: string;
+}
+
+/** Terminal status of a single step. Non-terminal (retrying) steps are not checkpointed. */
+export type StepStatus = "ok" | "failed_terminal";
+
+/** The durable memo of a completed step — the one thing that must survive a crash. */
+export interface StepOutcome {
+  status: StepStatus;
+  result?: unknown;
+  error?: FlowError;
+  /** 1-indexed attempt count this outcome was reached on. */
+  attempts: number;
+}
+
+/** A step checkpoint request — the single durable write per step. */
+export interface StepCheckpoint extends StepOutcome {
+  runId: string;
+  cursorKey: string;
+}
+
+/** Row shape of a run. */
+export interface RunRow {
+  id: string;
+  name: string;
+  version: number;
+  status: RunStatus;
+  input: unknown;
+  attempts: number;
+  output?: unknown;
+  error?: FlowError;
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  parentRunId?: string;
+  parentCursorKey?: string;
+}
+
+/** A durable signal delivered to a run's inbox, awaiting consumption by a `ctx.signal` wait. */
+export interface DeliveredSignal {
+  /** Inbox row id — the handle a consuming checkpoint passes to `Outbox.consumeSignals`. */
+  id: string;
+  name: string;
+  payload: unknown;
+}
+
+/** What `loadRun` returns: the run, the memo of completed steps, and the pending signal inbox. */
+export interface RunSnapshot {
+  run: RunRow;
+  /** Completed steps by cursor key — read on resume so memoized steps short-circuit. */
+  steps: ReadonlyMap<string, StepOutcome>;
+  /** Signals delivered but not yet consumed — a `ctx.signal(name)` wait drains a matching one. */
+  signals: readonly DeliveredSignal[];
+}
+
+/** Filter for {@link Store.listRuns}. `status` accepts one or several states. */
+export interface RunFilter {
+  status?: RunStatus | readonly RunStatus[];
+  name?: string;
+  tag?: string;
+}
+
+/** A page request — `cursor` is the opaque token returned by the previous page. */
+export interface Page {
+  limit: number;
+  cursor?: string;
+}
+
+/** A page of runs (newest first) plus the cursor for the next page (absent when exhausted). */
+export interface RunPage {
+  runs: readonly RunRow[];
+  cursor?: string;
+}
+
+/** A registered recurring schedule. `nextRunAt` is the next fire instant (UTC). */
+export interface CronRow {
+  name: string;
+  schedule: string;
+  flowName: string;
+  flowVersion: number;
+  input: unknown;
+  overlap: "allow" | "skip";
+  nextRunAt: Date;
+  lastRunAt?: Date;
+}
+
+/** Register/upsert payload for a cron — `nextRunAt` is computed by the engine from `schedule`. */
+export interface CronSpec {
+  name: string;
+  schedule: string;
+  flowName: string;
+  flowVersion: number;
+  input?: unknown;
+  overlap?: "allow" | "skip";
+  nextRunAt: Date;
+}
+
+/** A terminal transition. */
+export type TerminalOutcome =
+  | { status: "done"; output: unknown }
+  | { status: "failed"; error: FlowError }
+  | { status: "canceled"; error?: FlowError };

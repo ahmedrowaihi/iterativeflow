@@ -2,12 +2,13 @@ import { and, eq, sql } from "drizzle-orm";
 import type { WorkflowDb } from "../db";
 import { RETRY_TIMER_CURSOR, type StepRow, type TimerRow } from "../schema";
 import type { AtomicStorage, StorageOps } from "../types";
-import type { EnqueueRun, InternalTables } from "./types";
+import { type EnqueueRun, type InternalTables, type ObsConfig, shouldRecordEvent } from "./types";
 
 interface BuildOpsInput {
   db: WorkflowDb;
   tables: InternalTables;
   enqueue: EnqueueRun;
+  obs: ObsConfig;
 }
 
 /**
@@ -21,6 +22,7 @@ export const buildOps = ({
   db,
   tables,
   enqueue,
+  obs,
 }: BuildOpsInput): {
   ops: StorageOps;
   lockRun: AtomicStorage["lockRun"];
@@ -207,7 +209,7 @@ export const buildOps = ({
         })
         .where(and(eq(steps.runId, opt.runId), eq(steps.cursorKey, opt.cursorKey)))
         .returning();
-      if (opt.status === "ok" || opt.status === "failed_terminal") {
+      if (obs.notify && (opt.status === "ok" || opt.status === "failed_terminal")) {
         await db.execute(
           sql`SELECT pg_notify('flow_progress', ${`step:${opt.runId}:${opt.cursorKey}`})`,
         );
@@ -275,6 +277,7 @@ export const buildOps = ({
     },
 
     async recordEvent(opt) {
+      if (!shouldRecordEvent(opt.type, obs.events)) return;
       await db.insert(events).values({
         runId: opt.runId,
         type: opt.type,

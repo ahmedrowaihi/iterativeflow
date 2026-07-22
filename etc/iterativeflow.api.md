@@ -140,6 +140,7 @@ export interface Engine<T extends FlowTables = DefaultFlowTables> {
 export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
     db: WorkflowDb;
     dispatcher?: Dispatcher;
+    events?: "all" | "lifecycle" | "off";
     limits?: {
         maxRunAttempts?: number;
         defaultStepTimeoutMs?: number;
@@ -151,6 +152,7 @@ export interface EngineOpts<T extends FlowTables = DefaultFlowTables> {
     };
     logger?: Logger;
     metrics?: MetricsRecorder;
+    notify?: boolean;
     pool: Pool;
     reconciler?: false | {
         schedule?: string;

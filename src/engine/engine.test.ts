@@ -966,6 +966,38 @@ describe("retry backoff timer", () => {
   });
 });
 
+describe("observability config (end-to-end)", () => {
+  it("a multi-step run completes with events:'off' + notify:false and steps stay durable", async () => {
+    const h = await setup();
+    try {
+      const storage = createDrizzleStorage({
+        db: h.db,
+        logger: silentLogger,
+        enqueue: async () => {},
+        obs: { events: "off", notify: false },
+      });
+      register(h.registry, "quiet", async (ctx) => {
+        const a = await ctx.step("a", () => 1);
+        return ctx.step("b", () => a + 1);
+      });
+      const runId = await createRun(storage, "quiet", {});
+
+      const r = await playRunAttempt({ ...baseRunnerDeps(), registry: h.registry, storage }, runId);
+      expect(r.status).toBe("completed");
+      expect((await storage.loadRun(runId))?.output).toBe(2);
+
+      // Zero audit events written…
+      const evs = await h.db.select().from(events).where(eq(events.runId, runId));
+      expect(evs).toHaveLength(0);
+      // …but the step rows (the resume source of truth) are all persisted.
+      expect((await storage.loadStep(runId, "a"))?.status).toBe("ok");
+      expect((await storage.loadStep(runId, "b"))?.status).toBe("ok");
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe("suspend signal", () => {
   it("isSuspend narrows correctly", () => {
     const suspended = new FlowSuspend({ reason: "sleep" });

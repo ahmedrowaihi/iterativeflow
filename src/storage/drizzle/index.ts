@@ -4,7 +4,7 @@ import type { RunStatus } from "../schema";
 import { flowTables as defaultTables } from "../schema";
 import type { AtomicStorage, StartRunSpec, Storage } from "../types";
 import type { WorkflowDb } from "../db";
-import type { EnqueueRun } from "./types";
+import { type EnqueueRun, type ObsConfig, shouldRecordEvent } from "./types";
 import { claimRun } from "./claim";
 import { invokeBudget } from "./invoke-budget";
 import { notifyTerminal } from "./notify";
@@ -45,6 +45,10 @@ const chunked = <T>(items: ReadonlyArray<T>, size: number): T[][] => {
 export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
   const { db, enqueue, logger } = opt;
   const tables = opt.tables ?? defaultTables;
+  const obs: ObsConfig = {
+    notify: opt.obs?.notify ?? true,
+    events: opt.obs?.events ?? "all",
+  };
 
   const enqueueRun: EnqueueRun = async (tx: WorkflowDb, runId, opts) => {
     const [r] = await tx
@@ -56,11 +60,11 @@ export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
     await enqueue(tx, { runId, name: r.name, version: r.version }, opts);
   };
 
-  const deps: StorageSliceDeps = { db, tables, enqueue: enqueueRun, logger };
-  const root = buildOps({ db, tables, enqueue: enqueueRun });
+  const deps: StorageSliceDeps = { db, tables, enqueue: enqueueRun, logger, obs };
+  const root = buildOps({ db, tables, enqueue: enqueueRun, obs });
 
   const atomicOver = (scoped: WorkflowDb): AtomicStorage => {
-    const inner = buildOps({ db: scoped, tables, enqueue: enqueueRun });
+    const inner = buildOps({ db: scoped, tables, enqueue: enqueueRun, obs });
     return { ...inner.ops, lockRun: inner.lockRun, enqueue: inner.enqueue };
   };
 
@@ -137,17 +141,20 @@ export const createDrizzleStorage = (opt: DrizzleStorageOpts): Storage => {
     }
 
     // 3. Started events + enqueue, for created rows only, same chunking.
+    const recordStarted = shouldRecordEvent("started", obs.events);
     for (const group of chunked(created, RUN_INSERT_CHUNK)) {
-      await scoped.insert(events).values(
-        group.map(({ spec, id }) => ({
-          runId: id,
-          type: "started" as const,
-          cursorKey: null,
-          payload: spec.parentRunId
-            ? { parent: spec.parentRunId, parentCursorKey: spec.parentCursorKey }
-            : { idempotent: false },
-        })),
-      );
+      if (recordStarted) {
+        await scoped.insert(events).values(
+          group.map(({ spec, id }) => ({
+            runId: id,
+            type: "started" as const,
+            cursorKey: null,
+            payload: spec.parentRunId
+              ? { parent: spec.parentRunId, parentCursorKey: spec.parentCursorKey }
+              : { idempotent: false },
+          })),
+        );
+      }
 
       const jobs = group.map(({ spec, id }) => ({
         job: { runId: id, name: spec.name, version: spec.version },

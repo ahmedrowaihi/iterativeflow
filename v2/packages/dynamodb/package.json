@@ -1,0 +1,30 @@
+{
+  "name": "@iterativeflow/dynamodb",
+  "version": "2.0.0-alpha.1",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "@iterativeflow/core": "2.0.0-alpha.1"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-dynamodb": ">=3.0.0",
+    "@aws-sdk/lib-dynamodb": ">=3.0.0"
+  }
+}
