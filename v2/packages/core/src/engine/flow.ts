@@ -91,6 +91,7 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
 /** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
 export interface FlowPolicy {
   drift?: DriftPolicy;
+  maxFanOut?: number;
 }
 
 /** Validate `input` against a flow's schema (if any). Throws with the collected issues. */

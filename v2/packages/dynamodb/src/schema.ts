@@ -41,6 +41,14 @@ export const TIMER_GSI_PK = "TIMER";
 /** @internal */
 export const JOB_GSI_PK = "JOB";
 
+/** @internal */
+export const CRON_DUE_GSI_PK = "CRON_DUE";
+
+// gsi1 is overloaded (see adr-dynamo-indexing): each item type namespaces its own gsi1pk. A child
+// run joins the parent's partition so `childrenOf` is a Query, not a Scan. Root runs set none (sparse).
+/** @internal */
+export const childGsiPk = (parentRunId: string): string => `CHILD#${parentRunId}`;
+
 /**
  * The table's key + GSI shape, as data — provision it yourself in CDK / CloudFormation /
  * Terraform (the production path; `ensureTable` needs `CreateTable` IAM and sits outside your

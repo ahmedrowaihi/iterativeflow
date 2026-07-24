@@ -169,12 +169,21 @@ export interface CtxDeps {
   now: Clock;
   id: IdGen;
   obs: Observer;
-  /** The running flow's signal schemas — validate each consumed payload against its declared one. */
   signals?: SignalSchemas<SignalMap>;
+  maxFanOut?: number;
 }
 
 /** @internal */
-export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDeps): Ctx => {
+export const makeCtx = ({
+  backend,
+  snap,
+  attempt,
+  now,
+  id,
+  obs,
+  signals,
+  maxFanOut,
+}: CtxDeps): Ctx => {
   const runId = snap.run.id;
   let cursor = 0;
 
@@ -277,8 +286,9 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
   };
 
   const invokeMany = async (specs: readonly InvokeSpec[]): Promise<unknown[]> => {
-    if (specs.length > MAX_FAN_OUT) {
-      throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${MAX_FAN_OUT} cap`);
+    const cap = maxFanOut ?? MAX_FAN_OUT;
+    if (specs.length > cap) {
+      throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${cap} cap`);
     }
     const chunkSize = backend.store.maxSpawnBatch;
     const childIds: string[] = [];
@@ -300,9 +310,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
     const joinShape = `invokeAllJoin:${specs.length}`;
     const { key: joinKey, memo: joinMemo } = memoAt(joinShape);
     if (joinMemo) return joinMemo.result as unknown[];
-    const outcomes = (await Promise.all(childIds.map((cid) => backend.store.loadRunRow(cid)))).map(
-      childOutcome,
-    );
+    const outcomes = (await backend.store.loadRunRows(childIds)).map(childOutcome);
     if (outcomes.some((o) => !o.done)) throw new AwaitChildSignal(childIds[0] ?? runId);
     const stored = await backend.store.checkpointStep({
       runId,

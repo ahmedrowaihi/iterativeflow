@@ -543,4 +543,30 @@ describe("engine — end to end on the memory backend", () => {
     const run = (await backend.store.loadRun(runId))?.run;
     expect(run?.status).toBe("failed");
   });
+
+  it("a flow's policy.maxFanOut overrides the default fan-out cap", async () => {
+    const child = defineFlow({ name: "c", version: 1, run: async () => 1 });
+    const parent = defineFlow({
+      name: "capped",
+      version: 1,
+      policy: { maxFanOut: 2 },
+      run: async (ctx): Promise<readonly number[]> =>
+        ctx.invoke([
+          { flow: child, input: {} },
+          { flow: child, input: {} },
+          { flow: child, input: {} },
+        ]),
+    });
+    const backend = createMemoryBackend();
+    const runId = await submit(backend, parent, {});
+    await tickOnce(backend, registry([parent, child]), {
+      batchMax: 16,
+      leaseMs: 600_000,
+      now: () => new Date("2030-01-01T00:00:00Z"),
+      retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+    });
+    const run = await backend.store.loadRunRow(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.error?.message).toMatch(/exceeds the 2 cap/);
+  });
 });
