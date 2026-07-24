@@ -125,9 +125,10 @@ export interface Store {
   ): Promise<void>;
 
   /**
-   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically
-   * — a child completing enqueues/wakes its parent in the same write as its own terminal,
-   * so a crash can't leave the parent blocked forever on a child that already finished.
+   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically with
+   * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
+   * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
+   * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.
    */
   markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<void>;
 

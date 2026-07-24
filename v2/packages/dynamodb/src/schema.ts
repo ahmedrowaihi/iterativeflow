@@ -49,8 +49,8 @@ export const CRON_DUE_GSI_PK = "CRON_DUE";
 /** @internal */
 export const RUN_GSI2_PK = "RUN";
 
-// gsi1 is overloaded (see adr-dynamo-indexing): each item type namespaces its own gsi1pk. A child
-// run joins the parent's partition so `childrenOf` is a Query, not a Scan. Root runs set none (sparse).
+// gsi1 is overloaded: each item type namespaces its own gsi1pk. A child run joins the parent's
+// partition so `childrenOf` is a Query, not a Scan. Root runs set none (sparse).
 /** @internal */
 export const childGsiPk = (parentRunId: string): string => `CHILD#${parentRunId}`;
 

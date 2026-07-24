@@ -22,6 +22,7 @@ const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
 
+/** @internal */
 export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const t: Tables = tables(schema);
 

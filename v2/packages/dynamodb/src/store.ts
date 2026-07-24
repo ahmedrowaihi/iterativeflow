@@ -540,7 +540,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async childrenOf(runId) {
       // gsi1 parent-partition Query (eventually consistent). The cancel cascade tolerates GSI lag:
       // a just-spawned child the cascade misses self-cancels on dispatch and is re-driven by
-      // reconcile (see adr-dynamo-indexing). Both backstops are covered by engineConformance.
+      // reconcile. Both backstops are covered by engineConformance.
       const items = await queryAll<RunItem>({
         TableName: table,
         IndexName: "gsi1",
@@ -649,7 +649,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     async dueCrons(now, max) {
       // gsi1 due-partition Query. Eventual consistency is safe: advanceCron is CAS-guarded, so a
-      // stale/duplicate due read can't double-fire (see adr-dynamo-indexing).
+      // stale/duplicate due read can't double-fire.
       const items = await queryAll<CronItem>({
         TableName: table,
         IndexName: "gsi1",

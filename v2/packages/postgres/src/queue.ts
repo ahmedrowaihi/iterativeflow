@@ -10,6 +10,7 @@ interface LeaseRow {
   version: number;
 }
 
+/** @internal */
 export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
   const t: Tables = tables(schema);
   const at = (d?: Date): Date => d ?? new Date();
