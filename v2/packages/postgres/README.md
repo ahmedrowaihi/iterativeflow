@@ -38,3 +38,32 @@ npx iterativeflow-pg-drizzle src/db/iterativeflow.schema.ts --schema workflow
 
 See [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md) for the drizzle route
 and serverless notes.
+
+## Low-latency push (opt-in `LISTEN/NOTIFY`)
+
+By default dispatch and `result()` are **poll-first** — connection-safe behind RDS
+Proxy / PgBouncer and the only option that fits serverless. For a **resident /
+multi-pod** deployment you can layer instant push on top, without pinning a
+`LISTEN` connection on the serverless path:
+
+```ts
+import { applyNotifyTriggers, createPgListener, createPgBackend } from "@iterativeflow/postgres";
+
+await applyNotifyTriggers(sql); // once, alongside applySchema — installs the two triggers
+
+const listener = createPgListener(pool, { schema: "workflow" });
+listener.start(); // one dedicated LISTEN connection, reconnects with backoff
+
+const backend = createPgBackend(sql, { wakeup: listener.wakeup }); // result() waiters wake on completion
+const engine = createEngine(backend, flows);
+engine.run({ waitForWork: listener.waitForWork }); // claim loop wakes the instant work is enqueued
+```
+
+Two DB triggers do the signalling: a per-statement `job`-insert trigger fires a
+`wake` NOTIFY on **every** enqueue — including the transactional-outbox ones
+(`ctx.invoke` spawn, `engine.signal`'s re-enqueue) that never pass through
+`queue.enqueue` — and a `run`-terminal trigger fires a `done` NOTIFY. One
+`createPgListener` connection multiplexes both. It's purely a latency
+optimization: a missed notify costs one poll tick, never correctness, so keep a
+sane `tickMs` as the backstop. Don't install the triggers on a serverless /
+pooled deployment that can't hold the `LISTEN` connection.

@@ -938,6 +938,12 @@ interface RunLoopOpts {
   tickMs?: number;
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
+  /**
+   * Optional push seam: block up to `tickMs`, returning early when work is enqueued. Provide a
+   * NOTIFY-backed waiter (e.g. `createPgListener(...).waitForWork`) to dispatch on enqueue instead
+   * of waiting out the poll tick. Omit for pure polling. `tickMs` is always the backstop.
+   */
+  waitForWork?: (timeoutMs: number) => Promise<void>;
 }
 /**
  * The cohesive engine: one object bundling submission, run control, queries, cron, and the

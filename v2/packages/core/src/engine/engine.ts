@@ -54,6 +54,12 @@ export interface RunLoopOpts {
   tickMs?: number;
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
+  /**
+   * Optional push seam: block up to `tickMs`, returning early when work is enqueued. Provide a
+   * NOTIFY-backed waiter (e.g. `createPgListener(...).waitForWork`) to dispatch on enqueue instead
+   * of waiting out the poll tick. Omit for pure polling. `tickMs` is always the backstop.
+   */
+  waitForWork?: (timeoutMs: number) => Promise<void>;
 }
 
 /**
@@ -165,20 +171,33 @@ export const createEngine = (
     run(loop) {
       const tickMs = loop?.tickMs ?? 200;
       const maintenanceMs = loop?.maintenanceMs ?? 5_000;
-      let stopped = false;
+      const waitForWork = loop?.waitForWork;
+      const stop = new AbortController();
+      const { signal } = stop;
       const onTickError = (err: unknown): void => opts.observe?.metrics?.tickError?.(err);
-      const ticker = setInterval(() => {
-        if (!stopped) void tickOnce(backend, reg, tickOpts).catch(onTickError);
-      }, tickMs);
+      const sleep = (ms: number): Promise<void> =>
+        new Promise((r) => {
+          const t = setTimeout(r, ms);
+          signal.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+        });
+      // Push-aware claim loop: tick, then wait up to tickMs — returning early when `waitForWork`
+      // reports an enqueue. With no push seam it degrades to a fixed poll every tickMs.
+      const tickLoop = (async () => {
+        while (!signal.aborted) {
+          await tickOnce(backend, reg, tickOpts).catch(onTickError);
+          if (signal.aborted) break;
+          await (waitForWork ? waitForWork(tickMs).catch(onTickError) : sleep(tickMs));
+        }
+      })();
       const maintenance = setInterval(() => {
-        if (stopped) return;
+        if (signal.aborted) return;
         void reconcile(backend, { max: tickOpts.batchMax }).catch(onTickError);
         void runDueCrons(backend, clock).catch(onTickError);
       }, maintenanceMs);
       return async () => {
-        stopped = true;
-        clearInterval(ticker);
+        stop.abort();
         clearInterval(maintenance);
+        await tickLoop.catch(() => undefined);
       };
     },
   };

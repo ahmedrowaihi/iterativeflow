@@ -5,7 +5,7 @@
 ## index.d.mts
 
 ```ts
-import { Backend, EventSink, FlowEvent, IdGen } from "@iterativeflow/core/backend";
+import { Backend, EventSink, FlowEvent, IdGen, Wakeup } from "@iterativeflow/core/backend";
 import { Pool } from "pg";
 //#region src/sql.d.ts
 /**
@@ -65,6 +65,11 @@ interface PgBackendOpts {
   schema?: string;
   /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
   id?: IdGen;
+  /**
+   * Completion wakeup. Defaults to the process-local, connection-safe {@link createLocalWakeup}.
+   * Pass `createPgListener(...).wakeup` to wake `result()` waiters across processes via `LISTEN`.
+   */
+  wakeup?: Wakeup;
 }
 /**
  * The Postgres {@link Backend}: the four ports over one connection source. Store, Queue, and
@@ -100,5 +105,44 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export { type PgBackendOpts, type Sql, applySchema, createPgBackend, createPgEventSink, ddl, drizzleSchema, inTx, listEvents, pgPool };
+//#region src/notify.d.ts
+/**
+ * DDL for the NOTIFY triggers. `wake` is a per-STATEMENT trigger on the `job` insert (an enqueue is
+ * always `INSERT … ON CONFLICT`, so it fires once per enqueue regardless of row count; a claim /
+ * heartbeat is an `UPDATE` and never fires it) — graphile-worker moved to per-statement notify for
+ * exactly this reason, and pg coalesces the identical empty payloads within a fan-out's transaction
+ * into one delivery. `done` fires per-row when a run first reaches a terminal status (it needs the
+ * run id in the payload). Idempotent.
+ */
+declare const notifyDdl: (schema?: string) => string;
+/** Install the NOTIFY triggers. Run once (idempotent), after {@link applySchema}. */
+declare const applyNotifyTriggers: (sql: Sql, schema?: string) => Promise<void>;
+/** @internal */
+type ListenerState = "idle" | "listening" | "reconnecting" | "stopped";
+/** The shared LISTEN connection: a completion {@link Wakeup} plus a dispatch `waitForWork`. */
+interface PgListener {
+  /** Completion push for `result()` — pass as `createPgBackend(sql, { wakeup })`. */
+  readonly wakeup: Wakeup;
+  /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
+   *  enqueue notify or after `timeoutMs`. */
+  waitForWork(timeoutMs: number): Promise<void>;
+  /** Open the LISTEN connection and start dispatching notifications. */
+  start(): void;
+  /** Stop listening and release the connection. */
+  close(): Promise<void>;
+  state(): ListenerState;
+}
+interface PgListenerOpts {
+  /** Schema whose channels to listen on. Must match the backend's schema. Default `workflow`. */
+  schema?: string;
+}
+/**
+ * One `LISTEN` connection multiplexing both channels for a schema. `wakeup.wait(runId)` resolves
+ * when the run's completion notify arrives (or on timeout); `waitForWork` resolves on any enqueue
+ * notify (or timeout). Reconnects with backoff; on every (re)connect it releases all work waiters
+ * so a wake missed while disconnected costs at most one poll, never a stall.
+ */
+declare const createPgListener: (pool: Pool, opts?: PgListenerOpts) => PgListener;
+//#endregion
+export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type Sql, applyNotifyTriggers, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgPool };
 ```

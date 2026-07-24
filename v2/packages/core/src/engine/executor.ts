@@ -108,9 +108,12 @@ export const runTick = async (
     if (run.parentRunId) {
       const remaining = await store.arriveAtJoin(run.parentRunId);
       if (status !== "done" || (remaining !== undefined && remaining <= 0)) {
-        await Promise.all([queue.enqueue(run.parentRunId), wakeup.signal(run.parentRunId)]);
+        await queue.enqueue(run.parentRunId);
       }
     }
+    // Wake any result(run.id) waiter now the run is terminal — the local push fast path (a
+    // NOTIFY-backed wakeup also nudges other processes; poll backstops either way).
+    await wakeup.signal(run.id);
     await queue.ack(lease, { now: now() });
     return status;
   };
