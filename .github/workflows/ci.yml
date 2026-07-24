@@ -120,8 +120,12 @@ jobs:
       # available on hosted runners), so no service containers or SKIP_TESTCONTAINERS here.
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run lint
+      - run: npm run test:coverage
       - run: npm run build
+      # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface
+      # change fails here until etc/*.api.md is regenerated and committed.
+      - run: npm run api:snapshot && git diff --exit-code etc
 
   release-v2:
     name: changesets (v2)

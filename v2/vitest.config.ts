@@ -25,5 +25,16 @@ export default defineConfig({
     environment: "node",
     root: __dirname,
     include: ["packages/*/src/**/*.test.ts"],
+    coverage: {
+      provider: "v8",
+      include: ["packages/*/src/**"],
+      exclude: ["packages/*/src/**/*.test.ts", "packages/conformance/src/**"],
+      // A floor on the backend-agnostic engine, not a target — raise it as the
+      // cross-backend suites grow. Backends need Docker, so their lines don't
+      // count toward this gate.
+      thresholds: {
+        "packages/core/src/**": { lines: 70, functions: 70 },
+      },
+    },
   },
 });
