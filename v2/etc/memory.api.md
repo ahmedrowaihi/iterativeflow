@@ -26,11 +26,5 @@ declare const createMemoryTimer: () => import("@iterativeflow/core/backend").Tim
 /** Standalone in-memory {@link Wakeup} (its own backend). For isolated wakeup conformance. */
 declare const createMemoryWakeup: () => import("@iterativeflow/core/backend").Wakeup;
 //#endregion
-export {
-  createMemoryBackend,
-  createMemoryQueue,
-  createMemoryStore,
-  createMemoryTimer,
-  createMemoryWakeup,
-};
+export { createMemoryBackend, createMemoryQueue, createMemoryStore, createMemoryTimer, createMemoryWakeup };
 ```

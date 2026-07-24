@@ -88,11 +88,7 @@ declare const createPgBackend: (sql: Sql, opts?: PgBackendOpts) => Backend;
  *   await submit(backend, fulfilOrder, { orderId }); // enqueued iff the order commits
  * });
  */
-declare const inTx: <T>(
-  pool: Pool,
-  fn: (backend: Backend, tx: Sql) => Promise<T>,
-  opts?: PgBackendOpts,
-) => Promise<T>;
+declare const inTx: <T>(pool: Pool, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: PgBackendOpts) => Promise<T>;
 //#endregion
 //#region src/event.d.ts
 /**
@@ -104,16 +100,5 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export {
-  type PgBackendOpts,
-  type Sql,
-  applySchema,
-  createPgBackend,
-  createPgEventSink,
-  ddl,
-  drizzleSchema,
-  inTx,
-  listEvents,
-  pgPool,
-};
+export { type PgBackendOpts, type Sql, applySchema, createPgBackend, createPgEventSink, ddl, drizzleSchema, inTx, listEvents, pgPool };
 ```

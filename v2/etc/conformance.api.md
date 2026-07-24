@@ -37,10 +37,7 @@ declare const timerConformance: (label: string, makeTimer: () => Timer | Promise
  * missing signal still resolves on timeout (the poll tick), and a signal for another run
  * doesn't wake unrelated waiters.
  */
-declare const wakeupConformance: (
-  label: string,
-  makeWakeup: () => Wakeup | Promise<Wakeup>,
-) => void;
+declare const wakeupConformance: (label: string, makeWakeup: () => Wakeup | Promise<Wakeup>) => void;
 //#endregion
 //#region src/outbox.d.ts
 /**
@@ -50,10 +47,7 @@ declare const wakeupConformance: (
  * satisfy this; it is the property that makes crash recovery correct rather than just
  * plausible.
  */
-declare const outboxConformance: (
-  label: string,
-  makeBackend: () => Backend$1 | Promise<Backend$1>,
-) => void;
+declare const outboxConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
 //#region src/signal.d.ts
 /**
@@ -61,10 +55,7 @@ declare const outboxConformance: (
  * wakes the run (re-enqueue), is idempotent on its key, and is consumed exactly once by a
  * checkpoint's `consumeSignals` outbox.
  */
-declare const signalConformance: (
-  label: string,
-  makeBackend: () => Backend$1 | Promise<Backend$1>,
-) => void;
+declare const signalConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
 //#region src/reconcile.d.ts
 /**
@@ -73,10 +64,7 @@ declare const signalConformance: (
  * pending timer, OR an `awaiting_signal` parent whose child already finished (lost wake). A
  * run that is queued, timing, terminal, or legitimately waiting on an external signal is NOT.
  */
-declare const reconcileConformance: (
-  label: string,
-  makeBackend: () => Backend$1 | Promise<Backend$1>,
-) => void;
+declare const reconcileConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
 //#region src/cron.d.ts
 /**
@@ -92,20 +80,7 @@ declare const cronConformance: (label: string, makeStore: () => Store | Promise<
  * resume, cancel cascade, drift) run against every backend, not just memory — so a real
  * serialization/consistency regression can't hide behind the port-conformance suites.
  */
-declare const engineConformance: (
-  label: string,
-  makeBackend: () => Backend | Promise<Backend>,
-) => void;
+declare const engineConformance: (label: string, makeBackend: () => Backend | Promise<Backend>) => void;
 //#endregion
-export {
-  cronConformance,
-  engineConformance,
-  outboxConformance,
-  queueConformance,
-  reconcileConformance,
-  signalConformance,
-  storeConformance,
-  timerConformance,
-  wakeupConformance,
-};
+export { cronConformance, engineConformance, outboxConformance, queueConformance, reconcileConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
 ```
