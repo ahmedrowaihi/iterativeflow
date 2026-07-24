@@ -3,7 +3,7 @@ import type { Backend, Outbox } from "#ports/outbox";
 import type { Lease } from "#ports/queue";
 import { isTerminal } from "#status";
 import type { DriftPolicy, FlowError, RunRow, SuspendStatus, TerminalOutcome } from "#types";
-import { cancelDescendants } from "#engine/cancel";
+import { cancelDescendants, cancelRun } from "#engine/cancel";
 import { type Clock, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
 import { type EventType, type ObserveOpts, makeObserver } from "#engine/observe";
@@ -43,7 +43,8 @@ export type TickResult =
   | "gone"
   | "already_terminal"
   | "unknown_flow"
-  | "flow_drift";
+  | "flow_drift"
+  | "canceled";
 
 export type { DriftPolicy } from "#types";
 
@@ -135,6 +136,18 @@ export const runTick = async (
 
   const flow = flows.get(flowKey(run.name, run.version));
   if (!flow) return parkForRedeploy("unknown_flow");
+
+  // Structured concurrency, crash-safe: a child never outlives its parent's non-success termination.
+  // The push cascade (cancelDescendants) may not have reached this child if a worker died mid-cascade;
+  // this pull check finishes the job on the child's next dispatch.
+  if (run.parentRunId) {
+    const parent = await store.loadRunRow(run.parentRunId);
+    if (parent?.status === "failed" || parent?.status === "canceled") {
+      await cancelRun(backend, run.id);
+      await queue.ack(lease, { now: now() });
+      return "canceled";
+    }
+  }
 
   const attempt = await store.markRunning(run.id);
   // Dead-letter cap: markRunning bumps attempts on EVERY claim, so a step that crashes the

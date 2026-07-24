@@ -154,6 +154,40 @@ export const engineConformance = (
       }
     });
 
+    it("a child of an already-terminated parent cancels itself on dispatch (crash-safe cascade)", async () => {
+      const backend = await makeBackend();
+      const orphan = defineFlow({
+        name: "orphan",
+        version: 1,
+        run: async (ctx): Promise<number> => {
+          await ctx.sleep(1000);
+          return 1;
+        },
+      });
+      const { runId: parentId } = await backend.store.startRun({
+        name: "p",
+        version: 1,
+        input: {},
+      });
+      await backend.store.markTerminal(parentId, {
+        status: "failed",
+        error: { code: "X", message: "parent died" },
+      });
+      const { runId: childId } = await backend.store.startRun({
+        name: "orphan",
+        version: 1,
+        input: {},
+        parentRunId: parentId,
+        parentCursorKey: "s0",
+      });
+      await backend.queue.enqueue(childId);
+      await tickOnce(backend, registry([orphan]), {
+        ...base,
+        now: () => new Date("2030-01-01T00:00:00Z"),
+      });
+      expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
+    });
+
     it("fans out children in parallel and joins their outputs in order", async () => {
       const backend = await makeBackend();
       const dbl = defineFlow({
