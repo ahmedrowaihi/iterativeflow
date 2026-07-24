@@ -823,14 +823,16 @@ type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
 };
 /** How a `submit` with an existing `idempotencyKey` behaves: reuse the existing run, or throw. */
 type OnDuplicate = "reuse" | "error";
-interface SubmitOpts {
+/** Everything `submit`/`engine.submit` accepts — dedup/tag options plus the enqueue schedule
+ *  ({@link EnqueueOpts}'s `runAt`/`priority`). */
+interface SubmitOpts extends EnqueueOpts {
   idempotencyKey?: string;
   tags?: readonly string[];
   /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
   onDuplicate?: OnDuplicate;
 }
 /** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle. */
-declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S>, input: I, opts?: SubmitOpts & EnqueueOpts) => Promise<RunHandle<O, S>>;
+declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S>, input: I, opts?: SubmitOpts) => Promise<RunHandle<O, S>>;
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
 interface SubmitItem<I = unknown> {
   flow: Flow<I, any, any>;
@@ -933,14 +935,26 @@ declare const serverlessTick: (backend: Backend, flows: FlowRegistry, opts: Tick
 //#region src/engine/engine.d.ts
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 interface EngineOpts {
+  /** Max runs claimed per worker cycle. Default 20. */
   batchMax?: number;
+  /**
+   * How long a claimed run's lease is held before another worker may re-claim it. There is no
+   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
+   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
+   * batch tail is stranded until the oversized lease expires. Default 30000.
+   */
   leaseMs?: number;
+  /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
   retry?: RetryPolicy;
+  /** Metrics callbacks + durable event-sink wiring. */
   observe?: ObserveOpts;
+  /** Id generator for runs and lease tokens. Default {@link newId}. */
   id?: IdGen;
+  /** Injectable clock for deterministic tests. Defaults to the wall clock. */
   now?: Clock;
   /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
   maxPayloadBytes?: number;
+  /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
 }
 /** Options for the resident worker loop. */
@@ -970,7 +984,7 @@ interface RunLoopOpts {
  */
 interface Engine {
   readonly backend: Backend;
-  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>, input: I, opts?: SubmitOpts$1): Promise<RunHandle<O, S>>;
+  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
   submitMany<I>(items: readonly SubmitItem<I>[]): Promise<string[]>;
   signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
     idempotencyKey?: string;
@@ -1002,7 +1016,6 @@ interface Engine {
   /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
   run(opts?: RunLoopOpts): () => Promise<void>;
 }
-type SubmitOpts$1 = SubmitOpts & EnqueueOpts;
 declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?: EngineOpts) => Engine;
 //#endregion
 //#region src/engine/cron.d.ts
