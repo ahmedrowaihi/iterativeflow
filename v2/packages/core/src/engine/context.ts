@@ -1,7 +1,7 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { RunSnapshot } from "#types";
-import { type Flow, flowKey } from "#engine/flow";
+import { type Flow, type SignalMap, flowKey } from "#engine/flow";
 import type { Observer } from "#engine/observe";
 import {
   AwaitChildSignal,
@@ -42,7 +42,7 @@ export interface StepPolicy {
  * without re-running. Cursor keys are POSITIONAL (`s0`, `s1`, …) — the deterministic-replay
  * contract is that a flow issues the same ctx calls in the same order each invocation.
  */
-export interface Ctx {
+export interface Ctx<S extends SignalMap = SignalMap> {
   /** This run's id. */
   readonly runId: string;
   /** 1-indexed attempt number of the current invocation (survives crashes). */
@@ -68,14 +68,18 @@ export interface Ctx {
    * once (recorded in the step memo); the parent parks until the child completes, then
    * resumes with the child's output. A child failure surfaces as a thrown error.
    */
-  invoke<CI, CO>(flow: Flow<CI, CO>, input: CI): Promise<CO>;
+  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
 
   /**
    * Durably wait for an external signal named `name` and return its payload. If a matching
    * signal is already in the inbox it is consumed immediately; otherwise the run parks until
    * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
    * payload without re-waiting.
+   *
+   * A name declared in the flow's `signals` map returns its declared payload type; any other
+   * name falls back to `T` (default `unknown`), so flows without a `signals` map are unchanged.
    */
+  signal<K extends keyof S>(name: K & string): Promise<S[K]>;
   signal<T = unknown>(name: string): Promise<T>;
 }
 
@@ -204,7 +208,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs }: CtxDeps): Ctx 
     sleep: (ms) => parkUntil(new Date(now().getTime() + ms)),
     sleepUntil: (date) => parkUntil(date),
 
-    async invoke<CI, CO>(flow: Flow<CI, CO>, input: CI): Promise<CO> {
+    async invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO> {
       const key = nextKey();
       const memo = snap.steps.get(key);
       let childId: string;

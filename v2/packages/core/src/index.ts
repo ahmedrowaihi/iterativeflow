@@ -21,8 +21,17 @@ export { isRunStatus } from "#status";
 /** The backend `createEngine` runs on; construct one with a backend package (or the SPI). */
 export type { Backend } from "#ports/outbox";
 
-export { defineFlow, registry, validateInput } from "#engine/flow";
-export type { AnyFlow, Flow, FlowRegistry, InputSchema } from "#engine/flow";
+export { defineFlow, registry, type, validateInput } from "#engine/flow";
+export type {
+  AnyFlow,
+  Flow,
+  FlowRegistry,
+  InputSchema,
+  NoSignals,
+  SignalMap,
+  SignalSchemas,
+  SignalType,
+} from "#engine/flow";
 export { builder, FlowBuilder } from "#engine/builder";
 export { systemClock } from "#engine/context";
 export type { Clock, Ctx, StepArg, StepPolicy } from "#engine/context";
@@ -39,8 +48,9 @@ export {
   reconcile,
   drainTimers,
   tickOnce,
+  serverlessTick,
 } from "#engine/worker";
-export type { RunResult, SubmitItem, TickOnceOpts } from "#engine/worker";
+export type { RunHandle, RunResult, SubmitItem, SweepResult, TickOnceOpts } from "#engine/worker";
 export { runTick, defaultRetry } from "#engine/executor";
 export type { RetryPolicy, TickResult, TickOpts } from "#engine/executor";
 

@@ -1,5 +1,6 @@
 import {
   CreateTableCommand,
+  type CreateTableCommandInput,
   type DynamoDBClient,
   ResourceInUseException,
   waitUntilTableExists,
@@ -41,38 +42,62 @@ export const TIMER_GSI_PK = "TIMER";
 export const JOB_GSI_PK = "JOB";
 
 /**
- * Create the table + its one GSI if absent, then block until it is active. Idempotent — a
- * `ResourceInUseException` (table already exists) is swallowed. GSI1 orders timers by fire
- * instant (`gsi1pk = "TIMER"`, `gsi1sk = pad(fireAt)`) for the `dueBatch` range query.
+ * The table's key + GSI shape, as data — provision it yourself in CDK / CloudFormation /
+ * Terraform (the production path; `ensureTable` needs `CreateTable` IAM and sits outside your
+ * IaC's drift/backup control). `pk`/`sk` are the single-table primary key; `gsi1` orders due
+ * timers and claimable jobs. `PAY_PER_REQUEST` and any PITR/tags are your choice at provision
+ * time — the engine only requires these keys and this one index.
+ */
+export const tableSpec = (table = DEFAULT_TABLE): CreateTableCommandInput => ({
+  TableName: table,
+  BillingMode: "PAY_PER_REQUEST",
+  AttributeDefinitions: [
+    { AttributeName: "pk", AttributeType: "S" },
+    { AttributeName: "sk", AttributeType: "S" },
+    { AttributeName: "gsi1pk", AttributeType: "S" },
+    { AttributeName: "gsi1sk", AttributeType: "S" },
+  ],
+  KeySchema: [
+    { AttributeName: "pk", KeyType: "HASH" },
+    { AttributeName: "sk", KeyType: "RANGE" },
+  ],
+  GlobalSecondaryIndexes: [
+    {
+      IndexName: "gsi1",
+      KeySchema: [
+        { AttributeName: "gsi1pk", KeyType: "HASH" },
+        { AttributeName: "gsi1sk", KeyType: "RANGE" },
+      ],
+      Projection: { ProjectionType: "ALL" },
+    },
+  ],
+});
+
+/**
+ * The exact IAM actions the backend needs on the workflow table + its `gsi1`. `TransactWriteItems`
+ * and `ConditionCheckItem` are the important extras — a CDK `grantReadWriteData` omits them, and
+ * without them every atomic outbox write fails. Grant these on `arn:…:table/<name>` and
+ * `arn:…:table/<name>/index/*`.
+ */
+export const REQUIRED_IAM_ACTIONS: readonly string[] = [
+  "dynamodb:GetItem",
+  "dynamodb:PutItem",
+  "dynamodb:UpdateItem",
+  "dynamodb:DeleteItem",
+  "dynamodb:Query",
+  "dynamodb:Scan",
+  "dynamodb:ConditionCheckItem",
+  "dynamodb:TransactWriteItems",
+];
+
+/**
+ * Create the table + its GSI if absent, then block until active. Idempotent (a
+ * `ResourceInUseException` is swallowed). A dev / quickstart convenience — production should
+ * provision from {@link tableSpec} in its own IaC instead.
  */
 export const ensureTable = async (low: DynamoDBClient, table = DEFAULT_TABLE): Promise<void> => {
   try {
-    await low.send(
-      new CreateTableCommand({
-        TableName: table,
-        BillingMode: "PAY_PER_REQUEST",
-        AttributeDefinitions: [
-          { AttributeName: "pk", AttributeType: "S" },
-          { AttributeName: "sk", AttributeType: "S" },
-          { AttributeName: "gsi1pk", AttributeType: "S" },
-          { AttributeName: "gsi1sk", AttributeType: "S" },
-        ],
-        KeySchema: [
-          { AttributeName: "pk", KeyType: "HASH" },
-          { AttributeName: "sk", KeyType: "RANGE" },
-        ],
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: "gsi1",
-            KeySchema: [
-              { AttributeName: "gsi1pk", KeyType: "HASH" },
-              { AttributeName: "gsi1sk", KeyType: "RANGE" },
-            ],
-            Projection: { ProjectionType: "ALL" },
-          },
-        ],
-      }),
-    );
+    await low.send(new CreateTableCommand(tableSpec(table)));
   } catch (e) {
     if (!(e instanceof ResourceInUseException)) throw e;
   }

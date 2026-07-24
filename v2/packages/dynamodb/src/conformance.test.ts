@@ -11,13 +11,23 @@ import {
   timerConformance,
   wakeupConformance,
 } from "@iterativeflow/conformance";
-import { type Backend, builder, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
+import {
+  type Backend,
+  builder,
+  defineFlow,
+  registry,
+  serverlessTick,
+  submit,
+  tickOnce,
+} from "@iterativeflow/core";
 import {
   type Doc,
   DEFAULT_TABLE,
+  REQUIRED_IAM_ACTIONS,
   createDynamoBackend,
   docClient,
   ensureTable,
+  tableSpec,
 } from "@iterativeflow/dynamodb";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -61,7 +71,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
       for (let i = 0; i < items.length; i += 25) {
         const batch = items
           .slice(i, i + 25)
-          .map((it) => ({ DeleteRequest: { Key: { pk: it.pk, sk: it.sk } } }));
+          .map((row) => ({ DeleteRequest: { Key: { pk: row.pk, sk: row.sk } } }));
         if (batch.length)
           await doc.send(new BatchWriteCommand({ RequestItems: { [TABLE]: batch } }));
       }
@@ -236,5 +246,41 @@ describe.skipIf(skip)("dynamodb backend", () => {
       const settled = await driveToSettle(backend, flows, runId);
       expect(settled).toMatchObject({ status: "done", output: 51 }); // (5*10)+1
     });
+
+    it("serverlessTick advances a durable sleep across invocations (the cron-Lambda model)", async () => {
+      const backend = await makeBackend();
+      const flow = defineFlow<Record<string, never>, string>({
+        name: "ddb-nap",
+        version: 1,
+        run: async (ctx) => {
+          await ctx.sleep(60_000);
+          return "woke";
+        },
+      });
+      const flows = registry([flow]);
+      let clock = new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => clock;
+      const opts = { batchMax: 16, leaseMs: 600_000, now };
+
+      const runId = await submit(backend, flow, {});
+      const s1 = await serverlessTick(backend, flows, opts);
+      expect(s1.results).toContain("sleeping");
+      // A later invocation, past the deadline, drains the timer and resumes — no loop between them.
+      clock = new Date(clock.getTime() + 61_000);
+      await serverlessTick(backend, flows, opts);
+      expect((await backend.store.loadRun(runId))?.run.output).toBe("woke");
+    });
+  });
+
+  it("tableSpec matches what ensureTable provisions, and names the required IAM actions", () => {
+    const spec = tableSpec("mytable");
+    expect(spec.TableName).toBe("mytable");
+    expect(spec.KeySchema).toEqual([
+      { AttributeName: "pk", KeyType: "HASH" },
+      { AttributeName: "sk", KeyType: "RANGE" },
+    ]);
+    expect(spec.GlobalSecondaryIndexes?.[0].IndexName).toBe("gsi1");
+    expect(REQUIRED_IAM_ACTIONS).toContain("dynamodb:TransactWriteItems");
+    expect(REQUIRED_IAM_ACTIONS).toContain("dynamodb:ConditionCheckItem");
   });
 });

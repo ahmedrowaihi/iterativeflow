@@ -57,10 +57,16 @@ const NOT_TERMINAL = `NOT (#status IN (${Object.keys(TERMINAL_VALUES).join(", ")
 export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => {
   const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
 
+  /**
+   * Base-table decision-path reads funnel through here so the strong-read invariant is structural:
+   * a stale read could replay against an outdated run or a missed step memo. GSI reads (claim/timer)
+   * can't be consistent and are CAS-guarded — they stay off this path.
+   */
+  const consistentGet = (Key: { pk: string; sk: string }): GetCommand =>
+    new GetCommand({ TableName: table, Key, ConsistentRead: true });
+
   const getRun = async (runId: string): Promise<RunItem | undefined> => {
-    const res = await send<{ Item?: RunItem }>(
-      new GetCommand({ TableName: table, Key: key.run(runId) }),
-    );
+    const res = await send<{ Item?: RunItem }>(consistentGet(key.run(runId)));
     return res.Item;
   };
 
@@ -72,20 +78,23 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   const getStep = async (runId: string, cursorKey: string): Promise<StepOutcome | undefined> => {
-    const res = await send<{ Item?: StepItem }>(
-      new GetCommand({ TableName: table, Key: key.step(runId, cursorKey) }),
-    );
+    const res = await send<{ Item?: StepItem }>(consistentGet(key.step(runId, cursorKey)));
     return res.Item ? mapStep(res.Item) : undefined;
   };
 
-  const scanAll = async (params: ScanCommandInput): Promise<Record<string, unknown>[]> => {
+  const scanAll = async (
+    params: ScanCommandInput,
+    consistent = false,
+  ): Promise<Record<string, unknown>[]> => {
     const out: Record<string, unknown>[] = [];
     let ExclusiveStartKey: Record<string, unknown> | undefined;
     do {
       const res = await send<{
         Items?: Record<string, unknown>[];
         LastEvaluatedKey?: Record<string, unknown>;
-      }>(new ScanCommand({ ...params, ExclusiveStartKey }));
+      }>(
+        new ScanCommand({ ...params, ExclusiveStartKey, ConsistentRead: consistent || undefined }),
+      );
       out.push(...(res.Items ?? []));
       ExclusiveStartKey = res.LastEvaluatedKey;
     } while (ExclusiveStartKey);
@@ -93,13 +102,16 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
-  const scanType = <T>(type: string): Promise<T[]> =>
-    scanAll({
-      TableName: table,
-      FilterExpression: "#type = :t",
-      ExpressionAttributeNames: { "#type": "type" },
-      ExpressionAttributeValues: { ":t": type },
-    }) as Promise<T[]>;
+  const scanType = <T>(type: string, consistent = false): Promise<T[]> =>
+    scanAll(
+      {
+        TableName: table,
+        FilterExpression: "#type = :t",
+        ExpressionAttributeNames: { "#type": "type" },
+        ExpressionAttributeValues: { ":t": type },
+      },
+      consistent,
+    ) as Promise<T[]>;
 
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
@@ -130,13 +142,12 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     } catch (e) {
       if (!conditionFailedAt(cancellationReasons(e), 0)) throw e;
       const marker = await send<{ Item?: { runId: string } }>(
-        new GetCommand({
-          TableName: table,
-          Key: key.idem(spec.name, spec.version, spec.idempotencyKey),
-        }),
+        consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
       );
       if (!marker.Item)
-        throw new Error(`startRun: idempotency marker missing for ${spec.idempotencyKey}`);
+        throw new Error(`startRun: idempotency marker missing for ${spec.idempotencyKey}`, {
+          cause: e,
+        });
       return recover(marker.Item.runId);
     }
   };
@@ -153,10 +164,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         const runId = id();
         if (spec.idempotencyKey) {
           const marker = await send<{ Item?: { runId: string } }>(
-            new GetCommand({
-              TableName: table,
-              Key: key.idem(spec.name, spec.version, spec.idempotencyKey),
-            }),
+            consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
           );
           if (marker.Item) {
             results.push(await recover(marker.Item.runId));
@@ -185,10 +193,12 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     async loadRun(runId) {
       const res = await send<{ Items?: RunPartitionItem[] }>(
+        // Consistent: the replay read — a stale memo page would re-execute a committed step.
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": key.runPk(runId) },
+          ConsistentRead: true,
         }),
       );
       const items = res.Items ?? [];
@@ -275,7 +285,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       } catch (e) {
         if (!(e instanceof ConditionalCheckFailedException)) throw e;
         const cur = await getRun(runId);
-        if (!cur) throw new Error(`markRunning: run ${runId} not found`);
+        if (!cur) throw new Error(`markRunning: run ${runId} not found`, { cause: e });
         return cur.attempts; // terminal — hand back attempts unchanged, do not resurrect
       }
     },
@@ -323,7 +333,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         if (!reasons) throw e;
         // The run-exists check failed but the step slot was free ⇒ unknown run.
         if (conditionFailedAt(reasons, 1) && !conditionFailedAt(reasons, 0)) {
-          throw new Error(`checkpointStep: run ${c.runId} not found`);
+          throw new Error(`checkpointStep: run ${c.runId} not found`, { cause: e });
         }
         // Step already present ⇒ idempotent replay: skip the outbox, return the stored outcome.
         if (!conditionFailedAt(reasons, 0)) throw e;
@@ -412,7 +422,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async childrenOf(runId) {
-      const items = await scanType<RunItem>("run");
+      // Consistent: cancelRun cascades over this — a missed child escapes cancellation for good.
+      const items = await scanType<RunItem>("run", true);
       return items.filter((r) => r.parentRunId === runId).map(mapRun);
     },
 
