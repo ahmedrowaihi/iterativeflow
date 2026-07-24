@@ -200,11 +200,13 @@ export const createEngine = (
             return [];
           });
           if (signal.aborted) break;
-          if (results.length >= batchMax) {
-            idleMs = tickMs;
-            continue; // saturated — no wait, drain the queue
-          }
           idleMs = results.length > 0 ? tickMs : Math.min(idleMs * 2, maxIdleMs);
+          if (results.length >= batchMax) {
+            // Saturated — re-claim without an idle wait, but yield one macrotask so a synchronous
+            // backend (memory) can't starve the maintenance sweep during a sustained drain.
+            await delay(0, undefined, { signal }).catch(() => undefined);
+            continue;
+          }
           await (waitForWork
             ? waitForWork(idleMs).catch(onTickError)
             : delay(idleMs, undefined, { signal }).catch(() => undefined));
