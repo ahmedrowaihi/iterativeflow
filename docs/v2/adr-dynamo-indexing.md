@@ -1,6 +1,6 @@
 # ADR (v2) — DynamoDB access paths: overload the single GSI, don't full-table Scan
 
-- **Status:** Proposed — design spike, no code shipped. The mechanical build steps are in the Decision + Consequences below; a step-by-step executor draft lived in the scratch `plans/` set.
+- **Status:** Accepted — implemented. `dueCrons` and `childrenOf` now Query the overloaded `gsi1` (`CRON_DUE` / `CHILD#<parent>` partitions); `orphanedRuns`/`listRuns`/`runStats` unchanged per the decisions below.
 - **Date:** 2026-07-24
 - **Deciders:** iterativeflow maintainers
 - **Scope:** `@iterativeflow/dynamodb` only. The Postgres backend already serves these paths with indexes; this closes the complexity-class divergence.
