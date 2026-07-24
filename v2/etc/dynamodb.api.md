@@ -32,8 +32,9 @@ declare const DEFAULT_TABLE = "iterativeflow";
  * The table's key + GSI shape, as data — provision it yourself in CDK / CloudFormation /
  * Terraform (the production path; `ensureTable` needs `CreateTable` IAM and sits outside your
  * IaC's drift/backup control). `pk`/`sk` are the single-table primary key; `gsi1` orders due
- * timers and claimable jobs. `PAY_PER_REQUEST` and any PITR/tags are your choice at provision
- * time — the engine only requires these keys and this one index.
+ * timers, claimable jobs, due crons and a run's children; `gsi2` lists/counts all runs by seq.
+ * `PAY_PER_REQUEST` and any PITR/tags are your choice at provision time — the engine only requires
+ * these keys and these two indexes.
  */
 declare const tableSpec: (table?: string) => CreateTableCommandInput;
 /**

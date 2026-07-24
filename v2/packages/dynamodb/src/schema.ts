@@ -44,6 +44,11 @@ export const JOB_GSI_PK = "JOB";
 /** @internal */
 export const CRON_DUE_GSI_PK = "CRON_DUE";
 
+// gsi2 lists/counts all runs by seq without a full-table Scan. One constant partition, written once
+// at run creation (status changes never touch it, so the hot claim path pays nothing).
+/** @internal */
+export const RUN_GSI2_PK = "RUN";
+
 // gsi1 is overloaded (see adr-dynamo-indexing): each item type namespaces its own gsi1pk. A child
 // run joins the parent's partition so `childrenOf` is a Query, not a Scan. Root runs set none (sparse).
 /** @internal */
@@ -53,8 +58,9 @@ export const childGsiPk = (parentRunId: string): string => `CHILD#${parentRunId}
  * The table's key + GSI shape, as data — provision it yourself in CDK / CloudFormation /
  * Terraform (the production path; `ensureTable` needs `CreateTable` IAM and sits outside your
  * IaC's drift/backup control). `pk`/`sk` are the single-table primary key; `gsi1` orders due
- * timers and claimable jobs. `PAY_PER_REQUEST` and any PITR/tags are your choice at provision
- * time — the engine only requires these keys and this one index.
+ * timers, claimable jobs, due crons and a run's children; `gsi2` lists/counts all runs by seq.
+ * `PAY_PER_REQUEST` and any PITR/tags are your choice at provision time — the engine only requires
+ * these keys and these two indexes.
  */
 export const tableSpec = (table = DEFAULT_TABLE): CreateTableCommandInput => ({
   TableName: table,
@@ -64,6 +70,8 @@ export const tableSpec = (table = DEFAULT_TABLE): CreateTableCommandInput => ({
     { AttributeName: "sk", AttributeType: "S" },
     { AttributeName: "gsi1pk", AttributeType: "S" },
     { AttributeName: "gsi1sk", AttributeType: "S" },
+    { AttributeName: "gsi2pk", AttributeType: "S" },
+    { AttributeName: "gsi2sk", AttributeType: "S" },
   ],
   KeySchema: [
     { AttributeName: "pk", KeyType: "HASH" },
@@ -75,6 +83,14 @@ export const tableSpec = (table = DEFAULT_TABLE): CreateTableCommandInput => ({
       KeySchema: [
         { AttributeName: "gsi1pk", KeyType: "HASH" },
         { AttributeName: "gsi1sk", KeyType: "RANGE" },
+      ],
+      Projection: { ProjectionType: "ALL" },
+    },
+    {
+      IndexName: "gsi2",
+      KeySchema: [
+        { AttributeName: "gsi2pk", KeyType: "HASH" },
+        { AttributeName: "gsi2sk", KeyType: "RANGE" },
       ],
       Projection: { ProjectionType: "ALL" },
     },
