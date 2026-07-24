@@ -17,23 +17,47 @@ export interface InputSchema<I> {
 /** A flow's signal contract: signal name → payload type. Threads typed send + await. */
 export type SignalMap = Record<string, unknown>;
 
-/** No declared signals — the default. `ctx.signal(name)` falls back to the untyped overload. */
+/** No declared signals — the default. `ctx.signal(name)` then takes any name, payload `unknown`. */
 export type NoSignals = Record<never, never>;
 
 /**
- * A phantom marker carrying a signal's payload type — declare it in a flow's `signals` map to
- * type both `ctx.signal(name)` (await) and `engine.signal(handle, name, payload)` (send). It holds
- * no value and is never read at runtime; it exists only to carry `T` into the type system.
+ * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
+ * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
+ * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
+ * it. Use {@link type} when you want the type without runtime validation.
  */
-export interface SignalType<T> {
-  readonly __payload?: T;
-}
+export type SignalSchema<T> = InputSchema<T>;
 
-/** Declare a signal's payload type: `signals: { approve: type<{ by: string }>() }`. */
-export const type = <T>(): SignalType<T> => ({});
+/**
+ * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: type<{ by: string }>() }`.
+ * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
+ * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
+ */
+export const type = <T>(): SignalSchema<T> => ({
+  "~standard": {
+    version: 1,
+    vendor: "iterativeflow",
+    validate: (value) => ({ value: value as T }),
+  },
+});
 
-/** The `signals` field's shape for a given map — one {@link SignalType} marker per name. */
-export type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalType<S[K]> };
+/** The `signals` field's shape for a given map — one Standard-Schema validator per name. */
+export type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalSchema<S[K]> };
+
+/** Validate a signal payload against its declared schema. Throws with the collected issues. */
+export const validateSignal = async <T>(
+  schema: SignalSchema<T>,
+  name: string,
+  payload: unknown,
+): Promise<T> => {
+  const r = await schema["~standard"].validate(payload);
+  if (r.issues) {
+    throw new Error(
+      `signal "${name}" payload failed validation: ${r.issues.map((i) => i.message).join("; ")}`,
+    );
+  }
+  return r.value;
+};
 
 /** Valid signal names for a map: the declared keys, or any string when none are declared. */
 export type SignalName<S extends SignalMap> = [keyof S] extends [never] ? string : keyof S & string;

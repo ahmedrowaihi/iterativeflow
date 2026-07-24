@@ -15,6 +15,7 @@ import {
   submit,
   submitMany,
   tickOnce,
+  type,
 } from "@iterativeflow/core";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
@@ -176,11 +177,12 @@ describe("engine — end to end on the memory backend", () => {
   });
 
   it("waits for an external signal and resumes with its payload", async () => {
-    const flow = defineFlow<Record<string, never>, string>({
+    const flow = defineFlow({
       name: "approval",
       version: 1,
-      run: async (ctx) => {
-        const decision = await ctx.signal<{ approved: boolean }>("review");
+      signals: { review: type<{ approved: boolean }>() },
+      run: async (ctx): Promise<string> => {
+        const decision = await ctx.signal("review");
         return decision.approved ? "shipped" : "rejected";
       },
     });

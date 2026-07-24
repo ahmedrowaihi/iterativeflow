@@ -8,10 +8,12 @@ Consumer migration, schema-ownership, and type-safety work:
 
 - **Typed flows & signals** (restores v1 per-flow type-safety, adds typed signals): `submit` returns
   a `RunHandle<O, S>` so `result` recovers the flow's output type `O` (was `unknown`), and a flow's
-  `signals` map (declared with `type<T>()`) types both `ctx.signal(name)` on the await side and
-  `signal(handle, name, payload)` on the send side — a wrong signal name or payload is now a compile
-  error. Fully backward compatible: `RunHandle` is a `string`, and flows without a `signals` map are
-  unchanged. See `docs/v2/CONTRACTS.md`.
+  `signals` map types both `ctx.signal(name)` on the await side and `signal(handle, name, payload)` on
+  the send side — a wrong signal name or payload is a compile error on both ends. A `signals` entry is
+  any **Standard-Schema** validator (zod/valibot/arktype), just like `input`: the payload is validated
+  (and parsed) as the flow consumes it, and a bad one fails the run. `type<T>()` is the type-only
+  escape hatch. `RunHandle` is a `string`, so plain-string `result`/`signal` and stored run ids keep
+  working. See `docs/v2/CONTRACTS.md`.
 - **DynamoDB consistency**: strongly-consistent reads on the durable decision path — the `loadRun`
   replay Query, the base-table point reads, and `childrenOf` (which drives the cancel cascade — a
   stale read there let a just-spawned child escape cancellation permanently). GSI reads stay
