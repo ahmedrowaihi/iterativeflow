@@ -65,14 +65,5 @@ interface DynamoBackendOpts {
  */
 declare const createDynamoBackend: (doc: Doc, opts?: DynamoBackendOpts) => Backend;
 //#endregion
-export {
-  DEFAULT_TABLE,
-  type Doc,
-  type DynamoBackendOpts,
-  REQUIRED_IAM_ACTIONS,
-  createDynamoBackend,
-  docClient,
-  ensureTable,
-  tableSpec,
-};
+export { DEFAULT_TABLE, type Doc, type DynamoBackendOpts, REQUIRED_IAM_ACTIONS, createDynamoBackend, docClient, ensureTable, tableSpec };
 ```

@@ -19,10 +19,7 @@ interface DashboardOpts {
  * edge/workers, or behind a thin Express/Hono adapter. Serves a self-contained UI at the base
  * path and a JSON API under `/api` over the {@link Engine} query + control surface.
  */
-declare const createDashboard: (
-  engine: Engine,
-  opts?: DashboardOpts,
-) => (req: Request) => Promise<Response>;
+declare const createDashboard: (engine: Engine, opts?: DashboardOpts) => ((req: Request) => Promise<Response>);
 //#endregion
 export { type DashboardOpts, createDashboard };
 ```
