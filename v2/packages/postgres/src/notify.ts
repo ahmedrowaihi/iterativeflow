@@ -138,12 +138,17 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
           client = await pool.connect();
           if (signal.aborted) break;
           const conn = client;
+          // A PERSISTENT error handler that outlives teardown: Aurora Serverless v2 drops idle
+          // connections (57P01 on scale/failover), and if `release(true)` destroys the socket with
+          // no 'error' listener left, Node turns that into an unhandled 'error' that crashes the
+          // process. So we never `removeAllListeners()` (which would strip it) — this handler just
+          // resolves `closed` and swallows any later teardown error. (v1's listen-loop bug.)
           const closed = new Promise<void>((resolve) => {
             conn.on("notification", (msg) => {
               if (msg.channel === wake) fireWork();
               else if (msg.channel === done && msg.payload) fireDone(msg.payload);
             });
-            conn.once("error", () => resolve());
+            conn.on("error", () => resolve());
             conn.once("end", () => resolve());
           });
           await conn.query(`LISTEN "${wake}"`);
@@ -164,13 +169,10 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
         } catch {
           // connect/LISTEN failed — fall through to backoff
         } finally {
-          if (client) {
-            try {
-              client.removeAllListeners();
-              client.release(true);
-            } catch {
-              // already released
-            }
+          try {
+            client?.release(true); // keeps the persistent 'error' handler → no unhandled teardown crash
+          } catch {
+            // already released
           }
         }
         if (signal.aborted) break;
