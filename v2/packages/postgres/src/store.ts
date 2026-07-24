@@ -131,6 +131,14 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return runIds.map((runId) => byId.get(runId));
     },
 
+    async arriveAtJoin(parentRunId) {
+      const rows = await sql.query<{ join_remaining: number }>(
+        `UPDATE ${t.run} SET join_remaining = join_remaining - 1 WHERE id = $1 RETURNING join_remaining`,
+        [parentRunId],
+      );
+      return rows[0] ? rows[0].join_remaining : Number.MAX_SAFE_INTEGER;
+    },
+
     async postSignal(runId, name, payload, opts) {
       return sql.tx(async (tx) => {
         const ins = await tx.query<{ id: string }>(
@@ -180,7 +188,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
         );
-        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx, c.runId); // outbox rides ONLY the first write
+        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
         return loadStep(tx, c.runId, c.cursorKey);
       });
     },
@@ -191,7 +199,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           `UPDATE ${t.run} SET status = $2 WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
           [runId, status],
         );
-        if (rows[0] && fx) await applyOutbox(tx, t, fx, runId);
+        if (rows[0] && fx) await applyOutbox(tx, t, fx);
       });
     },
 
@@ -205,7 +213,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [runId, outcome.status, j(output), j(error)],
         );
-        if (rows[0] && fx) await applyOutbox(tx, t, fx, runId);
+        if (rows[0] && fx) await applyOutbox(tx, t, fx);
       });
     },
 

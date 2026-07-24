@@ -397,7 +397,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
                 Key: key.run(c.runId),
                 UpdateExpression: "SET joinRemaining = :jt",
                 ConditionExpression: "attribute_exists(pk)",
-                ExpressionAttributeValues: { ":jt": fx.joinTarget },
+                ExpressionAttributeValues: { ":jt": fx.joinTarget.count },
               },
             }
           : {
@@ -493,29 +493,26 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         if (conditionFailedAt(cancellationReasons(e), 0)) return; // canceled is sticky — outbox skipped
         throw e;
       }
-      // Join countdown for a fan-out child. Not folded into the terminal transaction: deciding the
-      // wake needs the post-decrement value, which TransactWriteItems can't return. The atomic ADD
-      // serializes concurrent siblings; a crash between the terminal write and here is caught by the
-      // reconcile `lostParentWake` sweep, so this only reduces wakes — it never gates correctness.
-      if (fx?.joinArrive) {
-        const { parentRunId, wakeAlways } = fx.joinArrive;
-        try {
-          const res = await send<{ Attributes?: { joinRemaining?: number } }>(
-            new UpdateCommand({
-              TableName: table,
-              Key: key.run(parentRunId),
-              UpdateExpression: "ADD joinRemaining :neg1",
-              ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeValues: { ":neg1": -1 },
-              ReturnValues: "ALL_NEW",
-            }),
-          );
-          if (wakeAlways || (res.Attributes?.joinRemaining ?? 0) <= 0) {
-            await send(new UpdateCommand(enqueueParams(table, parentRunId)));
-          }
-        } catch (e) {
-          if (!(e instanceof ConditionalCheckFailedException)) throw e; // parent gone — nothing to wake
-        }
+    },
+
+    async arriveAtJoin(parentRunId) {
+      // ADD…RETURN_VALUES: TransactWriteItems can't return the post-decrement value the wake decision
+      // needs, so the decrement is its own atomic write (serializing concurrent siblings).
+      try {
+        const res = await send<{ Attributes?: { joinRemaining?: number } }>(
+          new UpdateCommand({
+            TableName: table,
+            Key: key.run(parentRunId),
+            UpdateExpression: "ADD joinRemaining :neg1",
+            ConditionExpression: "attribute_exists(pk)",
+            ExpressionAttributeValues: { ":neg1": -1 },
+            ReturnValues: "ALL_NEW",
+          }),
+        );
+        return res.Attributes?.joinRemaining ?? 0;
+      } catch (e) {
+        if (e instanceof ConditionalCheckFailedException) return Number.MAX_SAFE_INTEGER; // parent gone
+        throw e;
       }
     },
 

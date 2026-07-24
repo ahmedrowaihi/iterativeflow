@@ -93,6 +93,20 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.loadRunRows([])).toEqual([]);
     });
 
+    it("arriveAtJoin decrements the armed join countdown, and sentinels a gone parent", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "p", version: 1, input: {} });
+      await s.checkpointStep(
+        { runId, cursorKey: "s0", status: "ok", result: [], attempts: 1 },
+        { joinTarget: { runId, count: 2 } },
+      );
+      expect(await s.arriveAtJoin(runId)).toBe(1);
+      expect(await s.arriveAtJoin(runId)).toBe(0);
+      expect(await s.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeGreaterThan(
+        1_000_000,
+      );
+    });
+
     it("checkpointStep persists a completed step into the memo", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });

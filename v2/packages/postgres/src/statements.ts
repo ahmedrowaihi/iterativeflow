@@ -27,12 +27,7 @@ export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): 
   );
 
 /** @internal */
-export const applyOutbox = async (
-  sql: Sql,
-  t: Tables,
-  fx: Outbox,
-  opRunId?: string,
-): Promise<void> => {
+export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void> => {
   for (const s of fx.spawn ?? []) {
     // Insert-by-id is first-writer-wins: a replayed spawn is a no-op, so the child is created once.
     await sql.query(
@@ -61,19 +56,10 @@ export const applyOutbox = async (
   if (fx.consumeSignals?.length) {
     await sql.query(`DELETE FROM ${t.signal} WHERE id = ANY($1::text[])`, [fx.consumeSignals]);
   }
-  if (fx.joinTarget !== undefined && opRunId) {
+  if (fx.joinTarget) {
     await sql.query(`UPDATE ${t.run} SET join_remaining = $2 WHERE id = $1`, [
-      opRunId,
-      fx.joinTarget,
+      fx.joinTarget.runId,
+      fx.joinTarget.count,
     ]);
-  }
-  if (fx.joinArrive) {
-    const { parentRunId, wakeAlways } = fx.joinArrive;
-    const rows = await sql.query<{ join_remaining: number }>(
-      `UPDATE ${t.run} SET join_remaining = join_remaining - 1 WHERE id = $1 RETURNING join_remaining`,
-      [parentRunId],
-    );
-    if (wakeAlways || (rows[0] && rows[0].join_remaining <= 0))
-      await enqueueStmt(sql, t, parentRunId);
   }
 };

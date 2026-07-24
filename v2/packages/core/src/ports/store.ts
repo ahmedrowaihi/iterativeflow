@@ -64,6 +64,15 @@ export interface Store {
   loadRunRows(runIds: readonly string[]): Promise<(RunRow | undefined)[]>;
 
   /**
+   * A child arriving at its parent's fan-out join: atomically decrement `parentRunId`'s join
+   * countdown ({@link Outbox.joinTarget}) and return the new value. The executor wakes the parent
+   * when this reaches zero (all children arrived); a missed wake is caught by the reconcile
+   * `lostParentWake` sweep, so this only reduces parent wakes from O(children) to O(1) — it never
+   * gates correctness. Returns a large value if the parent is already gone (nothing to wake on).
+   */
+  arriveAtJoin(parentRunId: string): Promise<number>;
+
+  /**
    * The most children a single {@link checkpointStep} can spawn atomically on this backend — the
    * bound `ctx.invoke([...])` chunks a fan-out by. Large where one write covers any batch (Postgres,
    * memory); the transaction-item budget where it doesn't (DynamoDB).
