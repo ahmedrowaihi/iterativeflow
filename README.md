@@ -46,6 +46,19 @@ That run lives in Postgres for three days. Workers can crash, deploys can roll, 
 - **Versioned flows** — edit a flow's shape and you get a loud error, not silent breakage. Loop bodies are checked for rename/kind drift too.
 - **At-least-once** via a transactional outbox; a reconciler picks up anything stranded
 
+> ### v2 (alpha) — backend-agnostic rewrite
+>
+> A ground-up rewrite is published under the `@iterativeflow/*@2.0.0-alpha` scope. It keeps the
+> durable model (memoized steps, crash-safe replay, signals, sleeps) but runs behind a four-port
+> `Backend` interface with **Postgres, DynamoDB, and in-memory** implementations — the same engine,
+> serverless-friendly (`serverlessTick`) or resident. Flows are plain async functions
+> (`defineFlow` / `ctx.step` / `ctx.invoke`).
+>
+> - Start here: [`@iterativeflow/core`](v2/packages/core) · backends: [memory](v2/packages/memory) · [postgres](v2/packages/postgres) · [dynamodb](v2/packages/dynamodb)
+> - Design docs: [docs/v2/](docs/v2/) — [CONTRACTS](docs/v2/CONTRACTS.md) (typed flows & signals), [MIGRATION](docs/v2/MIGRATION.md) (schema ownership, serverless), [PARITY](docs/v2/PARITY.md)
+>
+> The v1 API below (`flow().step()` on graphile-worker) is unchanged and still shipped as `iterativeflow`.
+
 ## Install
 
 ```bash

@@ -12,7 +12,8 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "README.md"
   ],
   "type": "module",
   "imports": {
