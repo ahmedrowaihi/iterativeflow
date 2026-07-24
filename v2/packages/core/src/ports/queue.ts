@@ -68,4 +68,12 @@ export interface Queue {
    * the caller still holds a valid, unexpired lease. `runAt` optionally defers re-claim.
    */
   release(lease: Lease, opts?: { runAt?: Date; now?: Date }): Promise<void>;
+
+  /**
+   * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
+   * backend backed by a real notification bus (Postgres `LISTEN/NOTIFY`) implements this so the
+   * worker loop dispatches on enqueue instead of waiting out the poll tick; backends without one
+   * omit it and the loop polls every `timeoutMs`. Never load-bearing — `timeoutMs` is the backstop.
+   */
+  waitForWork?(timeoutMs: number): Promise<void>;
 }

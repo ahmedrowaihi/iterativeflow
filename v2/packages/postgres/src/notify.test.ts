@@ -68,19 +68,15 @@ describe.skipIf(skip)("postgres LISTEN/NOTIFY push", () => {
   it("push dispatch drives a run to done far faster than the poll tick", async () => {
     const listener = createPgListener(pool);
     await listening(listener);
-    const backend = createPgBackend(pgPool(pool), { wakeup: listener.wakeup });
+    const backend = createPgBackend(pgPool(pool), { listener }); // wires BOTH push seams
     const flow = defineFlow<{ x: number }, number>({
       name: "double",
       version: 1,
       run: async (ctx, input) => ctx.step("d", () => input.x * 2),
     });
     const engine = createEngine(backend, [flow]);
-    // tickMs 30s: pure polling would not claim the run for 30s. Push must dispatch it in ~ms.
-    const stop = engine.run({
-      tickMs: 30_000,
-      maintenanceMs: 30_000,
-      waitForWork: listener.waitForWork,
-    });
+    // tickMs 30s: pure polling would not claim the run for 30s. Push (off the backend) dispatches in ~ms.
+    const stop = engine.run({ tickMs: 30_000, maintenanceMs: 30_000 });
     const handle = await engine.submit(flow, { x: 21 });
     const res = await engine.result(handle, { timeoutMs: 5_000 });
     expect(res).toMatchObject({ status: "done", output: 42 });

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { EnqueueOpts } from "#ports/queue";
@@ -55,9 +56,9 @@ export interface RunLoopOpts {
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
   /**
-   * Optional push seam: block up to `tickMs`, returning early when work is enqueued. Provide a
-   * NOTIFY-backed waiter (e.g. `createPgListener(...).waitForWork`) to dispatch on enqueue instead
-   * of waiting out the poll tick. Omit for pure polling. `tickMs` is always the backstop.
+   * Override the dispatch-push waiter. By default the loop uses the backend's
+   * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
+   * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
    */
   waitForWork?: (timeoutMs: number) => Promise<void>;
 }
@@ -171,22 +172,22 @@ export const createEngine = (
     run(loop) {
       const tickMs = loop?.tickMs ?? 200;
       const maintenanceMs = loop?.maintenanceMs ?? 5_000;
-      const waitForWork = loop?.waitForWork;
+      // Dispatch push comes off the backend's queue by default (e.g. a pg listener); an explicit
+      // override is still honored. Absent both, the loop polls.
+      const waitForWork = loop?.waitForWork ?? backend.queue.waitForWork?.bind(backend.queue);
       const stop = new AbortController();
       const { signal } = stop;
       const onTickError = (err: unknown): void => opts.observe?.metrics?.tickError?.(err);
-      const sleep = (ms: number): Promise<void> =>
-        new Promise((r) => {
-          const t = setTimeout(r, ms);
-          signal.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
-        });
       // Push-aware claim loop: tick, then wait up to tickMs — returning early when `waitForWork`
-      // reports an enqueue. With no push seam it degrades to a fixed poll every tickMs.
+      // reports an enqueue. With no push seam it degrades to a fixed poll every tickMs. The
+      // signal-aware sleep cleans up its own abort listener (a hand-rolled one leaks per tick).
       const tickLoop = (async () => {
         while (!signal.aborted) {
           await tickOnce(backend, reg, tickOpts).catch(onTickError);
           if (signal.aborted) break;
-          await (waitForWork ? waitForWork(tickMs).catch(onTickError) : sleep(tickMs));
+          await (waitForWork
+            ? waitForWork(tickMs).catch(onTickError)
+            : delay(tickMs, undefined, { signal }).catch(() => undefined));
         }
       })();
       const maintenance = setInterval(() => {

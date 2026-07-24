@@ -54,9 +54,9 @@ await applyNotifyTriggers(sql); // once, alongside applySchema — installs the 
 const listener = createPgListener(pool, { schema: "workflow" });
 listener.start(); // one dedicated LISTEN connection, reconnects with backoff
 
-const backend = createPgBackend(sql, { wakeup: listener.wakeup }); // result() waiters wake on completion
+const backend = createPgBackend(sql, { listener }); // wires BOTH push seams off the one listener
 const engine = createEngine(backend, flows);
-engine.run({ waitForWork: listener.waitForWork }); // claim loop wakes the instant work is enqueued
+engine.run(); // claim loop wakes on enqueue; result() waiters wake on completion — no extra wiring
 ```
 
 Two DB triggers do the signalling: a per-statement `job`-insert trigger fires a

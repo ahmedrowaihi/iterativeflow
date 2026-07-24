@@ -111,8 +111,8 @@ const MAX_FAN_OUT = 10_000;
 
 // Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
 // chunk count and memo shapes are identical on every backend — a backend's transaction budget must
-// not leak into the durable replay fingerprint. Sized to fit the tightest backend's atomic write
-// (DynamoDB's 100-item TransactWriteItems: 2 items/child + a small gate ⇒ 40 is comfortably under).
+// not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
+// atomic-write budget; each backend guards its own limit at checkpoint time.
 const FAN_OUT_CHUNK = 40;
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

@@ -1,4 +1,5 @@
-import type { Wakeup } from "@iterativeflow/core/backend";
+import { setTimeout as delay } from "node:timers/promises";
+import { type Wakeup, createLocalWakeup } from "@iterativeflow/core/backend";
 import type { Pool, PoolClient } from "pg";
 import { tables } from "#schema";
 import type { Sql } from "#sql";
@@ -91,19 +92,14 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
   const wake = wakeChannel(schema);
   const done = doneChannel(schema);
 
-  const doneWaiters = new Map<string, Set<() => void>>();
+  // Completion side is exactly a local wakeup keyed by runId; the `done` notify feeds its `signal`.
+  const completion = createLocalWakeup();
   const workWaiters = new Set<() => void>();
   // Latch (graphile's `nudge`): a wake that arrives while the loop is mid-tick — with no waiter
   // registered — is remembered, so the next `waitForWork` returns immediately instead of stalling a
   // full tick. Closes the edge-trigger gap without a thundering herd (SKIP LOCKED does the rest).
   let pendingWake = false;
 
-  const fireDone = (runId: string): void => {
-    const set = doneWaiters.get(runId);
-    if (!set) return;
-    doneWaiters.delete(runId);
-    for (const w of [...set]) w();
-  };
   const fireWork = (): void => {
     if (workWaiters.size === 0) {
       pendingWake = true;
@@ -118,13 +114,6 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
   let loop: Promise<void> | null = null;
   let abort: AbortController | null = null;
 
-  const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
-    new Promise((resolve) => {
-      if (signal.aborted) return resolve();
-      const t = setTimeout(resolve, ms);
-      signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
-    });
-
   const start = (): void => {
     if (loop) return;
     abort = new AbortController();
@@ -132,7 +121,7 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
     loop = (async () => {
       let attempt = 0;
       while (!signal.aborted) {
-        state = attempt === 0 ? "listening" : "reconnecting";
+        if (attempt > 0) state = "reconnecting"; // "listening" is set below once LISTEN succeeds
         let client: PoolClient | null = null;
         try {
           client = await pool.connect();
@@ -146,7 +135,7 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
           const closed = new Promise<void>((resolve) => {
             conn.on("notification", (msg) => {
               if (msg.channel === wake) fireWork();
-              else if (msg.channel === done && msg.payload) fireDone(msg.payload);
+              else if (msg.channel === done && msg.payload) void completion.signal(msg.payload);
             });
             conn.on("error", () => resolve());
             conn.once("end", () => resolve());
@@ -176,34 +165,16 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
           }
         }
         if (signal.aborted) break;
-        await sleep(backoffMs(attempt++), signal);
+        await delay(backoffMs(attempt++), undefined, { signal }).catch(() => undefined);
       }
       state = "stopped";
     })();
   };
 
   return {
-    wakeup: {
-      wait(runId, timeoutMs) {
-        return new Promise<void>((resolve) => {
-          const set = doneWaiters.get(runId) ?? new Set();
-          doneWaiters.set(runId, set);
-          let t: ReturnType<typeof setTimeout>;
-          const settle = (): void => {
-            clearTimeout(t);
-            set.delete(settle);
-            if (set.size === 0) doneWaiters.delete(runId);
-            resolve();
-          };
-          set.add(settle);
-          t = setTimeout(settle, timeoutMs);
-        });
-      },
-      // Local fast path only; a completing run in another process wakes us via the `done` trigger.
-      async signal(runId) {
-        fireDone(runId);
-      },
-    },
+    // Completion push: `signal` is the local fast path (executor's terminal write); a run completing
+    // in ANOTHER process reaches us via the `done` trigger feeding `completion.signal` above.
+    wakeup: completion,
     waitForWork(timeoutMs) {
       if (pendingWake) {
         pendingWake = false;
@@ -227,8 +198,7 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
       loop = null;
       abort = null;
       state = "idle";
-      fireWork();
-      for (const runId of [...doneWaiters.keys()]) fireDone(runId);
+      fireWork(); // release the worker loop's waiter; result() waiters self-time-out then re-read
     },
     state: () => state,
   };

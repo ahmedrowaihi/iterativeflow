@@ -221,6 +221,13 @@ interface Queue {
     runAt?: Date;
     now?: Date;
   }): Promise<void>;
+  /**
+   * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
+   * backend backed by a real notification bus (Postgres `LISTEN/NOTIFY`) implements this so the
+   * worker loop dispatches on enqueue instead of waiting out the poll tick; backends without one
+   * omit it and the loop polls every `timeoutMs`. Never load-bearing — `timeoutMs` is the backstop.
+   */
+  waitForWork?(timeoutMs: number): Promise<void>;
 }
 //#endregion
 //#region src/ports/timer.d.ts
@@ -939,9 +946,9 @@ interface RunLoopOpts {
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
   /**
-   * Optional push seam: block up to `tickMs`, returning early when work is enqueued. Provide a
-   * NOTIFY-backed waiter (e.g. `createPgListener(...).waitForWork`) to dispatch on enqueue instead
-   * of waiting out the poll tick. Omit for pure polling. `tickMs` is always the backstop.
+   * Override the dispatch-push waiter. By default the loop uses the backend's
+   * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
+   * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
    */
   waitForWork?: (timeoutMs: number) => Promise<void>;
 }
