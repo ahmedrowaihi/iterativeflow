@@ -66,10 +66,14 @@ interface PgBackendOpts {
   /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
   id?: IdGen;
   /**
-   * Completion wakeup. Defaults to the process-local, connection-safe {@link createLocalWakeup}.
-   * Pass `createPgListener(...).wakeup` to wake `result()` waiters across processes via `LISTEN`.
+   * Opt-in `LISTEN/NOTIFY` push from {@link createPgListener}. Wires BOTH seams off one object: its
+   * `wakeup` wakes `result()` waiters on completion, its `waitForWork` wakes the worker loop on
+   * enqueue. Omit for the poll-first default (a process-local {@link createLocalWakeup}, no push).
    */
-  wakeup?: Wakeup;
+  listener?: {
+    wakeup: Wakeup;
+    waitForWork(timeoutMs: number): Promise<void>;
+  };
 }
 /**
  * The Postgres {@link Backend}: the four ports over one connection source. Store, Queue, and

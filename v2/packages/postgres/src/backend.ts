@@ -16,10 +16,11 @@ export interface PgBackendOpts {
   /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
   id?: IdGen;
   /**
-   * Completion wakeup. Defaults to the process-local, connection-safe {@link createLocalWakeup}.
-   * Pass `createPgListener(...).wakeup` to wake `result()` waiters across processes via `LISTEN`.
+   * Opt-in `LISTEN/NOTIFY` push from {@link createPgListener}. Wires BOTH seams off one object: its
+   * `wakeup` wakes `result()` waiters on completion, its `waitForWork` wakes the worker loop on
+   * enqueue. Omit for the poll-first default (a process-local {@link createLocalWakeup}, no push).
    */
-  wakeup?: Wakeup;
+  listener?: { wakeup: Wakeup; waitForWork(timeoutMs: number): Promise<void> };
 }
 
 /**
@@ -30,10 +31,11 @@ export interface PgBackendOpts {
 export const createPgBackend = (sql: Sql, opts: PgBackendOpts = {}): Backend => {
   const schema = opts.schema ?? "workflow";
   const id = opts.id ?? newId;
+  const queue = createPgQueue(sql, schema, id);
   return {
     store: createPgStore(sql, schema, id),
-    queue: createPgQueue(sql, schema, id),
+    queue: opts.listener ? { ...queue, waitForWork: opts.listener.waitForWork } : queue,
     timer: createPgTimer(sql, schema),
-    wakeup: opts.wakeup ?? createLocalWakeup(),
+    wakeup: opts.listener?.wakeup ?? createLocalWakeup(),
   };
 };
