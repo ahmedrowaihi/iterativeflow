@@ -15,6 +15,7 @@ import {
   type DeliveredSignal,
   type IdGen,
   type RunSpec,
+  type RunStatus,
   type StartResult,
   type StepOutcome,
   type Store,
@@ -38,7 +39,7 @@ import {
   mapStep,
   nextSeq,
 } from "#codec";
-import { CRON_DUE_GSI_PK, childGsiPk, key, pad } from "#schema";
+import { CRON_DUE_GSI_PK, RUN_GSI2_PK, childGsiPk, key, pad } from "#schema";
 import {
   MAX_TX_ITEMS,
   type TxItem,
@@ -518,17 +519,34 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     async listRuns(filter, page) {
       const statuses = statusList(filter.status);
-      const items = await scanType<RunItem>("run");
-      const matched = items
-        .filter(
-          (r) =>
-            (!statuses || statuses.includes(r.status)) &&
-            (!filter.name || r.name === filter.name) &&
-            (!filter.tag || (r.tags?.includes(filter.tag) ?? false)),
-        )
-        .sort((a, b) => b.seq - a.seq);
-      const before = page.cursor ? Number(page.cursor) : Number.POSITIVE_INFINITY;
-      const rows = matched.filter((r) => r.seq < before).slice(0, page.limit);
+      const keep = (r: RunItem): boolean =>
+        (!statuses || statuses.includes(r.status)) &&
+        (!filter.name || r.name === filter.name) &&
+        (!filter.tag || (r.tags?.includes(filter.tag) ?? false));
+      // gsi2 RUN partition, descending seq. With no filter this reads one page; a selective filter
+      // may walk a few index pages, but never the whole table.
+      const rows: RunItem[] = [];
+      let startKey: Record<string, unknown> | undefined;
+      do {
+        const res = await send<{ Items?: RunItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+          new QueryCommand({
+            TableName: table,
+            IndexName: "gsi2",
+            KeyConditionExpression: page.cursor ? "gsi2pk = :rp AND gsi2sk < :cur" : "gsi2pk = :rp",
+            ExpressionAttributeValues: {
+              ":rp": RUN_GSI2_PK,
+              ...(page.cursor ? { ":cur": pad(Number(page.cursor)) } : {}),
+            },
+            ScanIndexForward: false,
+            ExclusiveStartKey: startKey,
+          }),
+        );
+        for (const r of res.Items ?? []) {
+          if (keep(r)) rows.push(r);
+          if (rows.length === page.limit) break;
+        }
+        startKey = rows.length < page.limit ? res.LastEvaluatedKey : undefined;
+      } while (startKey);
       const last = rows[rows.length - 1];
       const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
       return { runs: rows.map(mapRun), cursor };
@@ -549,7 +567,16 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     async runStats() {
       const stats = zeroRunStats();
-      for (const r of await scanType<RunItem>("run")) stats[r.status] += 1;
+      // gsi2 RUN partition, projecting only status — a Query over the index, not a full-item Scan.
+      const rows = await queryAll<{ status: RunStatus }>({
+        TableName: table,
+        IndexName: "gsi2",
+        KeyConditionExpression: "gsi2pk = :rp",
+        ExpressionAttributeValues: { ":rp": RUN_GSI2_PK },
+        ProjectionExpression: "#s",
+        ExpressionAttributeNames: { "#s": "status" },
+      });
+      for (const r of rows) stats[r.status] += 1;
       return stats;
     },
 

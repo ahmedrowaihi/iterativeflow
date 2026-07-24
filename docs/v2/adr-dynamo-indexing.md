@@ -105,10 +105,23 @@ than every tick. The scans stay O(table) but fire rarely, and the correctness of
 recovery is unchanged. Revisit a `gsi2` "active-runs" index only if reconcile
 cost is measured to bite.
 
-### 4. `listRuns` / `runStats` → defer
+### 4. `listRuns` / `runStats` → a second GSI (`gsi2`), constant `RUN` partition
 
-Cold admin paths. A status/seq `gsi2` for bounded pagination is the eventual
-answer, lowest priority; out of scope here.
+Cold admin paths, but a full-table `Scan` per page / per call is still the worst
+complexity-class gap. They get a **second GSI**, `gsi2pk = "RUN"` (a single
+constant partition) sorted by `gsi2sk = pad(seq)`, written **once at run creation**
+and never touched again. Deliberately chosen over a status-partitioned index: a
+`STATUS#<status>` partition would have to be rewritten on **every status
+transition** — including `markRunning`, on the hot claim path — to speed up a cold
+read. `listRuns` becomes a bounded descending-`seq` Query (one index page when
+unfiltered; a few pages under a selective filter, never the whole table);
+`runStats` is a Query over `gsi2` projecting only `status` (a Query, not a
+full-item Scan). A single write-partition is fine at normal run-creation rates and
+upgrades to a sharded `RUN#<seq mod N>` layout later without changing the reads.
+
+This is the one place the design accepts a **second** GSI. The one-GSI preference
+held for the hot paths (decisions 1–3 overload `gsi1`); the cold list/stat paths
+justify `gsi2` rather than an unbounded Scan.
 
 ## Consequences
 
@@ -119,26 +132,30 @@ rewrite their run item on each transition; the delta is index WCU proportional
 to item size, not an extra round-trip. Root-run writes are unchanged (sparse —
 no `gsi1` entry).
 
-**Migration.** No index change — `gsi1` already exists, decisions 1–2 only add
-partition-key _values_. So no `CreateGlobalSecondaryIndex`, no online backfill
-of a new index. `tableSpec` / `ensureTable` are unchanged. Existing rows written
-before the change simply lack the new `gsi1` attributes: they won't appear in
-the new Queries until their next write. For a fresh `2.0.0-alpha` this is
-acceptable; a one-time `UpdateItem` backfill sweep is available if any table
-already holds live crons/children (document it in plan 012).
+**Migration.** Decisions 1–2 add partition-key _values_ to the existing `gsi1` —
+no index creation. Decision 4 adds `gsi2` to `tableSpec` / `ensureTable`: a fresh
+table gets it at create time; an existing table needs a one-time `UpdateTable`
+(DynamoDB backfills the new index online). Existing rows written before any of
+these lack the corresponding `gsi1`/`gsi2` attributes and won't appear in the new
+Queries until rewritten — acceptable for a fresh `2.0.0-alpha`; a one-time
+`UpdateItem` backfill sweep is available for a live table.
 
-**`REQUIRED_IAM_ACTIONS`** already grants `Query` on `index/*`; no IAM change.
+**`REQUIRED_IAM_ACTIONS`** already grants `Query` on `index/*`; both GSIs are
+covered, no IAM change.
 
-**What did _not_ change.** The one-table/one-GSI decision holds. No `gsi2`. The
-atomic `TransactWriteItems` / CAS paths are untouched — decisions 1–2 add
-attributes to items those transactions already write.
+**What did _not_ change.** The atomic `TransactWriteItems` / CAS paths are
+untouched — every decision only adds attributes to items those writes already
+touch, or (for `gsi2`) sets them once at creation.
 
 ## Alternatives considered
 
-- **A second GSI (`gsi2`) for parent + active + status.** Rejected here: breaks
-  the one-GSI decision for a win (orphan/listRuns) that cadence-gating already
-  neutralizes. Kept on the table as the escalation if reconcile or admin-list
-  cost is later measured to matter.
+- **A status-partitioned `gsi2` (`STATUS#<status>`) for `listRuns`/`runStats`.**
+  Rejected: it would rewrite the index on every status transition — including
+  `markRunning` on the hot claim path — to serve a cold read. The constant-`RUN`
+  partition (decision 4) writes `gsi2` once at creation instead. A sharded
+  `RUN#<seq mod N>` variant is the escalation if one write-partition ever throttles.
+- **A `gsi2` for orphan detection (active runs).** Still rejected: `orphanedRuns`
+  is cadence-gated (decision 3), so it doesn't justify indexing an absence.
 - **Keep `childrenOf` strongly consistent via scan.** Rejected: O(table) per
   cascade node is the worst offender, and the pull+reconcile backstops already
   make an eventually-consistent read safe.
