@@ -417,19 +417,20 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       return stored;
     },
 
-    async suspendRun(runId, status: SuspendStatus, fx, resetAttempts) {
+    async suspendRun(runId, status: SuspendStatus, fx) {
       const { nonSpawn, spawns } = outboxParts(table, fx);
+      const reset = status !== "retrying"; // forward progress resets the poison-pill cap
       const gate: TxItem = {
         Update: {
           TableName: table,
           Key: key.run(runId),
-          UpdateExpression: `SET #status = :status${resetAttempts ? ", attempts = :zero" : ""}`,
+          UpdateExpression: `SET #status = :status${reset ? ", attempts = :zero" : ""}`,
           ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":status": status,
             ...TERMINAL_VALUES,
-            ...(resetAttempts ? { ":zero": 0 } : {}),
+            ...(reset ? { ":zero": 0 } : {}),
           },
         },
       };

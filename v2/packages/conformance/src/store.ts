@@ -165,7 +165,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       await s.suspendRun(runId, "retrying"); // no reset — poison-pill cap keeps counting
       expect((await s.loadRunRow(runId))?.attempts).toBe(2);
       await s.markRunning(runId);
-      await s.suspendRun(runId, "sleeping", undefined, true); // forward progress — reset in the same write
+      await s.suspendRun(runId, "sleeping"); // forward progress — reset derived from status
       expect((await s.loadRunRow(runId))?.attempts).toBe(0);
       expect(await s.markRunning(runId)).toBe(1);
     });

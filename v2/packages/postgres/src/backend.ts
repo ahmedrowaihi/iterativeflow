@@ -1,10 +1,5 @@
-import {
-  type Backend,
-  type IdGen,
-  type Wakeup,
-  createLocalWakeup,
-  newId,
-} from "@iterativeflow/core/backend";
+import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
+import type { PgListener } from "#notify";
 import { createPgQueue } from "#queue";
 import { createPgStore } from "#store";
 import type { Sql } from "#sql";
@@ -20,7 +15,7 @@ export interface PgBackendOpts {
    * `wakeup` wakes `result()` waiters on completion, its `waitForWork` wakes the worker loop on
    * enqueue. Omit for the poll-first default (a process-local {@link createLocalWakeup}, no push).
    */
-  listener?: { wakeup: Wakeup; waitForWork(timeoutMs: number): Promise<void> };
+  listener?: Pick<PgListener, "wakeup" | "waitForWork">;
 }
 
 /**

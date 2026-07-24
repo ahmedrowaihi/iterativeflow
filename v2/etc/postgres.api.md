@@ -59,56 +59,6 @@ declare const applySchema: (sql: Sql, schema?: string) => Promise<void>;
  */
 declare const drizzleSchema: (schema?: string) => string;
 //#endregion
-//#region src/backend.d.ts
-interface PgBackendOpts {
-  /** Schema the four tables live in. Default `workflow`. */
-  schema?: string;
-  /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
-  id?: IdGen;
-  /**
-   * Opt-in `LISTEN/NOTIFY` push from {@link createPgListener}. Wires BOTH seams off one object: its
-   * `wakeup` wakes `result()` waiters on completion, its `waitForWork` wakes the worker loop on
-   * enqueue. Omit for the poll-first default (a process-local {@link createLocalWakeup}, no push).
-   */
-  listener?: {
-    wakeup: Wakeup;
-    waitForWork(timeoutMs: number): Promise<void>;
-  };
-}
-/**
- * The Postgres {@link Backend}: the four ports over one connection source. Store, Queue, and
- * Timer share the same database, so an outbox commits as one `BEGIN…COMMIT` — the single
- * transactional domain the seam requires. Pass a pool via {@link pgPool} (or any {@link Sql}).
- */
-declare const createPgBackend: (sql: Sql, opts?: PgBackendOpts) => Backend;
-//#endregion
-//#region src/tx.d.ts
-/**
- * Run `fn` inside one Postgres transaction, handing it a {@link Backend} bound to that
- * transaction plus the raw {@link Sql} for the caller's own writes. Every `submit` /
- * `startRun` / `enqueue` on that backend commits ATOMICALLY with the caller's writes on
- * `tx` — the transactional-enqueue guarantee: business work and workflow dispatch land
- * together or not at all. A throw rolls back both, so a failed request never leaves an
- * orphan run or a dangling job.
- *
- * @example
- * await inTx(pool, async (backend, tx) => {
- *   await tx.query("INSERT INTO orders(id, ...) VALUES ($1, ...)", [orderId]);
- *   await submit(backend, fulfilOrder, { orderId }); // enqueued iff the order commits
- * });
- */
-declare const inTx: <T>(pool: Pool, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: PgBackendOpts) => Promise<T>;
-//#endregion
-//#region src/event.d.ts
-/**
- * Durable Postgres {@link EventSink} — the dashboard timeline. Off by default; pass it as
- * `observe.sink` with a `level` to record. Writes are single-row inserts off the critical
- * path of the state machine (a failed event write must never fail a run — callers wrap as needed).
- */
-declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
-/** Read a run's event timeline, oldest first — the dashboard detail view. */
-declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
-//#endregion
 //#region src/notify.d.ts
 /**
  * DDL for the NOTIFY triggers. `wake` is a per-STATEMENT trigger on the `job` insert (an enqueue is
@@ -147,6 +97,53 @@ interface PgListenerOpts {
  * so a wake missed while disconnected costs at most one poll, never a stall.
  */
 declare const createPgListener: (pool: Pool, opts?: PgListenerOpts) => PgListener;
+//#endregion
+//#region src/backend.d.ts
+interface PgBackendOpts {
+  /** Schema the four tables live in. Default `workflow`. */
+  schema?: string;
+  /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
+  id?: IdGen;
+  /**
+   * Opt-in `LISTEN/NOTIFY` push from {@link createPgListener}. Wires BOTH seams off one object: its
+   * `wakeup` wakes `result()` waiters on completion, its `waitForWork` wakes the worker loop on
+   * enqueue. Omit for the poll-first default (a process-local {@link createLocalWakeup}, no push).
+   */
+  listener?: Pick<PgListener, "wakeup" | "waitForWork">;
+}
+/**
+ * The Postgres {@link Backend}: the four ports over one connection source. Store, Queue, and
+ * Timer share the same database, so an outbox commits as one `BEGIN…COMMIT` — the single
+ * transactional domain the seam requires. Pass a pool via {@link pgPool} (or any {@link Sql}).
+ */
+declare const createPgBackend: (sql: Sql, opts?: PgBackendOpts) => Backend;
+//#endregion
+//#region src/tx.d.ts
+/**
+ * Run `fn` inside one Postgres transaction, handing it a {@link Backend} bound to that
+ * transaction plus the raw {@link Sql} for the caller's own writes. Every `submit` /
+ * `startRun` / `enqueue` on that backend commits ATOMICALLY with the caller's writes on
+ * `tx` — the transactional-enqueue guarantee: business work and workflow dispatch land
+ * together or not at all. A throw rolls back both, so a failed request never leaves an
+ * orphan run or a dangling job.
+ *
+ * @example
+ * await inTx(pool, async (backend, tx) => {
+ *   await tx.query("INSERT INTO orders(id, ...) VALUES ($1, ...)", [orderId]);
+ *   await submit(backend, fulfilOrder, { orderId }); // enqueued iff the order commits
+ * });
+ */
+declare const inTx: <T>(pool: Pool, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: PgBackendOpts) => Promise<T>;
+//#endregion
+//#region src/event.d.ts
+/**
+ * Durable Postgres {@link EventSink} — the dashboard timeline. Off by default; pass it as
+ * `observe.sink` with a `level` to record. Writes are single-row inserts off the critical
+ * path of the state machine (a failed event write must never fail a run — callers wrap as needed).
+ */
+declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
+/** Read a run's event timeline, oldest first — the dashboard detail view. */
+declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
 export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type Sql, applyNotifyTriggers, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgPool };
 ```

@@ -444,15 +444,16 @@ interface Store {
    * one write, so a crash can't strand a run `sleeping` with no timer to wake it. A no-op
    * on a run that is already terminal.
    *
-   * `resetAttempts` zeroes the dispatch counter in the SAME write, so a forward-progress park
-   * (sleep/signal/child) resets it while `retrying` keeps it — the poison-pill cap then counts only
-   * *no-progress* re-claims (uncatchable crash loops), not legitimate durable resumes.
+   * A forward-progress park (`sleeping`/`awaiting_signal`/`awaiting_child`) zeroes the dispatch
+   * counter in the SAME write; only `retrying` keeps it — so the poison-pill cap counts *no-progress*
+   * re-claims (uncatchable crash loops), not legitimate durable resumes.
    */
-  suspendRun(runId: string, status: SuspendStatus, fx?: Outbox, resetAttempts?: boolean): Promise<void>;
+  suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
   /**
-   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically
-   * — a child completing enqueues/wakes its parent in the same write as its own terminal,
-   * so a crash can't leave the parent blocked forever on a child that already finished.
+   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically with
+   * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
+   * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
+   * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.
    */
   markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<void>;
   /** List runs newest-first, filtered and paged. The ops/dashboard read surface. */
@@ -490,6 +491,7 @@ interface Store {
 //#region src/engine/observe.d.ts
 /** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
 type EventLevel = "all" | "lifecycle" | "off";
+/** The durable event kinds the sink records — run lifecycle transitions plus per-step completion. */
 type EventType = "run.started" | "run.completed" | "run.failed" | "run.suspended" | "step.finished";
 /** One durable audit-log entry — the dashboard timeline reads these. */
 interface FlowEvent {
@@ -506,7 +508,7 @@ interface EventSink {
 interface Metrics {
   runStarted?(runId: string): void;
   runSettled?(runId: string, status: "done" | "failed"): void;
-  runSuspended?(runId: string, status: string): void;
+  runSuspended?(runId: string, status: SuspendStatus): void;
   stepFinished?(runId: string, cursorKey: string): void;
   tickError?(err: unknown): void;
 }
@@ -755,8 +757,10 @@ interface RetryPolicy {
   maxAttempts: number;
   /** First backoff delay; doubles each attempt up to `maxDelayMs`. */
   baseDelayMs: number;
+  /** Ceiling for the exponential backoff. */
   maxDelayMs: number;
 }
+/** The retry policy applied when a deployment injects none. */
 declare const defaultRetry: RetryPolicy;
 /** What one tick did with the run — for worker metrics and tests. */
 type TickResult = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled";
@@ -869,7 +873,7 @@ declare const retryRun: (backend: Backend, runId: string) => Promise<boolean>;
 declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | string, opts?: {
   timeoutMs?: number;
   pollMs?: number;
-  now?: () => number;
+  now?: Clock;
 }) => Promise<RunResult<O>>;
 /** Move every due timer back onto the queue. Returns how many were re-enqueued. */
 declare const drainTimers: (backend: Backend, opts: {
@@ -1009,10 +1013,6 @@ declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?:
  */
 /** Validate a cron expression, throwing on a malformed one. Call once at registration. */
 declare const parseCron: (expr: string) => void;
-/**
- * The next instant strictly after `from` that matches `expr` (UTC, second-precision zeroed).
- * Steps minute-by-minute up to a year out; throws if nothing matches (impossible schedule).
- */
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
 //#region src/engine/signals.d.ts

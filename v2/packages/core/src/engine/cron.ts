@@ -75,16 +75,19 @@ export const parseCron = (expr: string): void => {
 
 /**
  * The next instant strictly after `from` that matches `expr` (UTC, second-precision zeroed).
- * Steps minute-by-minute up to a year out; throws if nothing matches (impossible schedule).
+ * Steps minute-by-minute; throws if nothing matches within the horizon (an impossible schedule).
+ * The horizon spans a full leap cycle so a sparse-but-valid schedule (e.g. Feb 29) resolves instead
+ * of falsely throwing.
  */
+const HORIZON_MINUTES = 4 * 366 * 24 * 60;
 export const nextCronAfter = (expr: string, from: Date): Date => {
   const f = parse(expr);
   const d = new Date(from.getTime());
   d.setUTCSeconds(0, 0);
   d.setUTCMinutes(d.getUTCMinutes() + 1); // strictly after
-  for (let i = 0; i < 366 * 24 * 60; i++) {
+  for (let i = 0; i < HORIZON_MINUTES; i++) {
     if (matches(f, d)) return d;
     d.setUTCMinutes(d.getUTCMinutes() + 1);
   }
-  throw new Error(`cron: "${expr}" has no next fire within a year`);
+  throw new Error(`cron: "${expr}" has no next fire within 4 years`);
 };

@@ -185,11 +185,12 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       });
     },
 
-    suspendRun(runId, status: SuspendStatus, fx, resetAttempts) {
+    suspendRun(runId, status: SuspendStatus, fx) {
       return sql.tx(async (tx) => {
+        // Forward progress resets the poison-pill cap in the same write; `retrying` keeps it.
+        const reset = status !== "retrying" ? ", attempts = 0" : "";
         const rows = await tx.query(
-          `UPDATE ${t.run} SET status = $2${resetAttempts ? ", attempts = 0" : ""}
-           WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
+          `UPDATE ${t.run} SET status = $2${reset} WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
           [runId, status],
         );
         if (rows[0] && fx) await applyOutbox(tx, t, fx);

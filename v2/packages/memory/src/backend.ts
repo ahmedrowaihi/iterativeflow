@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
 import {
   type Backend,
   type ClaimOpts,
   type CronRow,
   type DeliveredSignal,
   type EnqueueOpts,
+  type IdGen,
   type Lease,
   type Outbox,
   type RunRow,
@@ -19,6 +19,7 @@ import {
   RECONCILABLE_STATUSES,
   createLocalWakeup,
   isTerminal,
+  newId,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -44,7 +45,8 @@ const ms = (now?: Date): number => (now ?? new Date()).getTime();
  * `TransactWriteItems` buys on a real backend. It passes every `*Conformance` suite,
  * including `outboxConformance`, so it doubles as the oracle every real backend must match.
  */
-export const createMemoryBackend = (): Backend => {
+export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend => {
+  const id = idGen ?? newId;
   const runs = new Map<string, RunRow>();
   const idemIndex = new Map<string, string>();
   const steps = new Map<string, Map<string, StepOutcome>>();
@@ -125,7 +127,7 @@ export const createMemoryBackend = (): Backend => {
         return { runId: existing, created: false, status: row.status };
       }
     }
-    const runId = randomUUID();
+    const runId = id();
     insertRunCore(spec, runId);
     return { runId, created: true, status: "pending" };
   };
@@ -177,7 +179,7 @@ export const createMemoryBackend = (): Backend => {
         signalIdem.add(k);
       }
       const inbox = signals.get(runId) ?? [];
-      inbox.push({ id: randomUUID(), name, payload: structuredClone(payload) });
+      inbox.push({ id: id(), name, payload: structuredClone(payload) });
       signals.set(runId, inbox);
       enqueueCore(runId); // wake the parked run atomically with the delivery
       return { delivered: true };
@@ -212,12 +214,12 @@ export const createMemoryBackend = (): Backend => {
       return structuredClone(outcome);
     },
 
-    async suspendRun(runId, status: SuspendStatus, fx?: Outbox, resetAttempts?: boolean) {
+    async suspendRun(runId, status: SuspendStatus, fx?: Outbox) {
       const row = runs.get(runId);
       if (!row) throw new Error(`suspendRun: run ${runId} not found`);
       if (isTerminal(row.status)) return; // already terminal — nothing to park
       row.status = status;
-      if (resetAttempts) row.attempts = 0;
+      if (status !== "retrying") row.attempts = 0; // forward progress resets the poison-pill cap
       commitOutbox(fx);
     },
 

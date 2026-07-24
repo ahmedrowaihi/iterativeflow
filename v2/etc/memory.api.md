@@ -5,7 +5,7 @@
 ## index.d.mts
 
 ```ts
-import { Backend } from "@iterativeflow/core/backend";
+import { Backend, IdGen } from "@iterativeflow/core/backend";
 //#region src/backend.d.ts
 /**
  * The in-memory reference backend: the four ports over one shared, single-threaded state.
@@ -14,7 +14,9 @@ import { Backend } from "@iterativeflow/core/backend";
  * `TransactWriteItems` buys on a real backend. It passes every `*Conformance` suite,
  * including `outboxConformance`, so it doubles as the oracle every real backend must match.
  */
-declare const createMemoryBackend: () => Backend;
+declare const createMemoryBackend: ({ id: idGen }?: {
+  id?: IdGen;
+}) => Backend;
 //#endregion
 //#region src/index.d.ts
 /** Standalone in-memory {@link Store} (its own backend). For isolated store conformance. */
