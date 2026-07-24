@@ -124,3 +124,34 @@ net that turns a _forgot-to-bump_ refactor from silent memo corruption into a lo
 Limits (unchanged, and honest): it can't police non-determinism from `Date.now()`/`random`/live state
 _outside_ a `ctx.step` — that's the flow's determinism contract — and two adjacent calls with the same
 `kind:label` swapped are indistinguishable. It **detects** drift; the **fix** is `version`.
+
+## Fan-out & structured concurrency
+
+`ctx.invoke` takes one child or many. One child awaits sequentially; a list of specs fans out — every
+child spawns in parallel and the call joins on all of them, resolving with the outputs in order:
+
+```ts
+const [invoice, shipment] = await ctx.invoke([
+  { flow: makeInvoice, input: order },
+  { flow: reserveStock, input: order },
+]); // both ran in parallel; outputs are per-spec typed
+```
+
+**Fast-fail + cascade.** If any child fails (or is cancelled), the `await` throws immediately and the
+parent's still-running siblings are **cancelled** — a run's children never outlive its non-success
+termination. That cascade is first-class in all cases: an explicit `cancelRun`, _and_ a plain failure,
+cancel every non-terminal descendant. Children spawn in chunks, each an atomic memoized checkpoint, so
+a fan-out is crash-safe on every backend.
+
+## Idempotency policy
+
+`submit` dedupes on `idempotencyKey` — a duplicate returns the existing run's handle. `onDuplicate`
+makes that explicit and controllable:
+
+```ts
+submit(backend, flow, input, { idempotencyKey: "order-42" }); // reuse (default)
+submit(backend, flow, input, { idempotencyKey: "order-42", onDuplicate: "error" }); // throw DuplicateRunError
+```
+
+`"reuse"` (default) returns the existing handle; `"error"` throws `DuplicateRunError` (code
+`RUN_DUPLICATE`) so an accidental double-submit surfaces instead of silently collapsing.

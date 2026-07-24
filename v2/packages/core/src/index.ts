@@ -28,6 +28,8 @@ export type {
   FlowPolicy,
   FlowRegistry,
   InputSchema,
+  InvokeOutputs,
+  InvokeSpec,
   NoSignals,
   SignalMap,
   SignalSchema,
@@ -51,7 +53,15 @@ export {
   tickOnce,
   serverlessTick,
 } from "#engine/worker";
-export type { RunHandle, RunResult, SubmitItem, SweepResult, TickOnceOpts } from "#engine/worker";
+export type {
+  OnDuplicate,
+  RunHandle,
+  RunResult,
+  SubmitItem,
+  SubmitOpts,
+  SweepResult,
+  TickOnceOpts,
+} from "#engine/worker";
 export { runTick, defaultRetry } from "#engine/executor";
 export type { DriftPolicy, RetryPolicy, TickResult, TickOpts } from "#engine/executor";
 
@@ -63,6 +73,7 @@ export {
   SleepSignal,
   AwaitChildSignal,
   AwaitSignalSignal,
+  DuplicateRunError,
   FlowDriftError,
   StepFailedError,
   StepTimeoutError,
