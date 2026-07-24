@@ -57,6 +57,13 @@ export interface Store {
   loadRunRow(runId: string): Promise<RunRow | undefined>;
 
   /**
+   * Batched {@link loadRunRow}: one round-trip for many ids instead of N. Returns rows aligned to
+   * `runIds` (same length, `undefined` where a run is gone). The fan-out join reads every child
+   * outcome through this, so a join over M children costs O(M/batch) round-trips, not O(M).
+   */
+  loadRunRows(runIds: readonly string[]): Promise<(RunRow | undefined)[]>;
+
+  /**
    * The most children a single {@link checkpointStep} can spawn atomically on this backend — the
    * bound `ctx.invoke([...])` chunks a fan-out by. Large where one write covers any batch (Postgres,
    * memory); the transaction-item budget where it doesn't (DynamoDB).

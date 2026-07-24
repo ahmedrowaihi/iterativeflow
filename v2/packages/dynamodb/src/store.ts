@@ -1,8 +1,10 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
+  BatchGetCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
+  type QueryCommandInput,
   ScanCommand,
   type ScanCommandInput,
   TransactWriteCommand,
@@ -36,7 +38,7 @@ import {
   mapStep,
   nextSeq,
 } from "#codec";
-import { key } from "#schema";
+import { CRON_DUE_GSI_PK, childGsiPk, key, pad } from "#schema";
 import {
   MAX_TX_ITEMS,
   type TxItem,
@@ -100,6 +102,20 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       ExclusiveStartKey = res.LastEvaluatedKey;
     } while (ExclusiveStartKey);
     return out;
+  };
+
+  const queryAll = async <T>(params: QueryCommandInput): Promise<T[]> => {
+    const out: Record<string, unknown>[] = [];
+    let ExclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const res = await send<{
+        Items?: Record<string, unknown>[];
+        LastEvaluatedKey?: Record<string, unknown>;
+      }>(new QueryCommand({ ...params, ExclusiveStartKey }));
+      out.push(...(res.Items ?? []));
+      ExclusiveStartKey = res.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+    return out as T[];
   };
 
   // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
@@ -231,6 +247,33 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async loadRunRow(runId) {
       const item = await getRun(runId);
       return item ? mapRun(item) : undefined;
+    },
+
+    async loadRunRows(runIds) {
+      if (runIds.length === 0) return [];
+      const byId = new Map<string, RunItem>();
+      // BatchGetItem caps at 100 keys/call and may return UnprocessedKeys under throttle — chunk and drain.
+      for (let i = 0; i < runIds.length; i += 100) {
+        let keys: { pk: string; sk: string }[] = runIds
+          .slice(i, i + 100)
+          .map((rid) => key.run(rid));
+        while (keys.length > 0) {
+          const res = await send<{
+            Responses?: Record<string, RunItem[]>;
+            UnprocessedKeys?: Record<string, { Keys?: { pk: string; sk: string }[] }>;
+          }>(
+            new BatchGetCommand({
+              RequestItems: { [table]: { Keys: keys, ConsistentRead: true } },
+            }),
+          );
+          for (const item of res.Responses?.[table] ?? []) byId.set(item.id, item);
+          keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
+        }
+      }
+      return runIds.map((rid) => {
+        const item = byId.get(rid);
+        return item ? mapRun(item) : undefined;
+      });
     },
 
     async postSignal(runId, name, payload, opts) {
@@ -456,9 +499,16 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async childrenOf(runId) {
-      // Consistent: cancelRun cascades over this — a missed child escapes cancellation for good.
-      const items = await scanType<RunItem>("run", true);
-      return items.filter((r) => r.parentRunId === runId).map(mapRun);
+      // gsi1 parent-partition Query (eventually consistent). The cancel cascade tolerates GSI lag:
+      // a just-spawned child the cascade misses self-cancels on dispatch and is re-driven by
+      // reconcile (see adr-dynamo-indexing). Both backstops are covered by engineConformance.
+      const items = await queryAll<RunItem>({
+        TableName: table,
+        IndexName: "gsi1",
+        KeyConditionExpression: "gsi1pk = :cp",
+        ExpressionAttributeValues: { ":cp": childGsiPk(runId) },
+      });
+      return items.map(mapRun);
     },
 
     async runStats() {
@@ -529,8 +579,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           Key: key.cron(spec.name),
           UpdateExpression:
             "SET #type = :type, cronName = :name, schedule = :schedule, flowName = :flowName, " +
-            "flowVersion = :flowVersion, cronInput = :input, overlap = :overlap, " +
-            "nextRunAt = if_not_exists(nextRunAt, :nextRunAt)",
+            "flowVersion = :flowVersion, cronInput = :input, overlap = :overlap, gsi1pk = :gpk, " +
+            "nextRunAt = if_not_exists(nextRunAt, :nextRunAt), " +
+            "gsi1sk = if_not_exists(gsi1sk, :gsk)",
           ExpressionAttributeNames: { "#type": "type" },
           ExpressionAttributeValues: {
             ":type": "cron",
@@ -541,15 +592,23 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ":input": enc(spec.input) ?? null,
             ":overlap": spec.overlap ?? "allow",
             ":nextRunAt": spec.nextRunAt.getTime(),
+            ":gpk": CRON_DUE_GSI_PK,
+            ":gsk": pad(spec.nextRunAt.getTime()),
           },
         }),
       );
     },
 
     async dueCrons(now, max) {
-      const items = await scanType<CronItem>("cron");
+      // gsi1 due-partition Query. Eventual consistency is safe: advanceCron is CAS-guarded, so a
+      // stale/duplicate due read can't double-fire (see adr-dynamo-indexing).
+      const items = await queryAll<CronItem>({
+        TableName: table,
+        IndexName: "gsi1",
+        KeyConditionExpression: "gsi1pk = :cd AND gsi1sk <= :now",
+        ExpressionAttributeValues: { ":cd": CRON_DUE_GSI_PK, ":now": pad(now.getTime()) },
+      });
       return items
-        .filter((c) => c.nextRunAt <= now.getTime())
         .sort((a, b) => a.nextRunAt - b.nextRunAt)
         .slice(0, max)
         .map(
@@ -572,12 +631,13 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           new UpdateCommand({
             TableName: table,
             Key: key.cron(name),
-            UpdateExpression: "SET nextRunAt = :next, lastRunAt = :last",
+            UpdateExpression: "SET nextRunAt = :next, lastRunAt = :last, gsi1sk = :gsk",
             ConditionExpression: "attribute_exists(pk) AND nextRunAt = :expected",
             ExpressionAttributeValues: {
               ":next": nextRunAt.getTime(),
               ":last": lastRunAt.getTime(),
               ":expected": expectedNextRunAt.getTime(),
+              ":gsk": pad(nextRunAt.getTime()),
             },
           }),
         );

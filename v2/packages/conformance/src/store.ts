@@ -80,6 +80,19 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.loadRunRow("00000000-0000-0000-0000-000000000000")).toBeUndefined();
     });
 
+    it("loadRunRows returns rows aligned to the input ids, undefined where gone", async () => {
+      const s = await makeStore();
+      const a = await s.startRun({ name: "f", version: 1, input: { n: 1 } });
+      const b = await s.startRun({ name: "f", version: 1, input: { n: 2 } });
+      const missing = "00000000-0000-0000-0000-000000000000";
+      const rows = await s.loadRunRows([a.runId, missing, b.runId]);
+      expect(rows).toHaveLength(3);
+      expect(rows[0]?.id).toBe(a.runId);
+      expect(rows[1]).toBeUndefined();
+      expect(rows[2]?.id).toBe(b.runId);
+      expect(await s.loadRunRows([])).toEqual([]);
+    });
+
     it("checkpointStep persists a completed step into the memo", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });

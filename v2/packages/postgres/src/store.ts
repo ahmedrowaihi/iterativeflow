@@ -122,6 +122,15 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return rows[0] ? mapRun(rows[0]) : undefined;
     },
 
+    async loadRunRows(runIds) {
+      if (runIds.length === 0) return [];
+      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = ANY($1)`, [
+        runIds,
+      ]);
+      const byId = new Map(rows.map((r) => [r.id, mapRun(r)]));
+      return runIds.map((runId) => byId.get(runId));
+    },
+
     async postSignal(runId, name, payload, opts) {
       return sql.tx(async (tx) => {
         const ins = await tx.query<{ id: string }>(
