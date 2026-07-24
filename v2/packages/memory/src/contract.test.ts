@@ -51,7 +51,7 @@ describe("typed contract", () => {
     expect(delivered).toBe(true);
     await tickOnce(backend, flows, opts); // resumes and completes
 
-    const r = await result(backend, handle, { timeoutMs: 1000, now: () => Date.now() });
+    const r = await result(backend, handle, { timeoutMs: 1000, now: () => new Date() });
     expect(r.status).toBe("done");
     // r.output is typed as the flow's return — this reads compile only if that type survived.
     expect(r.output?.total).toBe(42);

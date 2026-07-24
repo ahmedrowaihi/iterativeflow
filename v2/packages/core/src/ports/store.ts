@@ -113,16 +113,11 @@ export interface Store {
    * one write, so a crash can't strand a run `sleeping` with no timer to wake it. A no-op
    * on a run that is already terminal.
    *
-   * `resetAttempts` zeroes the dispatch counter in the SAME write, so a forward-progress park
-   * (sleep/signal/child) resets it while `retrying` keeps it — the poison-pill cap then counts only
-   * *no-progress* re-claims (uncatchable crash loops), not legitimate durable resumes.
+   * A forward-progress park (`sleeping`/`awaiting_signal`/`awaiting_child`) zeroes the dispatch
+   * counter in the SAME write; only `retrying` keeps it — so the poison-pill cap counts *no-progress*
+   * re-claims (uncatchable crash loops), not legitimate durable resumes.
    */
-  suspendRun(
-    runId: string,
-    status: SuspendStatus,
-    fx?: Outbox,
-    resetAttempts?: boolean,
-  ): Promise<void>;
+  suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
 
   /**
    * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically with

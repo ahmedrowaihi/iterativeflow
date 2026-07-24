@@ -146,19 +146,19 @@ export const retryRun = async (backend: Backend, runId: string): Promise<boolean
 export const result = async <O = unknown>(
   backend: Backend,
   runId: RunHandle<O> | string,
-  opts?: { timeoutMs?: number; pollMs?: number; now?: () => number },
+  opts?: { timeoutMs?: number; pollMs?: number; now?: Clock },
 ): Promise<RunResult<O>> => {
-  const clock = opts?.now ?? (() => Date.now());
+  const nowMs = (): number => (opts?.now ? opts.now().getTime() : Date.now());
   const pollMs = opts?.pollMs ?? 500;
   const deadline =
-    opts?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : clock() + opts.timeoutMs;
+    opts?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : nowMs() + opts.timeoutMs;
   for (;;) {
     const run = await backend.store.loadRunRow(runId);
     if (!run) throw new Error(`result: run ${runId} not found`);
     if (isTerminal(run.status)) {
       return { status: run.status, output: run.output as O, error: run.error };
     }
-    const remaining = deadline - clock();
+    const remaining = deadline - nowMs();
     if (remaining <= 0) throw new Error(`result: run ${runId} did not settle before timeout`);
     await backend.wakeup.wait(runId, Math.min(pollMs, remaining));
   }

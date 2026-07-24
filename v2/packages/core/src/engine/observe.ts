@@ -1,6 +1,9 @@
+import type { SuspendStatus } from "#types";
+
 /** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
 export type EventLevel = "all" | "lifecycle" | "off";
 
+/** The durable event kinds the sink records — run lifecycle transitions plus per-step completion. */
 export type EventType =
   | "run.started"
   | "run.completed"
@@ -25,7 +28,7 @@ export interface EventSink {
 export interface Metrics {
   runStarted?(runId: string): void;
   runSettled?(runId: string, status: "done" | "failed"): void;
-  runSuspended?(runId: string, status: string): void;
+  runSuspended?(runId: string, status: SuspendStatus): void;
   stepFinished?(runId: string, cursorKey: string): void;
   tickError?(err: unknown): void;
 }

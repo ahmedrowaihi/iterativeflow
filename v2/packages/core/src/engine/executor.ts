@@ -23,9 +23,11 @@ export interface RetryPolicy {
   maxAttempts: number;
   /** First backoff delay; doubles each attempt up to `maxDelayMs`. */
   baseDelayMs: number;
+  /** Ceiling for the exponential backoff. */
   maxDelayMs: number;
 }
 
+/** The retry policy applied when a deployment injects none. */
 export const defaultRetry: RetryPolicy = {
   maxAttempts: 10,
   baseDelayMs: 1_000,
@@ -123,9 +125,7 @@ export const runTick = async (
     result: TickResult,
     fx?: Outbox,
   ): Promise<TickResult> => {
-    // Every forward-progress park resets the dispatch counter in the same write; only "retrying"
-    // keeps it (the poison-pill guard that eventually dead-letters an uncatchable-crash loop).
-    await store.suspendRun(run.id, status, fx, status !== "retrying");
+    await store.suspendRun(run.id, status, fx);
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
     await queue.ack(lease, { now: now() });
