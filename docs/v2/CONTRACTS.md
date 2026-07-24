@@ -95,3 +95,32 @@ assertion anyway; the `signals` map replaces it with a real, both-ends-checked d
 
 The memory package's `contract.test.ts` pins all of this — including the `@ts-expect-error` cases on
 both the send and await sides, which fail the build if the strictness ever regresses.
+
+## Flow drift (replay safety)
+
+A flow body is replayed on every crash-recovery and every wake-from-sleep, and its `ctx` calls are
+matched **positionally**. So reordering, inserting, or removing a `ctx` call while a run is in flight
+would map old memos onto the wrong calls. The drift guard catches that: each memo records the
+`kind:label` of the call that made it (`step:charge`, `signal:approve`, `invoke:child@1`, `sleep`), and
+on replay the executor compares it to the call now issued at that cursor. A mismatch means the flow
+changed shape under a live run.
+
+What happens then is your call, via `driftPolicy` on the engine (default `"park"`):
+
+- `"park"` — suspend the run recoverably (`flow_drift`). Redeploy with the shape restored, or with the
+  flow `version` bumped, and it resumes. Nothing lost.
+- `"fail"` — fail the run immediately (`FLOW_DRIFT`). Terminal; `retryRun` resumes it only once the code
+  shape matches again.
+
+```ts
+createEngine(backend, flows, { driftPolicy: "fail" }); // engine default for every flow
+defineFlow({ name: "charge", version: 1, policy: { drift: "fail" }, run }); // this flow overrides it
+```
+
+The intended way to evolve a flow safely is still to **bump `version`**: new submissions run the new
+body, in-flight runs finish on the old one (still registered), and no drift occurs. The guard is the
+net that turns a _forgot-to-bump_ refactor from silent memo corruption into a loud, recoverable stop.
+
+Limits (unchanged, and honest): it can't police non-determinism from `Date.now()`/`random`/live state
+_outside_ a `ctx.step` — that's the flow's determinism contract — and two adjacent calls with the same
+`kind:label` swapped are indistinguishable. It **detects** drift; the **fix** is `version`.

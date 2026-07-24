@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   cronConformance,
+  engineConformance,
   outboxConformance,
   queueConformance,
   reconcileConformance,
@@ -53,6 +54,7 @@ describe.skipIf(skip)("postgres backend", () => {
   signalConformance("postgres", () => makeBackend());
   reconcileConformance("postgres", () => makeBackend());
   cronConformance("postgres", async () => (await makeBackend()).store);
+  engineConformance("postgres", () => makeBackend());
 
   // These need REAL multi-connection concurrency — memory (single-threaded) can't prove them.
   describe("atomicity + concurrency", () => {

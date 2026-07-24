@@ -2,13 +2,15 @@ import { type IdGen, newId } from "#id";
 import type { Backend, Outbox } from "#ports/outbox";
 import type { Lease } from "#ports/queue";
 import { isTerminal } from "#status";
-import type { FlowError, RunRow, SuspendStatus, TerminalOutcome } from "#types";
+import type { DriftPolicy, FlowError, RunRow, SuspendStatus, TerminalOutcome } from "#types";
 import { type Clock, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
 import { type EventType, type ObserveOpts, makeObserver } from "#engine/observe";
 import {
   AwaitChildSignal,
   AwaitSignalSignal,
+  CodedError,
+  FlowDriftError,
   SleepSignal,
   StepFailedError,
   isControlSignal,
@@ -39,17 +41,21 @@ export type TickResult =
   | "retrying"
   | "gone"
   | "already_terminal"
-  | "unknown_flow";
+  | "unknown_flow"
+  | "flow_drift";
+
+export type { DriftPolicy } from "#types";
 
 export interface TickOpts {
   now?: Clock;
   retry?: RetryPolicy;
   id?: IdGen;
   observe?: ObserveOpts;
+  driftPolicy?: DriftPolicy;
 }
 
 const toFlowError = (e: unknown): FlowError => {
-  if (e instanceof StepFailedError) return { code: e.code, message: e.message, stack: e.stack };
+  if (e instanceof CodedError) return { code: e.code, message: e.message, stack: e.stack };
   if (e instanceof Error) return { code: e.name || "ERROR", message: e.message, stack: e.stack };
   return { code: "ERROR", message: String(e) };
 };
@@ -108,21 +114,25 @@ export const runTick = async (
     fx?: Outbox,
   ): Promise<TickResult> => {
     await store.suspendRun(run.id, status, fx);
+    if (status === "sleeping" || status === "awaiting_child" || status === "awaiting_signal") {
+      await store.resetAttempts(run.id);
+    }
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
     await queue.ack(lease, { now: now() });
     return result;
   };
 
-  const flow = flows.get(flowKey(run.name, run.version));
-  if (!flow) {
-    // Unknown flow: park with a timer so `drainTimers` re-enqueues it and it re-checks the
-    // registry — a deploy that (re)registers the flow recovers the run automatically.
-    await suspend("retrying", "unknown_flow", {
+  // The deployed code can't advance this run yet — the flow isn't registered (`unknown_flow`) or its
+  // shape drifted under it (`flow_drift`). Park and re-check on a flat delay; a redeploy or version
+  // bump recovers it. (The dead-letter cap still bounds a permanently-stuck run.)
+  const parkForRedeploy = (result: TickResult): Promise<TickResult> =>
+    suspend("retrying", result, {
       timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }],
     });
-    return "unknown_flow";
-  }
+
+  const flow = flows.get(flowKey(run.name, run.version));
+  if (!flow) return parkForRedeploy("unknown_flow");
 
   const attempt = await store.markRunning(run.id);
   // Dead-letter cap: markRunning bumps attempts on EVERY claim, so a step that crashes the
@@ -161,6 +171,14 @@ export const runTick = async (
     if (e instanceof AwaitChildSignal) return suspend("awaiting_child", "awaiting_child");
     if (e instanceof AwaitSignalSignal) return suspend("awaiting_signal", "awaiting_signal");
     if (isControlSignal(e)) throw e; // future signals must be handled explicitly
+
+    if (e instanceof FlowDriftError) {
+      if ((flow.policy?.drift ?? opts.driftPolicy ?? "park") === "park") {
+        return parkForRedeploy("flow_drift");
+      }
+      const err = toFlowError(e);
+      return finish("failed", { status: "failed", error: err }, "run.failed", { error: err });
+    }
 
     if (attempt < retry.maxAttempts && !(e instanceof StepFailedError)) {
       return suspend("retrying", "retrying", {

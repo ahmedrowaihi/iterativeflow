@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { BatchWriteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import {
   cronConformance,
+  engineConformance,
   outboxConformance,
   queueConformance,
   reconcileConformance,
@@ -94,6 +95,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
   signalConformance("dynamodb", () => makeBackend());
   reconcileConformance("dynamodb", () => makeBackend());
   cronConformance("dynamodb", async () => (await makeBackend()).store);
+  engineConformance("dynamodb", () => makeBackend());
 
   // These need REAL concurrency + a real TransactWriteItems — memory (single-threaded) can't prove them.
   describe("atomicity + concurrency", () => {

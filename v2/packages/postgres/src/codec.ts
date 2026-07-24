@@ -41,6 +41,7 @@ export interface StepRecord {
   result: unknown;
   error: StepOutcome["error"] | null;
   attempts: number;
+  shape?: string | null;
 }
 
 export const mapStep = (r: StepRecord): StepOutcome => ({
@@ -48,4 +49,5 @@ export const mapStep = (r: StepRecord): StepOutcome => ({
   result: orUndef(r.result),
   error: orUndef(r.error),
   attempts: r.attempts,
+  shape: orUndef(r.shape),
 });

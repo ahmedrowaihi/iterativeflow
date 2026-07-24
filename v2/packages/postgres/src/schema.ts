@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS ${t.step} (
   result      jsonb,
   error       jsonb,
   attempts    int  NOT NULL,
+  shape       text,
   PRIMARY KEY (run_id, cursor_key)
 );
 

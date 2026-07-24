@@ -4,7 +4,7 @@ import type { EnqueueOpts } from "#ports/queue";
 import { isTerminal } from "#status";
 import type { FlowError, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
-import { type RetryPolicy, type TickResult, runTick } from "#engine/executor";
+import { type DriftPolicy, type RetryPolicy, type TickResult, runTick } from "#engine/executor";
 import {
   type Flow,
   type FlowRegistry,
@@ -138,10 +138,10 @@ export const result = async <O = unknown>(
   const deadline =
     opts?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : clock() + opts.timeoutMs;
   for (;;) {
-    const snap = await backend.store.loadRun(runId);
-    if (!snap) throw new Error(`result: run ${runId} not found`);
-    if (isTerminal(snap.run.status)) {
-      return { status: snap.run.status, output: snap.run.output as O, error: snap.run.error };
+    const run = await backend.store.loadRunRow(runId);
+    if (!run) throw new Error(`result: run ${runId} not found`);
+    if (isTerminal(run.status)) {
+      return { status: run.status, output: run.output as O, error: run.error };
     }
     const remaining = deadline - clock();
     if (remaining <= 0) throw new Error(`result: run ${runId} did not settle before timeout`);
@@ -169,7 +169,7 @@ export const drainTimers = async (
   opts: { max: number; now?: Date },
 ): Promise<number> => {
   const due = await backend.timer.dueBatch({ now: opts.now, max: opts.max });
-  for (const runId of due) await backend.queue.enqueue(runId);
+  await Promise.all(due.map((runId) => backend.queue.enqueue(runId)));
   return due.length;
 };
 
@@ -181,7 +181,7 @@ export const drainTimers = async (
  */
 export const reconcile = async (backend: Backend, opts: { max: number }): Promise<number> => {
   const orphans = await backend.store.orphanedRuns(opts.max);
-  for (const runId of orphans) await backend.queue.enqueue(runId);
+  await Promise.all(orphans.map((runId) => backend.queue.enqueue(runId)));
   return orphans.length;
 };
 
@@ -192,6 +192,7 @@ export interface TickOnceOpts {
   now?: Clock;
   id?: IdGen;
   observe?: ObserveOpts;
+  driftPolicy?: DriftPolicy;
 }
 
 /**
@@ -219,6 +220,7 @@ export const tickOnce = async (
         retry: opts.retry,
         id: opts.id,
         observe: opts.observe,
+        driftPolicy: opts.driftPolicy,
       }),
     );
   }

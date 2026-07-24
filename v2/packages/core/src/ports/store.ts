@@ -51,6 +51,12 @@ export interface Store {
   loadRun(runId: string): Promise<RunSnapshot | undefined>;
 
   /**
+   * Load just the run row — no step memo or signal inbox. For callers that inspect only
+   * status/output/error (awaiting a child, polling `result`). Cheaper than {@link loadRun}.
+   */
+  loadRunRow(runId: string): Promise<RunRow | undefined>;
+
+  /**
    * Deliver a signal to a run's inbox AND re-enqueue the run atomically, so a parked
    * `awaiting_signal` run wakes and consumes it on its next tick. Idempotent on
    * `idempotencyKey` (scoped to the run) — a retried delivery lands once. Returns whether the
@@ -65,6 +71,13 @@ export interface Store {
 
   /** Transition to `running` and increment `attempts`. Returns the new attempt count. */
   markRunning(runId: string): Promise<number>;
+
+  /**
+   * Zero `attempts` after forward progress, so the poison-pill cap counts only *no-progress*
+   * re-claims (uncatchable crash loops), not legitimate durable resumes (sleeps, signals, children).
+   * No-op on a terminal run.
+   */
+  resetAttempts(runId: string): Promise<void>;
 
   /**
    * Persist a step's terminal outcome — the single durable write per step. **Idempotent

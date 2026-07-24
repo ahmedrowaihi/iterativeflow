@@ -66,6 +66,7 @@ export interface StepItem {
   result?: string;
   error?: string;
   attempts: number;
+  shape?: string;
 }
 
 export const mapStep = (r: StepItem): StepOutcome => ({
@@ -73,6 +74,7 @@ export const mapStep = (r: StepItem): StepOutcome => ({
   result: dec(r.result),
   error: asFlowError(dec(r.error)),
   attempts: r.attempts,
+  shape: r.shape,
 });
 
 export type RunPartitionItem =

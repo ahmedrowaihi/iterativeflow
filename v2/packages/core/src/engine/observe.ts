@@ -27,6 +27,7 @@ export interface Metrics {
   runSettled?(runId: string, status: "done" | "failed"): void;
   runSuspended?(runId: string, status: string): void;
   stepFinished?(runId: string, cursorKey: string): void;
+  tickError?(err: unknown): void;
 }
 
 /** Observability wiring passed to the worker. All optional — omit for zero overhead. */

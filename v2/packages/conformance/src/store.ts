@@ -69,12 +69,37 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.loadRun("00000000-0000-0000-0000-000000000000")).toBeUndefined();
     });
 
+    it("loadRunRow returns just the run row (no step/signal maps), undefined if gone", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: { a: 1 } });
+      await s.checkpointStep({ runId, cursorKey: "a", status: "ok", result: 1, attempts: 1 });
+      const row = await s.loadRunRow(runId);
+      expect(row).toMatchObject({ id: runId, status: "pending" });
+      expect(row).not.toHaveProperty("steps");
+      expect(row).not.toHaveProperty("signals");
+      expect(await s.loadRunRow("00000000-0000-0000-0000-000000000000")).toBeUndefined();
+    });
+
     it("checkpointStep persists a completed step into the memo", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
       await s.checkpointStep({ runId, cursorKey: "a", status: "ok", result: 42, attempts: 1 });
       const snap = await s.loadRun(runId);
       expect(snap?.steps.get("a")).toMatchObject({ status: "ok", result: 42, attempts: 1 });
+    });
+
+    it("checkpointStep round-trips the shape tag (drift-guard evidence)", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
+      await s.checkpointStep({
+        runId,
+        cursorKey: "a",
+        status: "ok",
+        result: 1,
+        attempts: 1,
+        shape: "step:charge",
+      });
+      expect((await s.loadRun(runId))?.steps.get("a")?.shape).toBe("step:charge");
     });
 
     it("checkpointStep is first-writer-wins — a second write does NOT overwrite (exactly-once memo)", async () => {
@@ -105,6 +130,16 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.markRunning(runId)).toBe(1);
       expect(await s.markRunning(runId)).toBe(2);
       expect((await s.loadRun(runId))?.run.attempts).toBe(2);
+    });
+
+    it("resetAttempts zeroes the dispatch counter (only the poison-pill cap counts no-progress)", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
+      await s.markRunning(runId);
+      await s.markRunning(runId);
+      await s.resetAttempts(runId);
+      expect((await s.loadRunRow(runId))?.attempts).toBe(0);
+      expect(await s.markRunning(runId)).toBe(1);
     });
 
     it("markRunning never resurrects a terminal run (a late re-dispatch can't undo a cancel)", async () => {

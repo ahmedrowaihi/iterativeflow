@@ -1,5 +1,6 @@
 import {
   cronConformance,
+  engineConformance,
   outboxConformance,
   queueConformance,
   reconcileConformance,
@@ -26,3 +27,4 @@ outboxConformance("memory", () => createMemoryBackend());
 signalConformance("memory", () => createMemoryBackend());
 reconcileConformance("memory", () => createMemoryBackend());
 cronConformance("memory", () => createMemoryStore());
+engineConformance("memory", () => createMemoryBackend());
