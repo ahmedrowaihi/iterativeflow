@@ -941,8 +941,15 @@ interface EngineOpts {
 }
 /** Options for the resident worker loop. */
 interface RunLoopOpts {
-  /** Claim-cycle cadence (ms). Default 200. */
+  /** Claim-cycle cadence (ms) when there's work — the busy/floor interval. Default 200. */
   tickMs?: number;
+  /**
+   * Idle backoff ceiling (ms). With no work, the claim interval grows geometrically from `tickMs`
+   * toward this, so an idle worker stops hammering the DB; it snaps back to `tickMs` the moment a
+   * claim returns work (and a full batch re-claims immediately). Default `tickMs × 8`. A push notify
+   * interrupts the wait regardless, so raising this is free when a listener is wired.
+   */
+  maxIdleTickMs?: number;
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
   /**
