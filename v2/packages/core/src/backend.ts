@@ -36,6 +36,7 @@ export { createLocalWakeup } from "#local-wakeup";
 export { RUN_STATUSES } from "#types";
 export {
   TERMINAL_STATUSES,
+  NON_SUCCESS_TERMINAL_STATUSES,
   ACTIVE_STATUSES,
   RECONCILABLE_STATUSES,
   isTerminal,

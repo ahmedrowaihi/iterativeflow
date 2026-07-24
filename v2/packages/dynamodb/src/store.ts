@@ -17,6 +17,7 @@ import {
   type StepOutcome,
   type Store,
   type SuspendStatus,
+  NON_SUCCESS_TERMINAL_STATUSES,
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   isTerminal,
@@ -153,11 +154,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   return {
+    maxSpawnBatch: Math.floor((MAX_TX_ITEMS - 2) / 2),
+
     startRun: startOne,
 
     async startManyRuns(specs) {
-      // Resolve idempotency per spec, then land every *new* run in one all-or-nothing
-      // transaction; a batch may still mix created + already-existing (per-spec idempotency).
       const markers = await Promise.all(
         specs.map((spec) =>
           spec.idempotencyKey
@@ -474,15 +475,22 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       ]);
       const jobs = new Set(jobItems.map((j) => j.runId));
       const timers = new Set(timerItems.map((t) => t.runId));
+      const byId = new Map(runs.map((r) => [r.id, r]));
       const reconcilable = new Set<string>(RECONCILABLE_STATUSES);
+      const nonSuccess = new Set<string>(NON_SUCCESS_TERMINAL_STATUSES);
       const stranded = (r: RunItem): boolean =>
         reconcilable.has(r.status) && !jobs.has(r.id) && !timers.has(r.id);
       const lostParentWake = (r: RunItem): boolean =>
         r.status === "awaiting_child" &&
         !jobs.has(r.id) &&
         runs.some((c) => c.parentRunId === r.id && isTerminal(c.status));
+      const orphanedChild = (r: RunItem): boolean => {
+        if (isTerminal(r.status) || !r.parentRunId) return false;
+        const p = byId.get(r.parentRunId);
+        return p !== undefined && nonSuccess.has(p.status);
+      };
       return runs
-        .filter((r) => stranded(r) || lostParentWake(r))
+        .filter((r) => stranded(r) || lostParentWake(r) || orphanedChild(r))
         .sort((a, b) => a.seq - b.seq)
         .slice(0, max)
         .map((r) => r.id);

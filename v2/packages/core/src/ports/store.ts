@@ -57,6 +57,13 @@ export interface Store {
   loadRunRow(runId: string): Promise<RunRow | undefined>;
 
   /**
+   * The most children a single {@link checkpointStep} can spawn atomically on this backend — the
+   * bound `ctx.invoke([...])` chunks a fan-out by. Large where one write covers any batch (Postgres,
+   * memory); the transaction-item budget where it doesn't (DynamoDB).
+   */
+  readonly maxSpawnBatch: number;
+
+  /**
    * Deliver a signal to a run's inbox AND re-enqueue the run atomically, so a parked
    * `awaiting_signal` run wakes and consumes it on its next tick. Idempotent on
    * `idempotencyKey` (scoped to the run) — a retried delivery lands once. Returns whether the
