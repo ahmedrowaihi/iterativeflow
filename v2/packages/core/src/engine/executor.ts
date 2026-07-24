@@ -149,7 +149,7 @@ export const runTick = async (
 
   // `snap` was loaded after the claim, so it already holds every durable step + signal; the
   // exclusive lease means nothing else writes them mid-tick. No second load needed.
-  const ctx = makeCtx({ backend, snap, attempt, now, id, obs });
+  const ctx = makeCtx({ backend, snap, attempt, now, id, obs, signals: flow.signals });
 
   try {
     const output = await flow.run(ctx, run.input);

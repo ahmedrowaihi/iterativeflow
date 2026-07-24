@@ -1,7 +1,15 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { RunSnapshot } from "#types";
-import { type Flow, type SignalMap, flowKey } from "#engine/flow";
+import {
+  type Flow,
+  type SignalMap,
+  type SignalName,
+  type SignalPayload,
+  type SignalSchemas,
+  flowKey,
+  validateSignal,
+} from "#engine/flow";
 import type { Observer } from "#engine/observe";
 import {
   AwaitChildSignal,
@@ -76,11 +84,10 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
    * payload without re-waiting.
    *
-   * A name declared in the flow's `signals` map returns its declared payload type; any other
-   * name falls back to `T` (default `unknown`), so flows without a `signals` map are unchanged.
+   * When the flow declares a `signals` map, only those names compile and each returns its declared
+   * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
    */
-  signal<K extends keyof S>(name: K & string): Promise<S[K]>;
-  signal<T = unknown>(name: string): Promise<T>;
+  signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
 }
 
 /** The clock the executor threads in — injectable for deterministic tests. */
@@ -149,10 +156,12 @@ export interface CtxDeps {
   now: Clock;
   id: IdGen;
   obs: Observer;
+  /** The running flow's signal schemas — validate each consumed payload against its declared one. */
+  signals?: SignalSchemas<SignalMap>;
 }
 
 /** @internal */
-export const makeCtx = ({ backend, snap, attempt, now, id, obs }: CtxDeps): Ctx => {
+export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   let cursor = 0;
   const nextKey = (): string => `s${cursor++}`;
@@ -257,8 +266,18 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs }: CtxDeps): Ctx 
       const pending = snap.signals.find((s) => s.name === name && !consumed.has(s.id));
       if (!pending) throw new AwaitSignalSignal(name);
       consumed.add(pending.id); // don't let a later wait in this invocation drain the same one
+      const schema = signals?.[name];
+      let payload = pending.payload;
+      if (schema) {
+        try {
+          payload = await validateSignal(schema, name, pending.payload);
+        } catch (e) {
+          // Permanent — the inbox payload won't change on retry, so fail the run.
+          throw new StepFailedError("SIGNAL_INVALID", e instanceof Error ? e.message : String(e));
+        }
+      }
       const stored = await backend.store.checkpointStep(
-        { runId, cursorKey: key, status: "ok", result: pending.payload, attempts: attempt },
+        { runId, cursorKey: key, status: "ok", result: payload, attempts: attempt },
         { consumeSignals: [pending.id] },
       );
       return stored.result as T;

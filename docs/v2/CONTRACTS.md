@@ -14,7 +14,10 @@ and the output comes back typed. (It is a `string` at runtime, so it works anywh
 const order = defineFlow({
   name: "order",
   version: 1,
-  run: async (ctx, input: { orderId: string }) => ({ total: 42, currency: "USD" }),
+  run: async (ctx, input: { orderId: string }) => ({
+    total: 42,
+    currency: "USD",
+  }),
 });
 
 const handle = await engine.submit(order, { orderId: "o1" }); // RunHandle<{ total; currency }>
@@ -51,11 +54,44 @@ Without a contract these are the two classic runtime bugs — a typo'd signal na
 run hangs forever) and a mismatched payload (the flow reads `undefined`). Both compile today; with the
 `signals` map they are caught at build time.
 
-## Backward compatible
+### Signals are Standard-Schema, exactly like `input`
 
-A flow with no `signals` map behaves exactly as before: `ctx.signal<T>(name)` still takes `T` at the
-call site. `RunHandle` is a `string`, so existing code that stored a `runId` string, or called
-`result(runId)` / `signal(runId, name, payload)` with a plain string, keeps working untyped.
+A signal entry is any Standard-Schema validator — the same zod / valibot / arktype schema you'd use
+for a flow's `input`. When you give one, the payload is **validated (and parsed) as the flow consumes
+it**, and a bad payload fails the run with the validator's message — the same contract as `input` at
+submit. `type<T>()` is the escape hatch: a type-only identity validator for when you want the type
+without the runtime check.
 
-The memory package's `contract.test.ts` pins all of this — including the two `@ts-expect-error` cases,
-which fail the build if the sender-side strictness ever regresses.
+```ts
+import { z } from "zod";
+
+const approval = defineFlow({
+  name: "approval",
+  version: 1,
+  signals: {
+    approve: z.object({ by: z.string() }), // validated at consume — a bad payload fails the run
+    cancel: type<{ reason: string }>(), // type-only, no runtime validation
+  },
+  run: async (ctx) => {
+    const { by } = await ctx.signal("approve"); // { by: string }, already validated
+    // ...
+  },
+});
+```
+
+## Strictness & compatibility
+
+On the **await** side, a flow that declares a `signals` map may only `ctx.signal(<declared name>)` —
+an undeclared name is a compile error, symmetric with the send side. A flow with **no** `signals`
+map keeps taking any name and returns `unknown` (cast the result, or declare the signal).
+
+One deliberate break from the earliest alpha: the old call-site form `ctx.signal<Payload>(name)` no
+longer types the payload — the type parameter is now the signal _name_. That form was an unchecked
+assertion anyway; the `signals` map replaces it with a real, both-ends-checked declaration. Migrate
+`ctx.signal<Foo>("x")` to either a `signals` entry or `(await ctx.signal("x")) as Foo`.
+
+`RunHandle` is a `string`, so code that stored a `runId`, or called `result(runId)` /
+`signal(runId, name, payload)` with a plain string, keeps working untyped.
+
+The memory package's `contract.test.ts` pins all of this — including the `@ts-expect-error` cases on
+both the send and await sides, which fail the build if the strictness ever regresses.
