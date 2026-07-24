@@ -31,7 +31,9 @@ export type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
 /** How a `submit` with an existing `idempotencyKey` behaves: reuse the existing run, or throw. */
 export type OnDuplicate = "reuse" | "error";
 
-export interface SubmitOpts {
+/** Everything `submit`/`engine.submit` accepts — dedup/tag options plus the enqueue schedule
+ *  ({@link EnqueueOpts}'s `runAt`/`priority`). */
+export interface SubmitOpts extends EnqueueOpts {
   idempotencyKey?: string;
   tags?: readonly string[];
   /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
@@ -43,7 +45,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
   backend: Backend,
   flow: Flow<I, O, S>,
   input: I,
-  opts?: SubmitOpts & EnqueueOpts,
+  opts?: SubmitOpts,
 ): Promise<RunHandle<O, S>> => {
   const validated = await validateInput(flow, input);
   const { runId, created } = await backend.store.startRun({

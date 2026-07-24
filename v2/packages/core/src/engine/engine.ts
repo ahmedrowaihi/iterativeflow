@@ -1,7 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
-import type { EnqueueOpts } from "#ports/queue";
 import type { Page, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
@@ -20,7 +19,7 @@ import {
   type RunHandle,
   type RunResult,
   type SubmitItem,
-  type SubmitOpts as WorkerSubmitOpts,
+  type SubmitOpts,
   type SweepResult,
   cancelRun,
   reconcile,
@@ -35,14 +34,26 @@ import {
 
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 export interface EngineOpts {
+  /** Max runs claimed per worker cycle. Default 20. */
   batchMax?: number;
+  /**
+   * How long a claimed run's lease is held before another worker may re-claim it. There is no
+   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
+   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
+   * batch tail is stranded until the oversized lease expires. Default 30000.
+   */
   leaseMs?: number;
+  /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
   retry?: RetryPolicy;
+  /** Metrics callbacks + durable event-sink wiring. */
   observe?: ObserveOpts;
+  /** Id generator for runs and lease tokens. Default {@link newId}. */
   id?: IdGen;
+  /** Injectable clock for deterministic tests. Defaults to the wall clock. */
   now?: Clock;
   /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
   maxPayloadBytes?: number;
+  /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
 }
 
@@ -121,8 +132,6 @@ export interface Engine {
   /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
   run(opts?: RunLoopOpts): () => Promise<void>;
 }
-
-type SubmitOpts = WorkerSubmitOpts & EnqueueOpts;
 
 export const createEngine = (
   backend: Backend,
