@@ -3,6 +3,7 @@ import { type Tables, tables } from "#schema";
 import { scheduleStmt } from "#statements";
 import type { Sql } from "#sql";
 
+/** @internal */
 export const createPgTimer = (sql: Sql, schema: string): Timer => {
   const t: Tables = tables(schema);
 
