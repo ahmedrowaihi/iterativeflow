@@ -1,3 +1,4 @@
+import type { DriftPolicy } from "#types";
 import type { Ctx } from "#engine/context";
 
 /** The Standard Schema calling surface (spec v1) — zod/valibot/arktype schemas all satisfy it. */
@@ -83,6 +84,13 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
    * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link type}.
    */
   signals?: SignalSchemas<S>;
+  /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
+  policy?: FlowPolicy;
+}
+
+/** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
+export interface FlowPolicy {
+  drift?: DriftPolicy;
 }
 
 /** Validate `input` against a flow's schema (if any). Throws with the collected issues. */

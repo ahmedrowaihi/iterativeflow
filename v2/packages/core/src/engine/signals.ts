@@ -27,16 +27,39 @@ export type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
 export const isControlSignal = (e: unknown): e is ControlSignal =>
   e instanceof SleepSignal || e instanceof AwaitChildSignal || e instanceof AwaitSignalSignal;
 
+/** An error carrying a stable machine-readable `code`, distinct from the class name. */
+export abstract class CodedError extends Error {
+  abstract readonly code: string;
+}
+
 /**
  * A step that reached a terminal failure (checkpointed as `failed_terminal`). On replay it
  * is re-thrown from `ctx.step` so control flow is identical to the original failing run.
  */
-export class StepFailedError extends Error {
+export class StepFailedError extends CodedError {
   readonly code: string;
   constructor(code: string, message: string) {
     super(message);
     this.name = "StepFailedError";
     this.code = code;
+  }
+}
+
+/**
+ * Thrown on replay when the `ctx` call at a cursor no longer matches the memo recorded there — the
+ * flow body was reordered or refactored while this run was in flight. NOT a control signal: the
+ * executor applies the engine's `driftPolicy` (park-recoverable or hard-fail). Fix by restoring the
+ * flow's original call shape, or bump the flow `version` so new runs use the new shape.
+ */
+export class FlowDriftError extends CodedError {
+  readonly code = "FLOW_DRIFT" as const;
+  constructor(
+    readonly cursorKey: string,
+    readonly expected: string,
+    readonly actual: string,
+  ) {
+    super(`flow drift at ${cursorKey}: memo is "${expected}" but the code now issues "${actual}"`);
+    this.name = "FlowDriftError";
   }
 }
 

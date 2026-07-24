@@ -16,6 +16,9 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 /** The non-terminal states a running run can be parked in, each with its own wake path. */
 export type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
 
+/** What a run does when its flow body drifted under it: park (recoverable) or fail (terminal). */
+export type DriftPolicy = "park" | "fail";
+
 /** Structured error persisted on failed runs/steps. */
 export interface FlowError {
   code: string;
@@ -45,6 +48,13 @@ export interface StepOutcome {
   error?: FlowError;
   /** 1-indexed attempt count this outcome was reached on. */
   attempts: number;
+  /**
+   * The `kind:label` of the `ctx` call that produced this memo (e.g. `step:charge`, `signal:approve`).
+   * On replay the executor compares it to the call now issued at this cursor; a mismatch means the
+   * flow body was reordered/refactored under a live run (drift). Absent on memos written before the
+   * drift guard existed, in which case the check is skipped.
+   */
+  shape?: string;
 }
 
 /** A step checkpoint request — the single durable write per step. */

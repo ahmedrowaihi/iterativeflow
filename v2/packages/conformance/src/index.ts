@@ -6,3 +6,4 @@ export { outboxConformance } from "#outbox";
 export { signalConformance } from "#signal";
 export { reconcileConformance } from "#reconcile";
 export { cronConformance } from "#cron";
+export { engineConformance } from "#engine";

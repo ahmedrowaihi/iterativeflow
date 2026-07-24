@@ -17,6 +17,7 @@ import {
   type StepOutcome,
   type Store,
   type SuspendStatus,
+  RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   isTerminal,
   statusList,
@@ -158,15 +159,23 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async startManyRuns(specs) {
       // Resolve idempotency per spec, then land every *new* run in one all-or-nothing
       // transaction; a batch may still mix created + already-existing (per-spec idempotency).
+      const markers = await Promise.all(
+        specs.map((spec) =>
+          spec.idempotencyKey
+            ? send<{ Item?: { runId: string } }>(
+                consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
+              )
+            : Promise.resolve(undefined),
+        ),
+      );
       const results: StartResult[] = [];
       const tx: TxItem[] = [];
-      for (const spec of specs) {
+      for (let i = 0; i < specs.length; i++) {
+        const spec = specs[i];
         const runId = id();
         if (spec.idempotencyKey) {
-          const marker = await send<{ Item?: { runId: string } }>(
-            consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
-          );
-          if (marker.Item) {
+          const marker = markers[i];
+          if (marker?.Item) {
             results.push(await recover(marker.Item.runId));
             continue;
           }
@@ -217,6 +226,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         }
       }
       return { run: mapRun(runItem), steps, signals };
+    },
+
+    async loadRunRow(runId) {
+      const item = await getRun(runId);
+      return item ? mapRun(item) : undefined;
     },
 
     async postSignal(runId, name, payload, opts) {
@@ -290,6 +304,23 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       }
     },
 
+    async resetAttempts(runId) {
+      try {
+        await send(
+          new UpdateCommand({
+            TableName: table,
+            Key: key.run(runId),
+            UpdateExpression: "SET attempts = :zero",
+            ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
+            ExpressionAttributeNames: { "#status": "status" },
+            ExpressionAttributeValues: { ":zero": 0, ...TERMINAL_VALUES },
+          }),
+        );
+      } catch (e) {
+        if (!(e instanceof ConditionalCheckFailedException)) throw e; // terminal — no-op
+      }
+    },
+
     async checkpointStep(c, fx) {
       const stepItem: Record<string, unknown> = {
         ...key.step(c.runId, c.cursorKey),
@@ -300,6 +331,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         result: enc(c.result),
         error: enc(c.error),
         attempts: c.attempts,
+        shape: c.shape,
       };
       const { nonSpawn, spawns } = outboxParts(table, fx);
       const inlineBudget = Math.max(0, Math.floor((MAX_TX_ITEMS - 2 - nonSpawn.length) / 2));
@@ -441,10 +473,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       ]);
       const jobs = new Set(jobItems.map((j) => j.runId));
       const timers = new Set(timerItems.map((t) => t.runId));
+      const reconcilable = new Set<string>(RECONCILABLE_STATUSES);
       const stranded = (r: RunItem): boolean =>
-        ["pending", "running", "retrying", "sleeping"].includes(r.status) &&
-        !jobs.has(r.id) &&
-        !timers.has(r.id);
+        reconcilable.has(r.status) && !jobs.has(r.id) && !timers.has(r.id);
       const lostParentWake = (r: RunItem): boolean =>
         r.status === "awaiting_child" &&
         !jobs.has(r.id) &&

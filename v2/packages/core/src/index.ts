@@ -25,6 +25,7 @@ export { defineFlow, registry, type, validateInput, validateSignal } from "#engi
 export type {
   AnyFlow,
   Flow,
+  FlowPolicy,
   FlowRegistry,
   InputSchema,
   NoSignals,
@@ -52,7 +53,7 @@ export {
 } from "#engine/worker";
 export type { RunHandle, RunResult, SubmitItem, SweepResult, TickOnceOpts } from "#engine/worker";
 export { runTick, defaultRetry } from "#engine/executor";
-export type { RetryPolicy, TickResult, TickOpts } from "#engine/executor";
+export type { DriftPolicy, RetryPolicy, TickResult, TickOpts } from "#engine/executor";
 
 export { parseCron, nextCronAfter } from "#engine/cron";
 export { cronTag, registerCron, runDueCrons } from "#engine/schedule";
@@ -62,6 +63,7 @@ export {
   SleepSignal,
   AwaitChildSignal,
   AwaitSignalSignal,
+  FlowDriftError,
   StepFailedError,
   StepTimeoutError,
   isControlSignal,

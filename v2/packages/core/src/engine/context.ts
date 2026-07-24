@@ -1,6 +1,6 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
-import type { RunSnapshot } from "#types";
+import type { RunSnapshot, StepOutcome } from "#types";
 import {
   type Flow,
   type SignalMap,
@@ -14,6 +14,7 @@ import type { Observer } from "#engine/observe";
 import {
   AwaitChildSignal,
   AwaitSignalSignal,
+  FlowDriftError,
   SleepSignal,
   StepFailedError,
   StepTimeoutError,
@@ -164,16 +165,26 @@ export interface CtxDeps {
 export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   let cursor = 0;
-  const nextKey = (): string => `s${cursor++}`;
+
+  // Advance the cursor and fetch the memo at it. `shape` is the `kind:label` of the call being made
+  // now; if a memo recorded a different shape here, the flow body drifted under this run.
+  const memoAt = (shape: string): { key: string; memo: StepOutcome | undefined } => {
+    const key = `s${cursor++}`;
+    const memo = snap.steps.get(key);
+    if (memo?.shape !== undefined && memo.shape !== shape) {
+      throw new FlowDriftError(key, memo.shape, shape);
+    }
+    return { key, memo };
+  };
   const consumed = new Set<string>();
 
   const step = async <T>(
-    _name: string,
+    name: string,
     fn: (arg: StepArg) => Promise<T> | T,
     policy?: StepPolicy,
   ): Promise<T> => {
-    const key = nextKey();
-    const memo = snap.steps.get(key);
+    const shape = `step:${name}`;
+    const { key, memo } = memoAt(shape);
     if (memo) {
       if (memo.status === "failed_terminal") {
         throw new StepFailedError(memo.error?.code ?? "STEP_FAILED", memo.error?.message ?? "");
@@ -187,6 +198,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
       status: "ok",
       result,
       attempts: attempt,
+      shape,
     });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
     obs.metrics.stepFinished?.(runId, key);
@@ -194,8 +206,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
   };
 
   const parkUntil = async (wakeAt: Date): Promise<void> => {
-    const key = nextKey();
-    const memo = snap.steps.get(key);
+    const { key, memo } = memoAt("sleep");
     const at = memo ? new Date(memo.result as string) : wakeAt; // stored as an ISO string
     if (!memo) {
       await backend.store.checkpointStep({
@@ -204,6 +215,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
         status: "ok",
         result: at.toISOString(),
         attempts: attempt,
+        shape: "sleep",
       });
     }
     if (now().getTime() >= at.getTime()) return;
@@ -218,8 +230,8 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
     sleepUntil: (date) => parkUntil(date),
 
     async invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO> {
-      const key = nextKey();
-      const memo = snap.steps.get(key);
+      const shape = `invoke:${flowKey(flow.name, flow.version)}`;
+      const { key, memo } = memoAt(shape);
       let childId: string;
       if (memo) {
         childId = memo.result as string;
@@ -229,7 +241,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
         // checkpoint is a no-op that returns THAT winner's childId — trust the returned
         // value, not our candidate, or we'd await a child that was never created.
         const stored = await backend.store.checkpointStep(
-          { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt },
+          { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, shape },
           {
             spawn: [
               {
@@ -247,21 +259,21 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
         );
         childId = stored.result as string;
       }
-      const child = await backend.store.loadRun(childId);
+      const child = await backend.store.loadRunRow(childId);
       if (!child) throw new AwaitChildSignal(childId); // spawn committed; child row not visible yet
-      if (child.run.status === "done") return child.run.output as CO;
-      if (child.run.status === "failed" || child.run.status === "canceled") {
+      if (child.status === "done") return child.output as CO;
+      if (child.status === "failed" || child.status === "canceled") {
         throw new StepFailedError(
-          child.run.error?.code ?? "CHILD_FAILED",
-          child.run.error?.message ?? `child ${flowKey(flow.name, flow.version)} did not complete`,
+          child.error?.code ?? "CHILD_FAILED",
+          child.error?.message ?? `child ${flowKey(flow.name, flow.version)} did not complete`,
         );
       }
       throw new AwaitChildSignal(childId);
     },
 
     async signal<T>(name: string): Promise<T> {
-      const key = nextKey();
-      const memo = snap.steps.get(key);
+      const shape = `signal:${name}`;
+      const { key, memo } = memoAt(shape);
       if (memo) return memo.result as T;
       const pending = snap.signals.find((s) => s.name === name && !consumed.has(s.id));
       if (!pending) throw new AwaitSignalSignal(name);
@@ -277,7 +289,7 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
         }
       }
       const stored = await backend.store.checkpointStep(
-        { runId, cursorKey: key, status: "ok", result: payload, attempts: attempt },
+        { runId, cursorKey: key, status: "ok", result: payload, attempts: attempt, shape },
         { consumeSignals: [pending.id] },
       );
       return stored.result as T;

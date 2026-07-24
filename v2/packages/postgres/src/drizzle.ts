@@ -78,6 +78,7 @@ const MODEL: TableModel[] = [
       t("result", `jsonb("result")`),
       t("error", `jsonb("error")`),
       t("attempts", `integer("attempts").notNull()`),
+      t("shape", `text("shape")`),
     ],
     compositePk: ["runId", "cursorKey"],
   },

@@ -66,6 +66,38 @@ describe("createEngine — the cohesive facade", () => {
     await expect(engine.submit(flow, { blob: "ok" })).resolves.toBeTruthy();
   });
 
+  it("a throwing background tick surfaces to tickError, never an unhandled rejection", async () => {
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "x",
+      version: 1,
+      run: async () => "ok",
+    });
+    const base = createMemoryBackend();
+    const faulty = {
+      ...base,
+      queue: { ...base.queue, claim: () => Promise.reject(new Error("backend blip")) },
+    };
+    const errors: unknown[] = [];
+    const engine = createEngine(faulty, [flow], {
+      observe: { metrics: { tickError: (e) => errors.push(e) } },
+    });
+
+    const unhandled: unknown[] = [];
+    const onRej = (e: unknown): void => {
+      unhandled.push(e);
+    };
+    process.on("unhandledRejection", onRej);
+    try {
+      const stop = engine.run({ tickMs: 5, maintenanceMs: 1_000 });
+      await new Promise((r) => setTimeout(r, 40));
+      await stop();
+    } finally {
+      process.off("unhandledRejection", onRej);
+    }
+    expect(unhandled).toHaveLength(0);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
   it("exposes cancel and retry through the facade", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "cancelable",

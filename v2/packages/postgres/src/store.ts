@@ -25,7 +25,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
 
   const loadStep = async (exec: Sql, runId: string, cursorKey: string) => {
     const rows = await exec.query<StepRecord>(
-      `SELECT status, result, error, attempts FROM ${t.step} WHERE run_id = $1 AND cursor_key = $2`,
+      `SELECT status, result, error, attempts, shape FROM ${t.step} WHERE run_id = $1 AND cursor_key = $2`,
       [runId, cursorKey],
     );
     const row = rows[0];
@@ -93,22 +93,29 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async loadRun(runId) {
-      const runRows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]);
+      const [runRows, stepRows, sigRows] = await Promise.all([
+        sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]),
+        sql.query<StepRecord & { cursor_key: string }>(
+          `SELECT cursor_key, status, result, error, attempts, shape FROM ${t.step} WHERE run_id = $1`,
+          [runId],
+        ),
+        sql.query<{ id: string; name: string; payload: unknown }>(
+          `SELECT id, name, payload FROM ${t.signal} WHERE run_id = $1 ORDER BY seq`,
+          [runId],
+        ),
+      ]);
       const runRow = runRows[0];
       if (!runRow) return undefined;
-      const stepRows = await sql.query<StepRecord & { cursor_key: string }>(
-        `SELECT cursor_key, status, result, error, attempts FROM ${t.step} WHERE run_id = $1`,
-        [runId],
-      );
-      const sigRows = await sql.query<{ id: string; name: string; payload: unknown }>(
-        `SELECT id, name, payload FROM ${t.signal} WHERE run_id = $1 ORDER BY seq`,
-        [runId],
-      );
       return {
         run: mapRun(runRow),
         steps: new Map(stepRows.map((r) => [r.cursor_key, mapStep(r)])),
         signals: sigRows.map((r) => ({ id: r.id, name: r.name, payload: r.payload })),
       };
+    },
+
+    async loadRunRow(runId) {
+      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]);
+      return rows[0] ? mapRun(rows[0]) : undefined;
     },
 
     async postSignal(runId, name, payload, opts) {
@@ -143,15 +150,22 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return cur[0].attempts;
     },
 
+    async resetAttempts(runId) {
+      await sql.query(
+        `UPDATE ${t.run} SET attempts = 0 WHERE id = $1 AND status NOT IN ${TERMINAL}`,
+        [runId],
+      );
+    },
+
     checkpointStep(c, fx) {
       return sql.tx(async (tx) => {
         // First-writer-wins in one statement; the FK makes an unknown run reject here.
         const ins = await tx.query(
-          `INSERT INTO ${t.step} (run_id, cursor_key, status, result, error, attempts)
-           VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+          `INSERT INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
+           VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
            ON CONFLICT (run_id, cursor_key) DO NOTHING
            RETURNING 1`,
-          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts],
+          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
         );
         if (ins.length > 0 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
         return loadStep(tx, c.runId, c.cursorKey);

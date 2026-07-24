@@ -3,7 +3,7 @@ import type { Backend } from "#ports/outbox";
 import type { EnqueueOpts } from "#ports/queue";
 import type { Page, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
-import { type RetryPolicy, type TickResult } from "#engine/executor";
+import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
 import {
   type AnyFlow,
   type Flow,
@@ -41,6 +41,7 @@ export interface EngineOpts {
   now?: Clock;
   /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
   maxPayloadBytes?: number;
+  driftPolicy?: DriftPolicy;
 }
 
 const byteSize = (value: unknown): number =>
@@ -122,6 +123,7 @@ export const createEngine = (
     observe: opts.observe,
     id: opts.id,
     now,
+    driftPolicy: opts.driftPolicy,
   };
   const clock: Clock = now ?? systemClock;
   const cap = opts.maxPayloadBytes;
@@ -163,13 +165,14 @@ export const createEngine = (
       const tickMs = loop?.tickMs ?? 200;
       const maintenanceMs = loop?.maintenanceMs ?? 5_000;
       let stopped = false;
+      const onTickError = (err: unknown): void => opts.observe?.metrics?.tickError?.(err);
       const ticker = setInterval(() => {
-        if (!stopped) void tickOnce(backend, reg, tickOpts);
+        if (!stopped) void tickOnce(backend, reg, tickOpts).catch(onTickError);
       }, tickMs);
       const maintenance = setInterval(() => {
         if (stopped) return;
-        void reconcile(backend, { max: tickOpts.batchMax });
-        void runDueCrons(backend, clock);
+        void reconcile(backend, { max: tickOpts.batchMax }).catch(onTickError);
+        void runDueCrons(backend, clock).catch(onTickError);
       }, maintenanceMs);
       return async () => {
         stopped = true;
