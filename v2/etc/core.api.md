@@ -48,8 +48,9 @@ interface RunSpec {
   parentRunId?: string;
   parentCursorKey?: string;
 }
-/** Terminal status of a single step. Non-terminal (retrying) steps are not checkpointed. */
-type StepStatus = "ok" | "failed_terminal";
+/** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
+ *  successful steps are ever written (their existence IS the success marker). */
+type StepStatus = "ok";
 /** The durable memo of a completed step — the one thing that must survive a crash. */
 interface StepOutcome {
   status: StepStatus;
@@ -210,15 +211,6 @@ interface Queue {
    * expiry.
    */
   ack(lease: Lease, opts?: {
-    now?: Date;
-  }): Promise<void>;
-  /**
-   * Clear a held lease so the run is immediately re-claimable — without deleting the job or
-   * waiting out `leaseMs` (fast retry / voluntary yield). Same CAS as `ack`: a no-op unless
-   * the caller still holds a valid, unexpired lease. `runAt` optionally defers re-claim.
-   */
-  release(lease: Lease, opts?: {
-    runAt?: Date;
     now?: Date;
   }): Promise<void>;
   /**
@@ -1058,10 +1050,7 @@ declare const isControlSignal: (e: unknown) => e is ControlSignal;
 declare abstract class CodedError extends Error {
   abstract readonly code: string;
 }
-/**
- * A step that reached a terminal failure (checkpointed as `failed_terminal`). On replay it
- * is re-thrown from `ctx.step` so control flow is identical to the original failing run.
- */
+/** A step's `fn` failed permanently, or an awaited child run failed/was canceled — fails the run. */
 declare class StepFailedError extends CodedError {
   readonly code: string;
   constructor(code: string, message: string);

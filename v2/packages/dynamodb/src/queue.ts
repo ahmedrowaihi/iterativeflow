@@ -134,25 +134,5 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         }
       }
     },
-
-    async release(lease: Lease, opts) {
-      try {
-        await send(
-          new UpdateCommand({
-            TableName: table,
-            Key: key.job(lease.runId),
-            UpdateExpression: "SET runAt = :runAt REMOVE leaseToken, leaseExpires",
-            ConditionExpression: "leaseToken = :token AND leaseExpires > :now",
-            ExpressionAttributeValues: {
-              ":runAt": opts?.runAt ? opts.runAt.getTime() : 0,
-              ":token": lease.token,
-              ":now": at(opts?.now),
-            },
-          }),
-        );
-      } catch (e) {
-        if (!(e instanceof ConditionalCheckFailedException)) throw e; // stale/expired lease — no-op
-      }
-    },
   };
 };

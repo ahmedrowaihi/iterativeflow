@@ -212,12 +212,7 @@ export const makeCtx = ({
   ): Promise<T> => {
     const shape = `step:${name}`;
     const { key, memo } = memoAt(shape);
-    if (memo) {
-      if (memo.status === "failed_terminal") {
-        throw new StepFailedError(memo.error?.code ?? "STEP_FAILED", memo.error?.message ?? "");
-      }
-      return memo.result as T;
-    }
+    if (memo) return memo.result as T;
     const result = await runWithPolicy(fn, policy);
     const stored = await backend.store.checkpointStep({
       runId,

@@ -63,13 +63,6 @@ export interface Queue {
   ack(lease: Lease, opts?: { now?: Date }): Promise<void>;
 
   /**
-   * Clear a held lease so the run is immediately re-claimable — without deleting the job or
-   * waiting out `leaseMs` (fast retry / voluntary yield). Same CAS as `ack`: a no-op unless
-   * the caller still holds a valid, unexpired lease. `runAt` optionally defers re-claim.
-   */
-  release(lease: Lease, opts?: { runAt?: Date; now?: Date }): Promise<void>;
-
-  /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
    * backend backed by a real notification bus (Postgres `LISTEN/NOTIFY`) implements this so the
    * worker loop dispatches on enqueue instead of waiting out the poll tick; backends without one

@@ -38,8 +38,9 @@ export interface RunSpec {
   parentCursorKey?: string;
 }
 
-/** Terminal status of a single step. Non-terminal (retrying) steps are not checkpointed. */
-export type StepStatus = "ok" | "failed_terminal";
+/** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
+ *  successful steps are ever written (their existence IS the success marker). */
+export type StepStatus = "ok";
 
 /** The durable memo of a completed step — the one thing that must survive a crash. */
 export interface StepOutcome {

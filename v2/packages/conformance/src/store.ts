@@ -195,43 +195,6 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect((await s.loadRun(runId))?.run.status).toBe("canceled");
     });
 
-    it("checkpointStep round-trips a failed_terminal outcome with its error", async () => {
-      const s = await makeStore();
-      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
-      await s.checkpointStep({
-        runId,
-        cursorKey: "a",
-        status: "failed_terminal",
-        error: { code: "BOOM", message: "boom" },
-        attempts: 1,
-      });
-      expect((await s.loadRun(runId))?.steps.get("a")).toMatchObject({
-        status: "failed_terminal",
-        error: { code: "BOOM", message: "boom" },
-      });
-    });
-
-    it("first-writer-wins holds across status — a later ok cannot overwrite a failed_terminal", async () => {
-      const s = await makeStore();
-      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
-      await s.checkpointStep({
-        runId,
-        cursorKey: "a",
-        status: "failed_terminal",
-        error: { code: "BOOM", message: "boom" },
-        attempts: 1,
-      });
-      const later = await s.checkpointStep({
-        runId,
-        cursorKey: "a",
-        status: "ok",
-        result: 1,
-        attempts: 2,
-      });
-      expect(later.status).toBe("failed_terminal");
-      expect((await s.loadRun(runId))?.steps.get("a")?.status).toBe("failed_terminal");
-    });
-
     it("checkpointStep on an unknown run is rejected (no orphan step)", async () => {
       const s = await makeStore();
       await expect(
