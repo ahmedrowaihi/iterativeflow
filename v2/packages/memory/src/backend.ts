@@ -383,23 +383,6 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         jobs.delete(lease.runId);
       }
     },
-
-    async release(lease: Lease, opts?: { runAt?: Date; now?: Date }) {
-      const t = ms(opts?.now);
-      const j = jobs.get(lease.runId);
-      // CAS: only the current, unexpired owner may release — clears the lease so the run is
-      // immediately re-claimable without waiting out `leaseMs` (fast retry / voluntary yield).
-      if (
-        j &&
-        j.leaseToken === lease.token &&
-        j.leaseExpiresMs !== undefined &&
-        j.leaseExpiresMs > t
-      ) {
-        j.leaseToken = undefined;
-        j.leaseExpiresMs = undefined;
-        j.runAtMs = opts?.runAt ? opts.runAt.getTime() : 0;
-      }
-    },
   };
 
   const timer: Backend["timer"] = {

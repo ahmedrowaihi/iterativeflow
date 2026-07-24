@@ -115,25 +115,6 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       expect(await q.claim({ max: 10, leaseMs: 1000, now: at(500) })).toEqual([]); // still held
     });
 
-    it("release makes the run immediately re-claimable without waiting out the lease", async () => {
-      const q = await makeQueue();
-      await q.enqueue("r1");
-      const [lease] = await q.claim({ max: 10, leaseMs: 1000, now: at(0) });
-      await q.release(lease, { now: at(100) }); // yield early
-      const again = await q.claim({ max: 10, leaseMs: 1000, now: at(200) });
-      expect(again.map((l) => l.runId)).toEqual(["r1"]);
-      expect(again[0].token).not.toBe(lease.token);
-    });
-
-    it("a stale release is a no-op — it can't unseat the current owner", async () => {
-      const q = await makeQueue();
-      await q.enqueue("r1");
-      const [stale] = await q.claim({ max: 10, leaseMs: 1000, now: at(0) });
-      await q.claim({ max: 10, leaseMs: 1000, now: at(1001) }); // re-claim, new owner
-      await q.release(stale, { now: at(1002) }); // stale token — must not free the new owner's lease
-      expect(await q.claim({ max: 10, leaseMs: 1000, now: at(1003) })).toEqual([]);
-    });
-
     it("claim honours the batch max", async () => {
       const q = await makeQueue();
       for (let i = 0; i < 5; i++) await q.enqueue(`r${i}`);

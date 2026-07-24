@@ -76,15 +76,5 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
         params,
       );
     },
-
-    async release(lease: Lease, opts) {
-      await sql.query(
-        `UPDATE ${t.job}
-           SET lease_token = NULL, lease_expires = NULL,
-               run_at = COALESCE($4::timestamptz, 'epoch'::timestamptz)
-         WHERE run_id = $1 AND lease_token = $2 AND lease_expires > $3::timestamptz`,
-        [lease.runId, lease.token, at(opts?.now), opts?.runAt ?? null],
-      );
-    },
   };
 };
