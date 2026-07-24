@@ -26,19 +26,30 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
     async claim({ max, leaseMs, now }: ClaimOpts) {
       const t = at(now);
       // Query only the JOB partition on GSI1 (ordered priority#runAt) — never a full-table Scan.
-      const res = await send<{ Items?: JobItem[] }>(
-        new QueryCommand({
-          TableName: table,
-          IndexName: "gsi1",
-          KeyConditionExpression: "gsi1pk = :job",
-          FilterExpression:
-            "runAt <= :now AND (attribute_not_exists(leaseExpires) OR leaseExpires <= :now)",
-          ExpressionAttributeValues: { ":job": JOB_GSI_PK, ":now": t },
-        }),
-      );
-      const due = (res.Items ?? []).sort((a, b) => a.priority - b.priority || a.runAt - b.runAt);
+      // The lease/runAt predicate is a post-read filter, so a backlog of leased/future jobs can
+      // fill the ≤1MB page and bury due ones; page until we hold `max`. PAGE_CAP bounds the reads.
+      const PAGE_CAP = 10;
+      const candidates: JobItem[] = [];
+      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      for (let page = 0; page < PAGE_CAP; page++) {
+        const res = await send<{ Items?: JobItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+          new QueryCommand({
+            TableName: table,
+            IndexName: "gsi1",
+            KeyConditionExpression: "gsi1pk = :job",
+            FilterExpression:
+              "runAt <= :now AND (attribute_not_exists(leaseExpires) OR leaseExpires <= :now)",
+            ExpressionAttributeValues: { ":job": JOB_GSI_PK, ":now": t },
+            ExclusiveStartKey,
+          }),
+        );
+        candidates.push(...(res.Items ?? []));
+        ExclusiveStartKey = res.LastEvaluatedKey;
+        // GSI is priority#runAt-ordered, so once we hold `max`, later pages can't rank higher.
+        if (!ExclusiveStartKey || candidates.length >= max) break;
+      }
       const leases: Lease[] = [];
-      for (const j of due) {
+      for (const j of candidates) {
         if (leases.length >= max) break;
         const token = `${id()}:${j.runId}`;
         const expires = t + leaseMs;
@@ -81,7 +92,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         );
       } catch (e) {
         if (e instanceof ConditionalCheckFailedException) {
-          throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
+          throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`, { cause: e });
         }
         throw e;
       }

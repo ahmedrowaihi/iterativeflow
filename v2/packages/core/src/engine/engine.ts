@@ -4,16 +4,27 @@ import type { EnqueueOpts } from "#ports/queue";
 import type { Page, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type RetryPolicy, type TickResult } from "#engine/executor";
-import { type AnyFlow, type Flow, registry } from "#engine/flow";
+import {
+  type AnyFlow,
+  type Flow,
+  type NoSignals,
+  type SignalMap,
+  type SignalName,
+  type SignalPayload,
+  registry,
+} from "#engine/flow";
 import type { ObserveOpts } from "#engine/observe";
 import { type CronDef, registerCron, runDueCrons } from "#engine/schedule";
 import {
+  type RunHandle,
   type RunResult,
   type SubmitItem,
+  type SweepResult,
   cancelRun,
   reconcile,
   result,
   retryRun,
+  serverlessTick,
   signalRun,
   submit,
   submitMany,
@@ -51,17 +62,24 @@ export interface RunLoopOpts {
 export interface Engine {
   readonly backend: Backend;
 
-  submit<I>(flow: Flow<I, unknown>, input: I, opts?: SubmitOpts): Promise<string>;
+  submit<I, O, S extends SignalMap = NoSignals>(
+    flow: Flow<I, O, S>,
+    input: I,
+    opts?: SubmitOpts,
+  ): Promise<RunHandle<O, S>>;
   submitMany<I>(items: readonly SubmitItem<I>[]): Promise<string[]>;
-  signal(
-    runId: string,
-    name: string,
-    payload: unknown,
+  signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(
+    handle: RunHandle<O, S> | string,
+    name: K,
+    payload: SignalPayload<S, K>,
     opts?: { idempotencyKey?: string },
   ): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
-  result(runId: string, opts?: { timeoutMs?: number; pollMs?: number }): Promise<RunResult>;
+  result<O = unknown>(
+    runId: RunHandle<O> | string,
+    opts?: { timeoutMs?: number; pollMs?: number },
+  ): Promise<RunResult<O>>;
 
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
@@ -77,6 +95,12 @@ export interface Engine {
   reconcile(): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
+  /**
+   * One full cycle for a scheduled invocation (crons + reconcile + drain + claim) — call this
+   * from an EventBridge / cron Lambda. No resident process; every waiting run advances on the
+   * next firing, so a durable `ctx.sleep` outlives any invocation timeout.
+   */
+  serverlessTick(): Promise<SweepResult>;
 
   /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
   run(opts?: RunLoopOpts): () => Promise<void>;
@@ -118,7 +142,8 @@ export const createEngine = (
       for (const it of items) guard(it.input);
       return submitMany(backend, items);
     },
-    signal: (runId, name, payload, o) => signalRun(backend, runId, name, payload, o),
+    signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) =>
+      signalRun(backend, runId, name, payload, o),
     cancel: (runId) => cancelRun(backend, runId),
     retry: (runId) => retryRun(backend, runId),
     result: (runId, o) => result(backend, runId, o),
@@ -132,6 +157,7 @@ export const createEngine = (
     tick: () => tickOnce(backend, reg, tickOpts),
     reconcile: () => reconcile(backend, { max: tickOpts.batchMax }),
     runCrons: () => runDueCrons(backend, clock),
+    serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 
     run(loop) {
       const tickMs = loop?.tickMs ?? 200;

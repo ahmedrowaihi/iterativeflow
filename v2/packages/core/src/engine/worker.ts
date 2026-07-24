@@ -5,16 +5,35 @@ import { isTerminal } from "#status";
 import type { FlowError, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type RetryPolicy, type TickResult, runTick } from "#engine/executor";
-import { type Flow, type FlowRegistry, validateInput } from "#engine/flow";
+import {
+  type Flow,
+  type FlowRegistry,
+  type NoSignals,
+  type SignalMap,
+  type SignalName,
+  type SignalPayload,
+  validateInput,
+} from "#engine/flow";
+import { runDueCrons } from "#engine/schedule";
 import type { ObserveOpts } from "#engine/observe";
 
-/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns its id. */
-export const submit = async <I>(
+/**
+ * A run id, branded with the flow's output type `O` and signal map `S`. It IS a string at runtime;
+ * the phantom brand lets {@link result} recover the output type and {@link signalRun} type the
+ * signal name + payload. Pass it wherever a `runId` string is expected.
+ */
+export type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
+  readonly __out?: O;
+  readonly __sig?: S;
+};
+
+/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle. */
+export const submit = async <I, O, S extends SignalMap = NoSignals>(
   backend: Backend,
-  flow: Flow<I, unknown>,
+  flow: Flow<I, O, S>,
   input: I,
   opts?: { idempotencyKey?: string; tags?: readonly string[] } & EnqueueOpts,
-): Promise<string> => {
+): Promise<RunHandle<O, S>> => {
   const validated = await validateInput(flow, input);
   const { runId, created } = await backend.store.startRun({
     name: flow.name,
@@ -24,12 +43,12 @@ export const submit = async <I>(
     tags: opts?.tags,
   });
   if (created) await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
-  return runId;
+  return runId as RunHandle<O, S>;
 };
 
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
 export interface SubmitItem<I = unknown> {
-  flow: Flow<I, unknown>;
+  flow: Flow<I, any, any>;
   input: I;
   idempotencyKey?: string;
   tags?: readonly string[];
@@ -71,22 +90,26 @@ export const submitMany = async <I>(
  * (durable); the wakeup is a best-effort latency nudge. Idempotent on `idempotencyKey`.
  * Returns `false` if the signal was an idempotent duplicate.
  */
-export const signalRun = async (
+export const signalRun = async <
+  O = unknown,
+  S extends SignalMap = NoSignals,
+  K extends SignalName<S> = SignalName<S>,
+>(
   backend: Backend,
-  runId: string,
-  name: string,
-  payload: unknown,
+  handle: RunHandle<O, S> | string,
+  name: K,
+  payload: SignalPayload<S, K>,
   opts?: { idempotencyKey?: string },
 ): Promise<boolean> => {
-  const { delivered } = await backend.store.postSignal(runId, name, payload, opts);
-  if (delivered) await backend.wakeup.signal(runId);
+  const { delivered } = await backend.store.postSignal(handle, name, payload, opts);
+  if (delivered) await backend.wakeup.signal(handle);
   return delivered;
 };
 
-/** The settled outcome of a run, as returned by {@link result}. */
-export interface RunResult {
+/** The settled outcome of a run, as returned by {@link result}. `O` is the flow's output type. */
+export interface RunResult<O = unknown> {
   status: Extract<RunStatus, "done" | "failed" | "canceled">;
-  output?: unknown;
+  output?: O;
   error?: FlowError;
 }
 
@@ -105,11 +128,11 @@ export const retryRun = async (backend: Backend, runId: string): Promise<boolean
  * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
  * default — no `LISTEN` pinned. Throws on timeout.
  */
-export const result = async (
+export const result = async <O = unknown>(
   backend: Backend,
-  runId: string,
+  runId: RunHandle<O> | string,
   opts?: { timeoutMs?: number; pollMs?: number; now?: () => number },
-): Promise<RunResult> => {
+): Promise<RunResult<O>> => {
   const clock = opts?.now ?? (() => Date.now());
   const pollMs = opts?.pollMs ?? 500;
   const deadline =
@@ -118,7 +141,7 @@ export const result = async (
     const snap = await backend.store.loadRun(runId);
     if (!snap) throw new Error(`result: run ${runId} not found`);
     if (isTerminal(snap.run.status)) {
-      return { status: snap.run.status, output: snap.run.output, error: snap.run.error };
+      return { status: snap.run.status, output: snap.run.output as O, error: snap.run.error };
     }
     const remaining = deadline - clock();
     if (remaining <= 0) throw new Error(`result: run ${runId} did not settle before timeout`);
@@ -200,4 +223,44 @@ export const tickOnce = async (
     );
   }
   return results;
+};
+
+/** What one {@link serverlessTick} advanced — for the invoking cron Lambda's logs/metrics. */
+export interface SweepResult {
+  /** Cron occurrences fired. */
+  fired: number;
+  /** Crash-stranded / lost-wake runs re-enqueued. */
+  reconciled: number;
+  /** Runs claimed and advanced this cycle, by outcome. */
+  results: TickResult[];
+}
+
+/**
+ * One full engine cycle for a scheduled (serverless) invocation: fire due crons, re-drive
+ * orphans, then drain due timers and claim + execute a batch. Designed to BE an EventBridge /
+ * cron Lambda — no resident loop, no daemon. Every waiting run advances on the next scheduled
+ * firing, so a durable `ctx.sleep` outlives any single invocation's timeout. Prefer
+ * {@link tickOnce} alone for a resident worker that already runs maintenance on its own cadence.
+ *
+ * Set `opts.leaseMs` no larger than the invocation's timeout: a claimed run whose invocation is
+ * killed mid-batch only becomes re-claimable once its lease expires, so an oversized lease strands
+ * the un-executed tail of the batch for that long. Size `opts.batchMax` to what one invocation can
+ * realistically drain within its budget. Crons that fire more occurrences than `batchMax` (or timers
+ * exceeding it) are durable and simply advance over the following invocations. Cron catch-up
+ * coalesces: an occurrence missed while nothing was invoking fires once on the next sweep, not once
+ * per missed slot.
+ */
+export const serverlessTick = async (
+  backend: Backend,
+  flows: FlowRegistry,
+  opts: TickOnceOpts,
+): Promise<SweepResult> => {
+  const now = opts.now ?? systemClock;
+  // Both must land before tickOnce claims, so this cycle's crons/orphans are claimable now.
+  const [fired, reconciled] = await Promise.all([
+    runDueCrons(backend, now),
+    reconcile(backend, { max: opts.batchMax }),
+  ]);
+  const results = await tickOnce(backend, flows, opts);
+  return { fired, reconciled, results };
 };

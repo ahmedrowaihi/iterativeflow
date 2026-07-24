@@ -7,8 +7,12 @@
     "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git",
     "directory": "v2/packages/postgres"
   },
+  "bin": {
+    "iterativeflow-pg-drizzle": "./bin/drizzle-schema.mjs"
+  },
   "files": [
-    "dist"
+    "dist",
+    "bin"
   ],
   "type": "module",
   "imports": {
@@ -28,6 +32,10 @@
   },
   "dependencies": {
     "@iterativeflow/core": "2.0.0-alpha.1"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2"
   },
   "peerDependencies": {
     "pg": ">=8.10.0"

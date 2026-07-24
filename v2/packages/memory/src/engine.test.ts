@@ -10,6 +10,7 @@ import {
   result,
   retryRun,
   runDueCrons,
+  serverlessTick,
   signalRun,
   submit,
   submitMany,
@@ -462,6 +463,47 @@ describe("engine — end to end on the memory backend", () => {
     clock = new Date("2030-03-17T00:00:00Z");
     expect(await runDueCrons(backend, now)).toBe(0); // overlap:skip — must NOT start a second
     expect((await backend.store.listRuns({ tag: "cron:c" }, { limit: 10 })).runs).toHaveLength(1);
+  });
+
+  it("serverlessTick advances a sleep and fires a cron with no resident loop (cron-Lambda model)", async () => {
+    const napper = defineFlow<Record<string, never>, string>({
+      name: "napper2",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.sleep(60_000);
+        return "woke";
+      },
+    });
+    const nightly = defineFlow<Record<string, never>, number>({
+      name: "nightly2",
+      version: 1,
+      run: async () => 1,
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([napper, nightly]);
+    let clock = new Date("2030-03-15T00:00:00Z");
+    const now = (): Date => clock;
+    const tickOpts = { batchMax: 16, leaseMs: 600_000, now };
+
+    await registerCron(
+      backend,
+      { name: "c2", schedule: "0 0 * * *", flow: nightly, input: {} },
+      now,
+    );
+    const runId = await submit(backend, napper, {});
+
+    const s1 = await serverlessTick(backend, flows, tickOpts);
+    expect(s1.results).toContain("sleeping");
+    expect((await backend.store.loadRun(runId))?.run.status).toBe("sleeping");
+
+    // One invocation a day later fires the cron and resumes the sleep — no loop between them.
+    clock = new Date("2030-03-16T00:00:00Z");
+    const s2 = await serverlessTick(backend, flows, tickOpts);
+    expect(s2.fired).toBe(1);
+    expect((await backend.store.loadRun(runId))?.run.output).toBe("woke");
+
+    const cronRuns = await backend.store.listRuns({ tag: "cron:c2" }, { limit: 10 });
+    expect(cronRuns.runs).toHaveLength(1);
   });
 
   it("propagates a child failure into the parent", async () => {
