@@ -58,6 +58,18 @@ export interface Outbox {
    * so a replay can't consume it twice.
    */
   consumeSignals?: readonly string[];
+  /**
+   * Arm this run's fan-out join countdown to `joinTarget` children: it must see this many child
+   * arrivals before it is re-woken. Set atomically with the spawn that creates the children.
+   */
+  joinTarget?: number;
+  /**
+   * A child arriving at its parent's join: atomically decrement the parent's countdown and wake the
+   * parent (enqueue) iff the countdown reaches zero OR `wakeAlways` (a failed/canceled child
+   * fast-fails the parent immediately). A missed wake is caught by the reconcile `lostParentWake`
+   * sweep, so this only reduces wakes from O(children) to O(1) — it never gates correctness.
+   */
+  joinArrive?: { parentRunId: string; wakeAlways: boolean };
 }
 
 /**

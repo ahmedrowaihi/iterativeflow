@@ -569,4 +569,72 @@ describe("engine — end to end on the memory backend", () => {
     expect(run?.status).toBe("failed");
     expect(run?.error?.message).toMatch(/exceeds the 2 cap/);
   });
+
+  it("fan-out join re-enqueues the parent once — on the last arrival, not per child", async () => {
+    const b = createMemoryBackend();
+    const now = (): Date => new Date("2030-01-01T00:00:00Z");
+    const { runId: parent } = await b.store.startRun({ name: "p", version: 1, input: {} });
+    // Arm the countdown to 3 (as ctx.invoke would), then park the parent off-queue.
+    await b.store.checkpointStep(
+      { runId: parent, cursorKey: "s0", status: "ok", result: [], attempts: 1 },
+      { joinTarget: 3 },
+    );
+    await b.store.suspendRun(parent, "awaiting_child");
+    const kids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { runId } = await b.store.startRun({
+        name: "c",
+        version: 1,
+        input: {},
+        parentRunId: parent,
+        parentCursorKey: "s0",
+      });
+      kids.push(runId);
+    }
+    const parentClaimable = async (): Promise<boolean> => {
+      const leases = await b.queue.claim({ max: 10, leaseMs: 1000, now: now() });
+      const mine = leases.find((l) => l.runId === parent);
+      for (const l of leases) await b.queue.ack(l, { now: now() });
+      return mine !== undefined;
+    };
+
+    expect(await parentClaimable()).toBe(false); // parked, no wake yet
+    const arrive = (id: string) =>
+      b.store.markTerminal(
+        id,
+        { status: "done", output: 1 },
+        { joinArrive: { parentRunId: parent, wakeAlways: false } },
+      );
+    await arrive(kids[0]);
+    expect(await parentClaimable()).toBe(false); // 1/3
+    await arrive(kids[1]);
+    expect(await parentClaimable()).toBe(false); // 2/3
+    await arrive(kids[2]);
+    expect(await parentClaimable()).toBe(true); // 3/3 → single wake
+  });
+
+  it("a failed fan-out child wakes the parent immediately (fast-fail)", async () => {
+    const b = createMemoryBackend();
+    const now = (): Date => new Date("2030-01-01T00:00:00Z");
+    const { runId: parent } = await b.store.startRun({ name: "p", version: 1, input: {} });
+    await b.store.checkpointStep(
+      { runId: parent, cursorKey: "s0", status: "ok", result: [], attempts: 1 },
+      { joinTarget: 3 },
+    );
+    await b.store.suspendRun(parent, "awaiting_child");
+    const { runId: kid } = await b.store.startRun({
+      name: "c",
+      version: 1,
+      input: {},
+      parentRunId: parent,
+      parentCursorKey: "s0",
+    });
+    await b.store.markTerminal(
+      kid,
+      { status: "failed", error: { code: "X", message: "boom" } },
+      { joinArrive: { parentRunId: parent, wakeAlways: true } },
+    );
+    const leases = await b.queue.claim({ max: 10, leaseMs: 1000, now: now() });
+    expect(leases.some((l) => l.runId === parent)).toBe(true); // woken before the other two arrive
+  });
 });

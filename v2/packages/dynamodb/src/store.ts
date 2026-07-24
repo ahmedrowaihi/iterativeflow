@@ -386,6 +386,27 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         );
       }
 
+      // The run gate proves the run exists (index 1 → run-not-found on ConditionalCheckFailed). When a
+      // join is armed it doubles as the countdown SET — one op on the run item, since TransactWriteItems
+      // forbids a second op on the same item.
+      const runGate: TxItem =
+        fx?.joinTarget !== undefined
+          ? {
+              Update: {
+                TableName: table,
+                Key: key.run(c.runId),
+                UpdateExpression: "SET joinRemaining = :jt",
+                ConditionExpression: "attribute_exists(pk)",
+                ExpressionAttributeValues: { ":jt": fx.joinTarget },
+              },
+            }
+          : {
+              ConditionCheck: {
+                TableName: table,
+                Key: key.run(c.runId),
+                ConditionExpression: "attribute_exists(pk)",
+              },
+            };
       const gate: TxItem[] = [
         {
           Put: {
@@ -394,13 +415,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ConditionExpression: "attribute_not_exists(pk)",
           },
         },
-        {
-          ConditionCheck: {
-            TableName: table,
-            Key: key.run(c.runId),
-            ConditionExpression: "attribute_exists(pk)",
-          },
-        },
+        runGate,
       ];
 
       try {
@@ -477,6 +492,30 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       } catch (e) {
         if (conditionFailedAt(cancellationReasons(e), 0)) return; // canceled is sticky — outbox skipped
         throw e;
+      }
+      // Join countdown for a fan-out child. Not folded into the terminal transaction: deciding the
+      // wake needs the post-decrement value, which TransactWriteItems can't return. The atomic ADD
+      // serializes concurrent siblings; a crash between the terminal write and here is caught by the
+      // reconcile `lostParentWake` sweep, so this only reduces wakes — it never gates correctness.
+      if (fx?.joinArrive) {
+        const { parentRunId, wakeAlways } = fx.joinArrive;
+        try {
+          const res = await send<{ Attributes?: { joinRemaining?: number } }>(
+            new UpdateCommand({
+              TableName: table,
+              Key: key.run(parentRunId),
+              UpdateExpression: "ADD joinRemaining :neg1",
+              ConditionExpression: "attribute_exists(pk)",
+              ExpressionAttributeValues: { ":neg1": -1 },
+              ReturnValues: "ALL_NEW",
+            }),
+          );
+          if (wakeAlways || (res.Attributes?.joinRemaining ?? 0) <= 0) {
+            await send(new UpdateCommand(enqueueParams(table, parentRunId)));
+          }
+        } catch (e) {
+          if (!(e instanceof ConditionalCheckFailedException)) throw e; // parent gone — nothing to wake
+        }
       }
     },
 

@@ -57,6 +57,7 @@ const MODEL: TableModel[] = [
       t("tags", `text("tags").array()`),
       t("parentRunId", `text("parent_run_id")`),
       t("parentCursorKey", `text("parent_cursor_key")`),
+      t("joinRemaining", `integer("join_remaining").notNull().default(0)`),
     ],
     extras: [
       { name: "run_parent", on: ["parentRunId"], where: "sql`${t.parentRunId} is not null`" },

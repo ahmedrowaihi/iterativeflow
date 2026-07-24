@@ -276,7 +276,7 @@ export const makeCtx = ({
       // the checkpoint is a no-op returning THAT winner's childId — trust the returned value.
       const stored = await backend.store.checkpointStep(
         { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, shape },
-        { spawn: [{ runId: candidate, spec: spawnSpec(flow, input, key) }] },
+        { spawn: [{ runId: candidate, spec: spawnSpec(flow, input, key) }], joinTarget: 1 },
       );
       childId = stored.result as string;
     }
@@ -303,7 +303,12 @@ export const makeCtx = ({
       const ids = chunk.map(() => id());
       const stored = await backend.store.checkpointStep(
         { runId, cursorKey: key, status: "ok", result: ids, attempts: attempt, shape },
-        { spawn: chunk.map((s, j) => ({ runId: ids[j], spec: spawnSpec(s.flow, s.input, key) })) },
+        {
+          spawn: chunk.map((s, j) => ({ runId: ids[j], spec: spawnSpec(s.flow, s.input, key) })),
+          // Arm the countdown to the FULL fan-out on the first chunk — children can't exist (and
+          // decrement) before this commits, so it can't prematurely hit zero mid-spawn.
+          joinTarget: i === 0 ? specs.length : undefined,
+        },
       );
       childIds.push(...(stored.result as string[]));
     }

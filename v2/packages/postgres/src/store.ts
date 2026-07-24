@@ -180,7 +180,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
         );
-        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
+        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx, c.runId); // outbox rides ONLY the first write
         return loadStep(tx, c.runId, c.cursorKey);
       });
     },
@@ -191,7 +191,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           `UPDATE ${t.run} SET status = $2 WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
           [runId, status],
         );
-        if (rows[0] && fx) await applyOutbox(tx, t, fx);
+        if (rows[0] && fx) await applyOutbox(tx, t, fx, runId);
       });
     },
 
@@ -205,7 +205,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [runId, outcome.status, j(output), j(error)],
         );
-        if (rows[0] && fx) await applyOutbox(tx, t, fx);
+        if (rows[0] && fx) await applyOutbox(tx, t, fx, runId);
       });
     },
 
