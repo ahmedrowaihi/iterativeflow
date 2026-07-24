@@ -81,8 +81,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   };
 
   return {
-    maxSpawnBatch: 1_000,
-
     startRun(spec) {
       return startOne(sql, spec);
     },
@@ -171,13 +169,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return cur[0].attempts;
     },
 
-    async resetAttempts(runId) {
-      await sql.query(
-        `UPDATE ${t.run} SET attempts = 0 WHERE id = $1 AND status NOT IN ${TERMINAL}`,
-        [runId],
-      );
-    },
-
     checkpointStep(c, fx) {
       return sql.tx(async (tx) => {
         // First-writer-wins in one statement; the FK makes an unknown run reject here.
@@ -193,10 +184,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       });
     },
 
-    suspendRun(runId, status: SuspendStatus, fx) {
+    suspendRun(runId, status: SuspendStatus, fx, resetAttempts) {
       return sql.tx(async (tx) => {
         const rows = await tx.query(
-          `UPDATE ${t.run} SET status = $2 WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
+          `UPDATE ${t.run} SET status = $2${resetAttempts ? ", attempts = 0" : ""}
+           WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
           [runId, status],
         );
         if (rows[0] && fx) await applyOutbox(tx, t, fx);

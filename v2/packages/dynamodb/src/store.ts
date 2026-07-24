@@ -171,8 +171,6 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   return {
-    maxSpawnBatch: Math.floor((MAX_TX_ITEMS - 2) / 2),
-
     startRun: startOne,
 
     async startManyRuns(specs) {
@@ -348,23 +346,6 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       }
     },
 
-    async resetAttempts(runId) {
-      try {
-        await send(
-          new UpdateCommand({
-            TableName: table,
-            Key: key.run(runId),
-            UpdateExpression: "SET attempts = :zero",
-            ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
-            ExpressionAttributeNames: { "#status": "status" },
-            ExpressionAttributeValues: { ":zero": 0, ...TERMINAL_VALUES },
-          }),
-        );
-      } catch (e) {
-        if (!(e instanceof ConditionalCheckFailedException)) throw e; // terminal — no-op
-      }
-    },
-
     async checkpointStep(c, fx) {
       const stepItem: Record<string, unknown> = {
         ...key.step(c.runId, c.cursorKey),
@@ -436,16 +417,20 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       return stored;
     },
 
-    async suspendRun(runId, status: SuspendStatus, fx) {
+    async suspendRun(runId, status: SuspendStatus, fx, resetAttempts) {
       const { nonSpawn, spawns } = outboxParts(table, fx);
       const gate: TxItem = {
         Update: {
           TableName: table,
           Key: key.run(runId),
-          UpdateExpression: "SET #status = :status",
+          UpdateExpression: `SET #status = :status${resetAttempts ? ", attempts = :zero" : ""}`,
           ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
           ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: { ":status": status, ...TERMINAL_VALUES },
+          ExpressionAttributeValues: {
+            ":status": status,
+            ...TERMINAL_VALUES,
+            ...(resetAttempts ? { ":zero": 0 } : {}),
+          },
         },
       };
       const inline = spawns.flatMap((s) => spawnTx(table, s));

@@ -109,6 +109,12 @@ export const systemClock: Clock = () => new Date();
 /** Upper bound on children per `ctx.invoke([...])` — a guard against an unbounded runaway fan-out. */
 const MAX_FAN_OUT = 10_000;
 
+// Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
+// chunk count and memo shapes are identical on every backend — a backend's transaction budget must
+// not leak into the durable replay fingerprint. Sized to fit the tightest backend's atomic write
+// (DynamoDB's 100-item TransactWriteItems: 2 items/child + a small gate ⇒ 40 is comfortably under).
+const FAN_OUT_CHUNK = 40;
+
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const errCode = (e: unknown): string =>
@@ -293,7 +299,7 @@ export const makeCtx = ({
     if (specs.length > cap) {
       throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${cap} cap`);
     }
-    const chunkSize = backend.store.maxSpawnBatch;
+    const chunkSize = FAN_OUT_CHUNK;
     const childIds: string[] = [];
     for (let i = 0; i < specs.length; i += chunkSize) {
       const chunk = specs.slice(i, i + chunkSize);

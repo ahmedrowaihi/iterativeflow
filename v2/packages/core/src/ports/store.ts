@@ -73,13 +73,6 @@ export interface Store {
   arriveAtJoin(parentRunId: string): Promise<number | undefined>;
 
   /**
-   * The most children a single {@link checkpointStep} can spawn atomically on this backend — the
-   * bound `ctx.invoke([...])` chunks a fan-out by. Large where one write covers any batch (Postgres,
-   * memory); the transaction-item budget where it doesn't (DynamoDB).
-   */
-  readonly maxSpawnBatch: number;
-
-  /**
    * Deliver a signal to a run's inbox AND re-enqueue the run atomically, so a parked
    * `awaiting_signal` run wakes and consumes it on its next tick. Idempotent on
    * `idempotencyKey` (scoped to the run) — a retried delivery lands once. Returns whether the
@@ -94,13 +87,6 @@ export interface Store {
 
   /** Transition to `running` and increment `attempts`. Returns the new attempt count. */
   markRunning(runId: string): Promise<number>;
-
-  /**
-   * Zero `attempts` after forward progress, so the poison-pill cap counts only *no-progress*
-   * re-claims (uncatchable crash loops), not legitimate durable resumes (sleeps, signals, children).
-   * No-op on a terminal run.
-   */
-  resetAttempts(runId: string): Promise<void>;
 
   /**
    * Persist a step's terminal outcome — the single durable write per step. **Idempotent
@@ -126,8 +112,17 @@ export interface Store {
    * wake mechanism atomically with the status change — a sleep sets status + its timer in
    * one write, so a crash can't strand a run `sleeping` with no timer to wake it. A no-op
    * on a run that is already terminal.
+   *
+   * `resetAttempts` zeroes the dispatch counter in the SAME write, so a forward-progress park
+   * (sleep/signal/child) resets it while `retrying` keeps it — the poison-pill cap then counts only
+   * *no-progress* re-claims (uncatchable crash loops), not legitimate durable resumes.
    */
-  suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
+  suspendRun(
+    runId: string,
+    status: SuspendStatus,
+    fx?: Outbox,
+    resetAttempts?: boolean,
+  ): Promise<void>;
 
   /**
    * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically

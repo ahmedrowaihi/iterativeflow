@@ -120,10 +120,9 @@ export const runTick = async (
     result: TickResult,
     fx?: Outbox,
   ): Promise<TickResult> => {
-    await store.suspendRun(run.id, status, fx);
-    // Every forward-progress park resets the dispatch counter; only "retrying" keeps it (the
-    // poison-pill guard that eventually dead-letters an uncatchable-crash loop).
-    if (status !== "retrying") await store.resetAttempts(run.id);
+    // Every forward-progress park resets the dispatch counter in the same write; only "retrying"
+    // keeps it (the poison-pill guard that eventually dead-letters an uncatchable-crash loop).
+    await store.suspendRun(run.id, status, fx, status !== "retrying");
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
     await queue.ack(lease, { now: now() });

@@ -157,12 +157,15 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect((await s.loadRun(runId))?.run.attempts).toBe(2);
     });
 
-    it("resetAttempts zeroes the dispatch counter (only the poison-pill cap counts no-progress)", async () => {
+    it("a forward-progress suspend zeroes the dispatch counter; retrying keeps it", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
       await s.markRunning(runId);
       await s.markRunning(runId);
-      await s.resetAttempts(runId);
+      await s.suspendRun(runId, "retrying"); // no reset — poison-pill cap keeps counting
+      expect((await s.loadRunRow(runId))?.attempts).toBe(2);
+      await s.markRunning(runId);
+      await s.suspendRun(runId, "sleeping", undefined, true); // forward progress — reset in the same write
       expect((await s.loadRunRow(runId))?.attempts).toBe(0);
       expect(await s.markRunning(runId)).toBe(1);
     });
