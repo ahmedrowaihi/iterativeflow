@@ -124,4 +124,21 @@ describe("createEngine — the cohesive facade", () => {
     await engine.cancel(runId);
     expect((await engine.status(runId))?.run.status).toBe("canceled");
   });
+
+  it("the resident loop drains a backlog larger than one batch (self-tuning claim)", async () => {
+    const flow = defineFlow<{ n: number }, number>({
+      name: "sq",
+      version: 1,
+      run: async (ctx, input) => ctx.step("s", () => input.n * input.n),
+    });
+    // batchMax 3 with 12 runs → the loop must re-claim on a full batch (drain), not one-per-tick.
+    const engine = createEngine(createMemoryBackend(), [flow], { batchMax: 3 });
+    const handles = await Promise.all(
+      Array.from({ length: 12 }, (_v, n) => engine.submit(flow, { n })),
+    );
+    const stop = engine.run({ tickMs: 50 });
+    const results = await Promise.all(handles.map((h) => engine.result(h, { timeoutMs: 5_000 })));
+    await stop();
+    expect(results.map((r) => r.output)).toEqual(Array.from({ length: 12 }, (_v, n) => n * n));
+  });
 });

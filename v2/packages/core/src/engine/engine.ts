@@ -51,8 +51,15 @@ const byteSize = (value: unknown): number =>
 
 /** Options for the resident worker loop. */
 export interface RunLoopOpts {
-  /** Claim-cycle cadence (ms). Default 200. */
+  /** Claim-cycle cadence (ms) when there's work — the busy/floor interval. Default 200. */
   tickMs?: number;
+  /**
+   * Idle backoff ceiling (ms). With no work, the claim interval grows geometrically from `tickMs`
+   * toward this, so an idle worker stops hammering the DB; it snaps back to `tickMs` the moment a
+   * claim returns work (and a full batch re-claims immediately). Default `tickMs × 8`. A push notify
+   * interrupts the wait regardless, so raising this is free when a listener is wired.
+   */
+  maxIdleTickMs?: number;
   /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
   maintenanceMs?: number;
   /**
@@ -171,23 +178,36 @@ export const createEngine = (
 
     run(loop) {
       const tickMs = loop?.tickMs ?? 200;
+      const maxIdleMs = Math.max(tickMs, loop?.maxIdleTickMs ?? tickMs * 8);
       const maintenanceMs = loop?.maintenanceMs ?? 5_000;
+      const batchMax = tickOpts.batchMax;
       // Dispatch push comes off the backend's queue by default (e.g. a pg listener); an explicit
       // override is still honored. Absent both, the loop polls.
       const waitForWork = loop?.waitForWork ?? backend.queue.waitForWork?.bind(backend.queue);
       const stop = new AbortController();
       const { signal } = stop;
       const onTickError = (err: unknown): void => opts.observe?.metrics?.tickError?.(err);
-      // Push-aware claim loop: tick, then wait up to tickMs — returning early when `waitForWork`
-      // reports an enqueue. With no push seam it degrades to a fixed poll every tickMs. The
-      // signal-aware sleep cleans up its own abort listener (a hand-rolled one leaks per tick).
+      // Self-tuning claim loop across the whole duty cycle: a FULL batch means more work is almost
+      // certainly waiting, so re-claim immediately (saturated → max throughput); a PARTIAL batch
+      // waits the floor `tickMs`; an EMPTY batch backs off geometrically toward `maxIdleMs` (idle →
+      // stop hammering the DB). A push notify or the current timeout interrupts the wait. The
+      // signal-aware delay cleans up its own abort listener (a hand-rolled one leaks per tick).
       const tickLoop = (async () => {
+        let idleMs = tickMs;
         while (!signal.aborted) {
-          await tickOnce(backend, reg, tickOpts).catch(onTickError);
+          const results = await tickOnce(backend, reg, tickOpts).catch((e): TickResult[] => {
+            onTickError(e);
+            return [];
+          });
           if (signal.aborted) break;
+          if (results.length >= batchMax) {
+            idleMs = tickMs;
+            continue; // saturated — no wait, drain the queue
+          }
+          idleMs = results.length > 0 ? tickMs : Math.min(idleMs * 2, maxIdleMs);
           await (waitForWork
-            ? waitForWork(tickMs).catch(onTickError)
-            : delay(tickMs, undefined, { signal }).catch(() => undefined));
+            ? waitForWork(idleMs).catch(onTickError)
+            : delay(idleMs, undefined, { signal }).catch(() => undefined));
         }
       })();
       const maintenance = setInterval(() => {
