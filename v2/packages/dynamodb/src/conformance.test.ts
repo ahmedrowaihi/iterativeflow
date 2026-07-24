@@ -151,10 +151,10 @@ describe.skipIf(skip)("dynamodb backend", () => {
       expect(snap?.steps.has("x")).toBe(false); // step did NOT leak past the failed outbox
     });
 
-    it("fan-out beyond the transaction cap spawns every child (two-phase, no truncation)", async () => {
+    it("a within-budget spawn batch commits atomically; beyond the cap throws (core chunks fan-out)", async () => {
       const backend = await makeBackend();
       const { runId } = await backend.store.startRun({ name: "p", version: 1, input: {} });
-      const childIds = Array.from({ length: 150 }, () => randomUUID()); // > MAX_TX_ITEMS
+      const childIds = Array.from({ length: 30 }, () => randomUUID());
       await backend.store.checkpointStep(
         { runId, cursorKey: "fan", status: "ok", result: childIds, attempts: 1 },
         {
@@ -164,18 +164,32 @@ describe.skipIf(skip)("dynamodb backend", () => {
           })),
         },
       );
-
-      const created = (await Promise.all(childIds.map((cid) => backend.store.loadRun(cid)))).filter(
-        Boolean,
-      );
-      expect(created).toHaveLength(150); // no child dropped by the 100-item cap
+      const created = (
+        await Promise.all(childIds.map((cid) => backend.store.loadRunRow(cid)))
+      ).filter(Boolean);
+      expect(created).toHaveLength(30);
       const leases = await backend.queue.claim({
         max: 200,
         leaseMs: 1000,
         now: new Date("2030-01-01T00:00:00Z"),
       });
-      const leased = new Set(leases.map((l) => l.runId));
-      expect(childIds.every((cid) => leased.has(cid))).toBe(true); // and every child was enqueued
+      expect(childIds.every((cid) => new Set(leases.map((l) => l.runId)).has(cid))).toBe(true);
+
+      // A batch beyond one transaction's item budget throws loudly — core bounds fan-out so this
+      // never trips in practice, but a direct over-budget checkpoint must not silently truncate.
+      const { runId: r2 } = await backend.store.startRun({ name: "p", version: 1, input: {} });
+      const tooMany = Array.from({ length: 60 }, () => randomUUID());
+      await expect(
+        backend.store.checkpointStep(
+          { runId: r2, cursorKey: "fan", status: "ok", result: tooMany, attempts: 1 },
+          {
+            spawn: tooMany.map((cid) => ({
+              runId: cid,
+              spec: { name: "c", version: 1, input: {} },
+            })),
+          },
+        ),
+      ).rejects.toThrow(/transaction budget/);
     });
 
     it("concurrent claims lease each run to exactly one worker", async () => {

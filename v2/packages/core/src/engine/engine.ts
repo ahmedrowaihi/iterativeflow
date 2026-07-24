@@ -19,6 +19,7 @@ import {
   type RunHandle,
   type RunResult,
   type SubmitItem,
+  type SubmitOpts as WorkerSubmitOpts,
   type SweepResult,
   cancelRun,
   reconcile,
@@ -107,11 +108,7 @@ export interface Engine {
   run(opts?: RunLoopOpts): () => Promise<void>;
 }
 
-type SubmitOpts = {
-  idempotencyKey?: string;
-  tags?: readonly string[];
-  onDuplicate?: "reuse" | "error";
-} & EnqueueOpts;
+type SubmitOpts = WorkerSubmitOpts & EnqueueOpts;
 
 export const createEngine = (
   backend: Backend,

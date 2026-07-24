@@ -39,7 +39,6 @@ import { key } from "#schema";
 import {
   MAX_TX_ITEMS,
   type TxItem,
-  applyOverflowSpawns,
   buildRunItem,
   cancellationReasons,
   conditionFailedAt,
@@ -334,10 +333,14 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         shape: c.shape,
       };
       const { nonSpawn, spawns } = outboxParts(table, fx);
-      const inlineBudget = Math.max(0, Math.floor((MAX_TX_ITEMS - 2 - nonSpawn.length) / 2));
-      const inlineCount = Math.min(spawns.length, inlineBudget);
-      const overflow = spawns.slice(inlineCount);
-      if (overflow.length > 0) stepItem.spawnChildIds = spawns.map((s) => s.runId);
+      const inline = spawns.flatMap((s) => spawnTx(table, s));
+      // Step + effects commit in ONE TransactWriteItems. Core bounds the spawn batch (ctx.invoke
+      // chunks fan-out), so a single checkpoint's items always fit the cap — assert it loudly if not.
+      if (2 + nonSpawn.length + inline.length > MAX_TX_ITEMS) {
+        throw new Error(
+          `checkpointStep: ${spawns.length} spawns + effects exceed the ${MAX_TX_ITEMS}-item transaction budget`,
+        );
+      }
 
       const gate: TxItem[] = [
         {
@@ -355,11 +358,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           },
         },
       ];
-      const inline = spawns.slice(0, inlineCount).flatMap((s) => spawnTx(table, s));
 
       try {
         await send(new TransactWriteCommand({ TransactItems: [...gate, ...nonSpawn, ...inline] }));
-        if (overflow.length > 0) await applyOverflowSpawns(doc, table, overflow);
       } catch (e) {
         const reasons = cancellationReasons(e);
         if (!reasons) throw e;

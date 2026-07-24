@@ -1,6 +1,6 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
-import type { RunSnapshot, StepOutcome } from "#types";
+import type { RunRow, RunSnapshot, StepOutcome } from "#types";
 import {
   type Flow,
   type InvokeOutputs,
@@ -231,8 +231,50 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
     throw new SleepSignal(at);
   };
 
-  // Children spawn CHUNK-at-a-time so each spawn checkpoint stays within DynamoDB's transaction
-  // budget — one atomic, memoized write per chunk (no unrecoverable two-phase overflow).
+  const spawnSpec = (flow: Flow<unknown, unknown, any>, input: unknown, key: string) => ({
+    name: flow.name,
+    version: flow.version,
+    input,
+    parentRunId: runId,
+    parentCursorKey: key,
+  });
+
+  // A child's join outcome. Throws StepFailedError on a failed/canceled child (fast-fail); `done`
+  // false means the child is still running (or not yet visible), so the caller parks.
+  const childOutcome = (row: RunRow | undefined): { done: boolean; output?: unknown } => {
+    if (!row) return { done: false };
+    if (row.status === "failed" || row.status === "canceled") {
+      throw new StepFailedError(
+        row.error?.code ?? "CHILD_FAILED",
+        row.error?.message ?? "child did not complete",
+      );
+    }
+    return row.status === "done" ? { done: true, output: row.output } : { done: false };
+  };
+
+  const invokeOne = async (flow: Flow<unknown, unknown, any>, input: unknown): Promise<unknown> => {
+    const shape = `invoke:${flowKey(flow.name, flow.version)}`;
+    const { key, memo } = memoAt(shape);
+    let childId: string;
+    if (memo) {
+      childId = memo.result as string;
+    } else {
+      const candidate = id();
+      // First-writer-wins: a concurrent invocation may already have spawned this step, in which case
+      // the checkpoint is a no-op returning THAT winner's childId — trust the returned value.
+      const stored = await backend.store.checkpointStep(
+        { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, shape },
+        { spawn: [{ runId: candidate, spec: spawnSpec(flow, input, key) }] },
+      );
+      childId = stored.result as string;
+    }
+    const outcome = childOutcome(await backend.store.loadRunRow(childId));
+    if (!outcome.done) throw new AwaitChildSignal(childId);
+    return outcome.output;
+  };
+
+  // Spawn children in bounded batches so each spawn checkpoint is a single atomic write within every
+  // backend's transaction budget — crash-safe (each chunk is one memoized checkpoint), no partial fan-out.
   const CHUNK = 20;
   const invokeMany = async (specs: readonly InvokeSpec[]): Promise<unknown[]> => {
     const childIds: string[] = [];
@@ -247,32 +289,15 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
       const ids = chunk.map(() => id());
       const stored = await backend.store.checkpointStep(
         { runId, cursorKey: key, status: "ok", result: ids, attempts: attempt, shape },
-        {
-          spawn: chunk.map((s, j) => ({
-            runId: ids[j],
-            spec: {
-              name: s.flow.name,
-              version: s.flow.version,
-              input: s.input,
-              parentRunId: runId,
-              parentCursorKey: key,
-            },
-          })),
-        },
+        { spawn: chunk.map((s, j) => ({ runId: ids[j], spec: spawnSpec(s.flow, s.input, key) })) },
       );
       childIds.push(...(stored.result as string[]));
     }
-    const kids = await Promise.all(childIds.map((cid) => backend.store.loadRunRow(cid)));
-    if (kids.some((k) => !k)) throw new AwaitChildSignal(childIds[0]); // some spawns not visible yet
-    const failed = kids.find((k) => k?.status === "failed" || k?.status === "canceled");
-    if (failed) {
-      throw new StepFailedError(
-        failed.error?.code ?? "CHILD_FAILED",
-        failed.error?.message ?? "a fan-out child did not complete",
-      );
-    }
-    if (kids.every((k) => k?.status === "done")) return kids.map((k) => k?.output);
-    throw new AwaitChildSignal(childIds[0]); // some children still running — park
+    const outcomes = (await Promise.all(childIds.map((cid) => backend.store.loadRunRow(cid)))).map(
+      childOutcome,
+    );
+    if (outcomes.some((o) => !o.done)) throw new AwaitChildSignal(childIds[0] ?? runId);
+    return outcomes.map((o) => o.output);
   };
 
   return {
@@ -282,52 +307,10 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
     sleep: (ms) => parkUntil(new Date(now().getTime() + ms)),
     sleepUntil: (date) => parkUntil(date),
 
-    invoke: (async (
-      flowOrSpecs: Flow<unknown, unknown, any> | readonly InvokeSpec[],
-      input?: unknown,
-    ): Promise<unknown> => {
-      if (Array.isArray(flowOrSpecs)) return invokeMany(flowOrSpecs);
-      const flow = flowOrSpecs as Flow<unknown, unknown, any>;
-      const shape = `invoke:${flowKey(flow.name, flow.version)}`;
-      const { key, memo } = memoAt(shape);
-      let childId: string;
-      if (memo) {
-        childId = memo.result as string;
-      } else {
-        const candidate = id();
-        // First-writer-wins: if a concurrent invocation already spawned this step, the
-        // checkpoint is a no-op that returns THAT winner's childId — trust the returned
-        // value, not our candidate, or we'd await a child that was never created.
-        const stored = await backend.store.checkpointStep(
-          { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, shape },
-          {
-            spawn: [
-              {
-                runId: candidate,
-                spec: {
-                  name: flow.name,
-                  version: flow.version,
-                  input,
-                  parentRunId: runId,
-                  parentCursorKey: key,
-                },
-              },
-            ],
-          },
-        );
-        childId = stored.result as string;
-      }
-      const child = await backend.store.loadRunRow(childId);
-      if (!child) throw new AwaitChildSignal(childId); // spawn committed; child row not visible yet
-      if (child.status === "done") return child.output;
-      if (child.status === "failed" || child.status === "canceled") {
-        throw new StepFailedError(
-          child.error?.code ?? "CHILD_FAILED",
-          child.error?.message ?? `child ${flowKey(flow.name, flow.version)} did not complete`,
-        );
-      }
-      throw new AwaitChildSignal(childId);
-    }) as Ctx["invoke"],
+    invoke: ((flowOrSpecs: Flow<unknown, unknown, any> | readonly InvokeSpec[], input?: unknown) =>
+      Array.isArray(flowOrSpecs)
+        ? invokeMany(flowOrSpecs)
+        : invokeOne(flowOrSpecs as Flow<unknown, unknown, any>, input)) as Ctx["invoke"],
 
     async signal<T>(name: string): Promise<T> {
       const shape = `signal:${name}`;

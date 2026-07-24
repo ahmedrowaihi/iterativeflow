@@ -95,6 +95,9 @@ export const runTick = async (
     return "already_terminal";
   }
   const run = snap.run;
+  const spawnedChildren = [...snap.steps.values()].some(
+    (m) => typeof m.shape === "string" && m.shape.startsWith("invoke"),
+  );
 
   const finish = async (
     status: "done" | "failed",
@@ -103,7 +106,7 @@ export const runTick = async (
     meta?: Record<string, unknown>,
   ): Promise<TickResult> => {
     await store.markTerminal(run.id, outcome, parentWake(run));
-    if (status === "failed") await cancelDescendants(backend, run.id);
+    if (status === "failed" && spawnedChildren) await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
     obs.metrics.runSettled?.(run.id, status);
     if (run.parentRunId) await wakeup.signal(run.parentRunId);

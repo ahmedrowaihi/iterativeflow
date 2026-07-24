@@ -210,6 +210,25 @@ export const engineConformance = (
       expect(run).toMatchObject({ status: "done", output: [2, 4, 6] });
     });
 
+    it("fans out a batch larger than one spawn chunk (crosses chunk boundaries)", async () => {
+      const backend = await makeBackend();
+      const inc = defineFlow({
+        name: "inc",
+        version: 1,
+        run: async (_ctx, n: number): Promise<number> => n + 1,
+      });
+      const parent = defineFlow({
+        name: "wide",
+        version: 1,
+        run: async (ctx): Promise<readonly number[]> =>
+          ctx.invoke(Array.from({ length: 45 }, (_v, n) => ({ flow: inc, input: n }))),
+      });
+      const runId = await submit(backend, parent, {});
+      const run = await drive(backend, registry([parent, inc]), runId);
+      expect(run.status).toBe("done");
+      expect(run.output).toEqual(Array.from({ length: 45 }, (_v, n) => n + 1));
+    });
+
     it("fast-fails a fan-out and cancels the running siblings when one child fails", async () => {
       const backend = await makeBackend();
       const boom = defineFlow({
