@@ -582,10 +582,8 @@ describe("engine — end to end on the memory backend", () => {
     expect(await b.store.arriveAtJoin(parent)).toBe(0); // last arrival — executor wakes the parent
   });
 
-  it("arriveAtJoin returns a large sentinel for a gone parent (nothing to wake)", async () => {
+  it("arriveAtJoin returns undefined for a gone parent (nothing to wake)", async () => {
     const b = createMemoryBackend();
-    expect(await b.store.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeGreaterThan(
-      1_000_000,
-    );
+    expect(await b.store.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
 });
