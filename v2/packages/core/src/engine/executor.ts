@@ -3,6 +3,7 @@ import type { Backend, Outbox } from "#ports/outbox";
 import type { Lease } from "#ports/queue";
 import { isTerminal } from "#status";
 import type { DriftPolicy, FlowError, RunRow, SuspendStatus, TerminalOutcome } from "#types";
+import { cancelDescendants } from "#engine/cancel";
 import { type Clock, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
 import { type EventType, type ObserveOpts, makeObserver } from "#engine/observe";
@@ -101,6 +102,7 @@ export const runTick = async (
     meta?: Record<string, unknown>,
   ): Promise<TickResult> => {
     await store.markTerminal(run.id, outcome, parentWake(run));
+    if (status === "failed") await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
     obs.metrics.runSettled?.(run.id, status);
     if (run.parentRunId) await wakeup.signal(run.parentRunId);

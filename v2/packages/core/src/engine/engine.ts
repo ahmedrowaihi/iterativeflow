@@ -107,7 +107,11 @@ export interface Engine {
   run(opts?: RunLoopOpts): () => Promise<void>;
 }
 
-type SubmitOpts = { idempotencyKey?: string; tags?: readonly string[] } & EnqueueOpts;
+type SubmitOpts = {
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  onDuplicate?: "reuse" | "error";
+} & EnqueueOpts;
 
 export const createEngine = (
   backend: Backend,

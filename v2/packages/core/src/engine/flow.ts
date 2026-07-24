@@ -113,6 +113,17 @@ export const defineFlow = <I, O, S extends SignalMap = NoSignals>(
 /** A flow of any shape — the registry and executor dispatch flows type-erased. */
 export type AnyFlow = Flow<any, any, any>;
 
+/** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
+export interface InvokeSpec<CI = any, CO = any> {
+  flow: Flow<CI, CO, any>;
+  input: CI;
+}
+
+/** The tuple of child outputs a fan-out `ctx.invoke(specs)` resolves to, per-spec typed. */
+export type InvokeOutputs<T extends readonly InvokeSpec[]> = {
+  [K in keyof T]: T[K] extends InvokeSpec<any, infer CO> ? CO : never;
+};
+
 /** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
 export type FlowRegistry = ReadonlyMap<string, AnyFlow>;
 

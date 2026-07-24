@@ -98,6 +98,21 @@ describe("createEngine — the cohesive facade", () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
+  it("onDuplicate policy: 'reuse' returns the existing handle, 'error' throws", async () => {
+    const flow = defineFlow<{ n: number }, number>({
+      name: "idem",
+      version: 1,
+      run: async (_ctx, input) => input.n,
+    });
+    const engine = createEngine(createMemoryBackend(), [flow]);
+    const h1 = await engine.submit(flow, { n: 1 }, { idempotencyKey: "k" });
+    const h2 = await engine.submit(flow, { n: 1 }, { idempotencyKey: "k", onDuplicate: "reuse" });
+    expect(h2).toBe(h1);
+    await expect(
+      engine.submit(flow, { n: 1 }, { idempotencyKey: "k", onDuplicate: "error" }),
+    ).rejects.toThrow(/already exists/);
+  });
+
   it("exposes cancel and retry through the facade", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "cancelable",

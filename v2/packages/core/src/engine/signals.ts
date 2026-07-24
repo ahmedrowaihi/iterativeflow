@@ -63,6 +63,18 @@ export class FlowDriftError extends CodedError {
   }
 }
 
+/** Thrown by `submit`/`engine.submit` with `onDuplicate: "error"` when the idempotency key exists. */
+export class DuplicateRunError extends CodedError {
+  readonly code = "RUN_DUPLICATE" as const;
+  constructor(
+    readonly runId: string,
+    idempotencyKey: string,
+  ) {
+    super(`submit: a run already exists for idempotencyKey "${idempotencyKey}" (${runId})`);
+    this.name = "DuplicateRunError";
+  }
+}
+
 /** Thrown when a step's `fn` exceeds its `timeoutMs`. Counts against the step's retry budget. */
 export class StepTimeoutError extends Error {
   constructor(ms: number) {

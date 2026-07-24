@@ -153,5 +153,66 @@ export const engineConformance = (
         expect((await backend.store.loadRunRow(grandkids[0].id))?.status).toBe("canceled");
       }
     });
+
+    it("fans out children in parallel and joins their outputs in order", async () => {
+      const backend = await makeBackend();
+      const dbl = defineFlow({
+        name: "dbl",
+        version: 1,
+        run: async (_ctx, n: number): Promise<number> => n * 2,
+      });
+      const parent = defineFlow({
+        name: "fan",
+        version: 1,
+        run: async (ctx): Promise<readonly number[]> =>
+          ctx.invoke([
+            { flow: dbl, input: 1 },
+            { flow: dbl, input: 2 },
+            { flow: dbl, input: 3 },
+          ]),
+      });
+      const runId = await submit(backend, parent, {});
+      const run = await drive(backend, registry([parent, dbl]), runId);
+      expect(run).toMatchObject({ status: "done", output: [2, 4, 6] });
+    });
+
+    it("fast-fails a fan-out and cancels the running siblings when one child fails", async () => {
+      const backend = await makeBackend();
+      const boom = defineFlow({
+        name: "boom",
+        version: 1,
+        run: async (): Promise<number> => {
+          throw new Error("boom");
+        },
+      });
+      const slow = defineFlow({
+        name: "slow",
+        version: 1,
+        run: async (ctx): Promise<number> => {
+          await ctx.sleep(10_000_000);
+          return 1;
+        },
+      });
+      const parent = defineFlow({
+        name: "fanfail",
+        version: 1,
+        run: async (ctx): Promise<readonly number[]> =>
+          ctx.invoke([
+            { flow: boom, input: {} },
+            { flow: slow, input: {} },
+          ]),
+      });
+      const runId = await submit(backend, parent, {});
+      const run = await drive(backend, registry([parent, boom, slow]), runId, {
+        maxAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+      });
+      expect(run.status).toBe("failed");
+      const kids = await backend.store.childrenOf(runId);
+      expect(kids).toHaveLength(2);
+      expect(kids.every((k) => TERMINAL.has(k.status))).toBe(true);
+      expect(kids.some((k) => k.status === "canceled")).toBe(true);
+    });
   });
 };

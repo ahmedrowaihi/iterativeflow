@@ -15,6 +15,7 @@ import {
   validateInput,
 } from "#engine/flow";
 import { runDueCrons } from "#engine/schedule";
+import { DuplicateRunError } from "#engine/signals";
 import type { ObserveOpts } from "#engine/observe";
 
 /**
@@ -27,12 +28,22 @@ export type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
   readonly __sig?: S;
 };
 
+/** How a `submit` with an existing `idempotencyKey` behaves: reuse the existing run, or throw. */
+export type OnDuplicate = "reuse" | "error";
+
+export interface SubmitOpts {
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
+  onDuplicate?: OnDuplicate;
+}
+
 /** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle. */
 export const submit = async <I, O, S extends SignalMap = NoSignals>(
   backend: Backend,
   flow: Flow<I, O, S>,
   input: I,
-  opts?: { idempotencyKey?: string; tags?: readonly string[] } & EnqueueOpts,
+  opts?: SubmitOpts & EnqueueOpts,
 ): Promise<RunHandle<O, S>> => {
   const validated = await validateInput(flow, input);
   const { runId, created } = await backend.store.startRun({
@@ -42,7 +53,11 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
     idempotencyKey: opts?.idempotencyKey,
     tags: opts?.tags,
   });
-  if (created) await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
+  if (created) {
+    await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
+  } else if (opts?.onDuplicate === "error") {
+    throw new DuplicateRunError(runId, opts.idempotencyKey ?? "");
+  }
   return runId as RunHandle<O, S>;
 };
 
@@ -149,19 +164,7 @@ export const result = async <O = unknown>(
   }
 };
 
-/**
- * Cancel a run and cascade to its (non-terminal) descendants. Cancel is sticky and clears
- * the run's pending timer atomically. In-flight step effects on a worker mid-tick may still
- * land (cooperative cancel) — the run's markRunning guard stops the NEXT dispatch, not the
- * one already executing.
- */
-export const cancelRun = async (backend: Backend, runId: string): Promise<void> => {
-  await backend.store.markTerminal(runId, { status: "canceled" }, { cancelTimers: [runId] });
-  const children = await backend.store.childrenOf(runId);
-  for (const c of children) {
-    if (!isTerminal(c.status)) await cancelRun(backend, c.id);
-  }
-};
+export { cancelRun } from "#engine/cancel";
 
 /** Move every due timer back onto the queue. Returns how many were re-enqueued. */
 export const drainTimers = async (
