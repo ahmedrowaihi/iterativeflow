@@ -8,7 +8,8 @@
     "directory": "v2/packages/conformance"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "type": "module",
   "imports": {
