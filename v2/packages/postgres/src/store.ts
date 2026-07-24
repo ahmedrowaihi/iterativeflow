@@ -5,6 +5,7 @@ import {
   type StartResult,
   type Store,
   type SuspendStatus,
+  NON_SUCCESS_TERMINAL_STATUSES,
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   statusList,
@@ -19,6 +20,7 @@ const sqlTuple = (statuses: readonly string[]): string =>
   `(${statuses.map((s) => `'${s}'`).join(",")})`;
 const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
+const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
 
 export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const t: Tables = tables(schema);
@@ -79,6 +81,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   };
 
   return {
+    maxSpawnBatch: 1_000,
+
     startRun(spec) {
       return startOne(sql, spec);
     },
@@ -260,6 +264,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
                SELECT 1 FROM ${t.run} c
                WHERE c.parent_run_id = r.id AND c.status IN ${TERMINAL}
              )
+           UNION
+           -- orphaned child: non-terminal, but its parent terminally failed/canceled
+           SELECT r.id, r.seq FROM ${t.run} r
+           JOIN ${t.run} p ON p.id = r.parent_run_id
+           WHERE r.status NOT IN ${TERMINAL} AND p.status IN ${NON_SUCCESS_TERMINAL}
          ) q
          ORDER BY q.seq
          LIMIT $1`,

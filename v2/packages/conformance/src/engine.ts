@@ -3,6 +3,7 @@ import {
   type RetryPolicy,
   cancelRun,
   defineFlow,
+  reconcile,
   registry,
   signalRun,
   submit,
@@ -188,6 +189,42 @@ export const engineConformance = (
       expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
     });
 
+    it("reconcile cancels a sleeping child left behind by a dead parent", async () => {
+      const backend = await makeBackend();
+      const now = (): Date => new Date("2030-01-01T00:00:00Z");
+      const orphan = defineFlow({
+        name: "orphan2",
+        version: 1,
+        run: async (ctx): Promise<number> => {
+          await ctx.sleep(10_000_000);
+          return 1;
+        },
+      });
+      const { runId: parentId } = await backend.store.startRun({
+        name: "p",
+        version: 1,
+        input: {},
+      });
+      const { runId: childId } = await backend.store.startRun({
+        name: "orphan2",
+        version: 1,
+        input: {},
+        parentRunId: parentId,
+        parentCursorKey: "s0",
+      });
+      await backend.queue.enqueue(childId);
+      await tickOnce(backend, registry([orphan]), { ...base, now });
+      expect((await backend.store.loadRunRow(childId))?.status).toBe("sleeping");
+
+      await backend.store.markTerminal(parentId, {
+        status: "failed",
+        error: { code: "X", message: "died" },
+      });
+      await reconcile(backend, { max: 16 });
+      await tickOnce(backend, registry([orphan]), { ...base, now });
+      expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
+    });
+
     it("fans out children in parallel and joins their outputs in order", async () => {
       const backend = await makeBackend();
       const dbl = defineFlow({
@@ -208,6 +245,24 @@ export const engineConformance = (
       const runId = await submit(backend, parent, {});
       const run = await drive(backend, registry([parent, dbl]), runId);
       expect(run).toMatchObject({ status: "done", output: [2, 4, 6] });
+    });
+
+    it("rejects a fan-out beyond the cap", async () => {
+      const backend = await makeBackend();
+      const noop = defineFlow({ name: "noop", version: 1, run: async () => 1 });
+      const parent = defineFlow({
+        name: "toobig",
+        version: 1,
+        run: async (ctx): Promise<readonly number[]> =>
+          ctx.invoke(Array.from({ length: 10_001 }, () => ({ flow: noop, input: {} }))),
+      });
+      const runId = await submit(backend, parent, {});
+      await tickOnce(backend, registry([parent, noop]), {
+        ...base,
+        now: () => new Date("2030-01-01T00:00:00Z"),
+        retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+      });
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("failed");
     });
 
     it("fans out a batch larger than one spawn chunk (crosses chunk boundaries)", async () => {

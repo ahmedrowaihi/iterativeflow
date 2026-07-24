@@ -106,6 +106,9 @@ export type Clock = () => Date;
 /** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
 export const systemClock: Clock = () => new Date();
 
+/** Upper bound on children per `ctx.invoke([...])` — a guard against an unbounded runaway fan-out. */
+const MAX_FAN_OUT = 10_000;
+
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const errCode = (e: unknown): string =>
@@ -273,14 +276,15 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
     return outcome.output;
   };
 
-  // Spawn children in bounded batches so each spawn checkpoint is a single atomic write within every
-  // backend's transaction budget — crash-safe (each chunk is one memoized checkpoint), no partial fan-out.
-  const CHUNK = 20;
   const invokeMany = async (specs: readonly InvokeSpec[]): Promise<unknown[]> => {
+    if (specs.length > MAX_FAN_OUT) {
+      throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${MAX_FAN_OUT} cap`);
+    }
+    const chunkSize = backend.store.maxSpawnBatch;
     const childIds: string[] = [];
-    for (let i = 0; i < specs.length; i += CHUNK) {
-      const chunk = specs.slice(i, i + CHUNK);
-      const shape = `invokeAll:${i / CHUNK}:${chunk.length}`;
+    for (let i = 0; i < specs.length; i += chunkSize) {
+      const chunk = specs.slice(i, i + chunkSize);
+      const shape = `invokeAll:${i / chunkSize}:${chunk.length}`;
       const { key, memo } = memoAt(shape);
       if (memo) {
         childIds.push(...(memo.result as string[]));
@@ -293,11 +297,22 @@ export const makeCtx = ({ backend, snap, attempt, now, id, obs, signals }: CtxDe
       );
       childIds.push(...(stored.result as string[]));
     }
+    const joinShape = `invokeAllJoin:${specs.length}`;
+    const { key: joinKey, memo: joinMemo } = memoAt(joinShape);
+    if (joinMemo) return joinMemo.result as unknown[];
     const outcomes = (await Promise.all(childIds.map((cid) => backend.store.loadRunRow(cid)))).map(
       childOutcome,
     );
     if (outcomes.some((o) => !o.done)) throw new AwaitChildSignal(childIds[0] ?? runId);
-    return outcomes.map((o) => o.output);
+    const stored = await backend.store.checkpointStep({
+      runId,
+      cursorKey: joinKey,
+      status: "ok",
+      result: outcomes.map((o) => o.output),
+      attempts: attempt,
+      shape: joinShape,
+    });
+    return stored.result as unknown[];
   };
 
   return {
