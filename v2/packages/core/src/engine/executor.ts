@@ -2,7 +2,7 @@ import { type IdGen, newId } from "#id";
 import type { Backend, Outbox } from "#ports/outbox";
 import type { Lease } from "#ports/queue";
 import { isTerminal } from "#status";
-import type { DriftPolicy, FlowError, RunRow, SuspendStatus, TerminalOutcome } from "#types";
+import type { DriftPolicy, FlowError, SuspendStatus, TerminalOutcome } from "#types";
 import { cancelDescendants, cancelRun } from "#engine/cancel";
 import { type Clock, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
@@ -62,13 +62,6 @@ const toFlowError = (e: unknown): FlowError => {
   return { code: "ERROR", message: String(e) };
 };
 
-// A terminating child arrives at its parent's fan-out join: decrement the parent's countdown and
-// wake it once all siblings arrive, or immediately when this child didn't succeed (fast-fail).
-const parentWake = (run: RunRow, succeeded: boolean): Outbox | undefined =>
-  run.parentRunId
-    ? { joinArrive: { parentRunId: run.parentRunId, wakeAlways: !succeeded } }
-    : undefined;
-
 const backoff = (attempt: number, p: RetryPolicy, now: Date): Date =>
   new Date(now.getTime() + Math.min(p.baseDelayMs * 2 ** (attempt - 1), p.maxDelayMs));
 
@@ -109,11 +102,17 @@ export const runTick = async (
     event: EventType,
     meta?: Record<string, unknown>,
   ): Promise<TickResult> => {
-    await store.markTerminal(run.id, outcome, parentWake(run, status === "done"));
+    await store.markTerminal(run.id, outcome);
     if (status === "failed" && spawnedChildren) await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
     obs.metrics.runSettled?.(run.id, status);
-    if (run.parentRunId) await wakeup.signal(run.parentRunId);
+    if (run.parentRunId) {
+      const remaining = await store.arriveAtJoin(run.parentRunId);
+      if (status !== "done" || remaining <= 0) {
+        await queue.enqueue(run.parentRunId);
+        await wakeup.signal(run.parentRunId);
+      }
+    }
     await queue.ack(lease, { now: now() });
     return status;
   };

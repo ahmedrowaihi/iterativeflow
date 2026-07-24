@@ -326,19 +326,13 @@ interface Outbox {
    */
   consumeSignals?: readonly string[];
   /**
-   * Arm this run's fan-out join countdown to `joinTarget` children: it must see this many child
-   * arrivals before it is re-woken. Set atomically with the spawn that creates the children.
+   * Arm `runId`'s fan-out join countdown to `count` children: it must see that many child arrivals
+   * (see {@link Store.arriveAtJoin}) before it is re-woken. Set atomically with the spawn that
+   * creates the children — they can't decrement before this commits.
    */
-  joinTarget?: number;
-  /**
-   * A child arriving at its parent's join: atomically decrement the parent's countdown and wake the
-   * parent (enqueue) iff the countdown reaches zero OR `wakeAlways` (a failed/canceled child
-   * fast-fails the parent immediately). A missed wake is caught by the reconcile `lostParentWake`
-   * sweep, so this only reduces wakes from O(children) to O(1) — it never gates correctness.
-   */
-  joinArrive?: {
-    parentRunId: string;
-    wakeAlways: boolean;
+  joinTarget?: {
+    runId: string;
+    count: number;
   };
 }
 /**
@@ -398,6 +392,14 @@ interface Store {
    * outcome through this, so a join over M children costs O(M/batch) round-trips, not O(M).
    */
   loadRunRows(runIds: readonly string[]): Promise<(RunRow | undefined)[]>;
+  /**
+   * A child arriving at its parent's fan-out join: atomically decrement `parentRunId`'s join
+   * countdown ({@link Outbox.joinTarget}) and return the new value. The executor wakes the parent
+   * when this reaches zero (all children arrived); a missed wake is caught by the reconcile
+   * `lostParentWake` sweep, so this only reduces parent wakes from O(children) to O(1) — it never
+   * gates correctness. Returns a large value if the parent is already gone (nothing to wake on).
+   */
+  arriveAtJoin(parentRunId: string): Promise<number>;
   /**
    * The most children a single {@link checkpointStep} can spawn atomically on this backend — the
    * bound `ctx.invoke([...])` chunks a fan-out by. Large where one write covers any batch (Postgres,
