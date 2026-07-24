@@ -65,12 +65,12 @@ export interface Store {
 
   /**
    * A child arriving at its parent's fan-out join: atomically decrement `parentRunId`'s join
-   * countdown ({@link Outbox.joinTarget}) and return the new value. The executor wakes the parent
-   * when this reaches zero (all children arrived); a missed wake is caught by the reconcile
-   * `lostParentWake` sweep, so this only reduces parent wakes from O(children) to O(1) — it never
-   * gates correctness. Returns a large value if the parent is already gone (nothing to wake on).
+   * countdown ({@link Outbox.joinTarget}) and return the new value, or `undefined` if the parent is
+   * already gone (nothing to wake). The executor wakes the parent when this reaches zero (all
+   * children arrived); a missed wake is caught by the reconcile `lostParentWake` sweep, so this only
+   * reduces parent wakes from O(children) to O(1) — it never gates correctness.
    */
-  arriveAtJoin(parentRunId: string): Promise<number>;
+  arriveAtJoin(parentRunId: string): Promise<number | undefined>;
 
   /**
    * The most children a single {@link checkpointStep} can spawn atomically on this backend — the

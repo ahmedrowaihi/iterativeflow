@@ -10,9 +10,8 @@ import {
   tickOnce,
   type,
 } from "@iterativeflow/core";
+import { isTerminal } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
-
-const TERMINAL = new Set(["done", "failed", "canceled"]);
 
 /**
  * Engine-behavior conformance: the composed durable behaviors (retry/dead-letter, signal
@@ -37,7 +36,7 @@ export const engineConformance = (
       for (let i = 0; i < 200; i++) {
         await tickOnce(backend, flows, { ...base, now, retry });
         const run = await backend.store.loadRunRow(runId);
-        if (run && TERMINAL.has(run.status)) return run;
+        if (run && isTerminal(run.status)) return run;
         clock = new Date(clock.getTime() + 60_000);
       }
       throw new Error("run did not settle");
@@ -319,7 +318,7 @@ export const engineConformance = (
       expect(run.status).toBe("failed");
       const kids = await backend.store.childrenOf(runId);
       expect(kids).toHaveLength(2);
-      expect(kids.every((k) => TERMINAL.has(k.status))).toBe(true);
+      expect(kids.every((k) => isTerminal(k.status))).toBe(true);
       expect(kids.some((k) => k.status === "canceled")).toBe(true);
     });
   });

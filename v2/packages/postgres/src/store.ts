@@ -136,7 +136,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         `UPDATE ${t.run} SET join_remaining = join_remaining - 1 WHERE id = $1 RETURNING join_remaining`,
         [parentRunId],
       );
-      return rows[0] ? rows[0].join_remaining : Number.MAX_SAFE_INTEGER;
+      return rows[0] ? rows[0].join_remaining : undefined;
     },
 
     async postSignal(runId, name, payload, opts) {

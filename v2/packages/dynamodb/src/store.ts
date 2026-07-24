@@ -512,7 +512,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         );
         return res.Attributes?.joinRemaining ?? 0;
       } catch (e) {
-        if (e instanceof ConditionalCheckFailedException) return Number.MAX_SAFE_INTEGER; // parent gone
+        if (e instanceof ConditionalCheckFailedException) return undefined; // parent gone
         throw e;
       }
     },

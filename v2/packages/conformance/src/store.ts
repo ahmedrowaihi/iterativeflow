@@ -102,9 +102,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       );
       expect(await s.arriveAtJoin(runId)).toBe(1);
       expect(await s.arriveAtJoin(runId)).toBe(0);
-      expect(await s.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeGreaterThan(
-        1_000_000,
-      );
+      expect(await s.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeUndefined();
     });
 
     it("checkpointStep persists a completed step into the memo", async () => {

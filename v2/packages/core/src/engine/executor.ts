@@ -92,9 +92,6 @@ export const runTick = async (
     return "already_terminal";
   }
   const run = snap.run;
-  const spawnedChildren = [...snap.steps.values()].some(
-    (m) => typeof m.shape === "string" && m.shape.startsWith("invoke"),
-  );
 
   const finish = async (
     status: "done" | "failed",
@@ -103,14 +100,15 @@ export const runTick = async (
     meta?: Record<string, unknown>,
   ): Promise<TickResult> => {
     await store.markTerminal(run.id, outcome);
-    if (status === "failed" && spawnedChildren) await cancelDescendants(backend, run.id);
+    // cancelDescendants is idempotent and no-ops when childrenOf is empty, so a childless failure
+    // costs one empty query on the rare failure path — cheaper than scanning every tick's memo.
+    if (status === "failed") await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
     obs.metrics.runSettled?.(run.id, status);
     if (run.parentRunId) {
       const remaining = await store.arriveAtJoin(run.parentRunId);
-      if (status !== "done" || remaining <= 0) {
-        await queue.enqueue(run.parentRunId);
-        await wakeup.signal(run.parentRunId);
+      if (status !== "done" || (remaining !== undefined && remaining <= 0)) {
+        await Promise.all([queue.enqueue(run.parentRunId), wakeup.signal(run.parentRunId)]);
       }
     }
     await queue.ack(lease, { now: now() });
@@ -123,9 +121,9 @@ export const runTick = async (
     fx?: Outbox,
   ): Promise<TickResult> => {
     await store.suspendRun(run.id, status, fx);
-    if (status === "sleeping" || status === "awaiting_child" || status === "awaiting_signal") {
-      await store.resetAttempts(run.id);
-    }
+    // Every forward-progress park resets the dispatch counter; only "retrying" keeps it (the
+    // poison-pill guard that eventually dead-letters an uncatchable-crash loop).
+    if (status !== "retrying") await store.resetAttempts(run.id);
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
     await queue.ack(lease, { now: now() });
