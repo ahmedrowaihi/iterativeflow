@@ -39,8 +39,11 @@ CREATE TABLE IF NOT EXISTS ${t.run} (
   idempotency_key   text,
   tags              text[],
   parent_run_id     text,
-  parent_cursor_key text
+  parent_cursor_key text,
+  join_remaining    int  NOT NULL DEFAULT 0
 );
+-- Idempotent upgrade for tables created before join_remaining existed (applySchema runs on boot).
+ALTER TABLE ${t.run} ADD COLUMN IF NOT EXISTS join_remaining int NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS run_parent ON ${t.run} (parent_run_id) WHERE parent_run_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS run_idem
   ON ${t.run} (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL;

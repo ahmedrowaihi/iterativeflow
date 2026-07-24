@@ -62,8 +62,12 @@ const toFlowError = (e: unknown): FlowError => {
   return { code: "ERROR", message: String(e) };
 };
 
-const parentWake = (run: RunRow): Outbox | undefined =>
-  run.parentRunId ? { enqueue: [{ runId: run.parentRunId }] } : undefined;
+// A terminating child arrives at its parent's fan-out join: decrement the parent's countdown and
+// wake it once all siblings arrive, or immediately when this child didn't succeed (fast-fail).
+const parentWake = (run: RunRow, succeeded: boolean): Outbox | undefined =>
+  run.parentRunId
+    ? { joinArrive: { parentRunId: run.parentRunId, wakeAlways: !succeeded } }
+    : undefined;
 
 const backoff = (attempt: number, p: RetryPolicy, now: Date): Date =>
   new Date(now.getTime() + Math.min(p.baseDelayMs * 2 ** (attempt - 1), p.maxDelayMs));
@@ -105,7 +109,7 @@ export const runTick = async (
     event: EventType,
     meta?: Record<string, unknown>,
   ): Promise<TickResult> => {
-    await store.markTerminal(run.id, outcome, parentWake(run));
+    await store.markTerminal(run.id, outcome, parentWake(run, status === "done"));
     if (status === "failed" && spawnedChildren) await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
     obs.metrics.runSettled?.(run.id, status);
