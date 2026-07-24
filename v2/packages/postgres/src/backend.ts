@@ -1,4 +1,10 @@
-import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
+import {
+  type Backend,
+  type IdGen,
+  type Wakeup,
+  createLocalWakeup,
+  newId,
+} from "@iterativeflow/core/backend";
 import { createPgQueue } from "#queue";
 import { createPgStore } from "#store";
 import type { Sql } from "#sql";
@@ -9,6 +15,11 @@ export interface PgBackendOpts {
   schema?: string;
   /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
   id?: IdGen;
+  /**
+   * Completion wakeup. Defaults to the process-local, connection-safe {@link createLocalWakeup}.
+   * Pass `createPgListener(...).wakeup` to wake `result()` waiters across processes via `LISTEN`.
+   */
+  wakeup?: Wakeup;
 }
 
 /**
@@ -23,6 +34,6 @@ export const createPgBackend = (sql: Sql, opts: PgBackendOpts = {}): Backend => 
     store: createPgStore(sql, schema, id),
     queue: createPgQueue(sql, schema, id),
     timer: createPgTimer(sql, schema),
-    wakeup: createLocalWakeup(),
+    wakeup: opts.wakeup ?? createLocalWakeup(),
   };
 };
