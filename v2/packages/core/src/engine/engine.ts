@@ -197,10 +197,13 @@ export const createEngine = (
     status: (runId) => backend.store.loadRun(runId),
     listRuns: (filter, page) => backend.store.listRuns(filter, page),
     health: () => backend.store.runStats(),
-    liveness: async () => ({
-      queue: await backend.queue.depth(clock()),
-      runs: await backend.store.runStats(),
-    }),
+    liveness: async () => {
+      const [queue, runs] = await Promise.all([
+        backend.queue.depth(clock()),
+        backend.store.runStats(),
+      ]);
+      return { queue, runs };
+    },
 
     registerCron: (def) => registerCron(backend, def, clock),
 

@@ -20,6 +20,7 @@ import {
   isOrphaned,
   isTerminal,
   newId,
+  queueDepthOf,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -407,20 +408,11 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async depth(now) {
-      const t = ms(now);
-      const all = [...jobs.values()];
-      const claimable = all.filter(
-        (j) => j.runAtMs <= t && (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t),
-      );
-      const oldest = claimable.reduce<number | null>(
-        (min, j) => (min === null ? j.runAtMs : Math.min(min, j.runAtMs)),
-        null,
-      );
-      return {
-        claimable: claimable.length,
-        leased: all.filter((j) => j.leaseExpiresMs !== undefined && j.leaseExpiresMs > t).length,
-        oldestClaimableAgeMs: oldest === null ? null : t - oldest,
-      };
+      const jobsForDepth = [...jobs.values()].map((j) => ({
+        runAt: j.runAtMs,
+        leaseExpires: j.leaseExpiresMs,
+      }));
+      return queueDepthOf(jobsForDepth, ms(now));
     },
   };
 

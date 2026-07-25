@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { A as EnqueueOpts, B as RUN_STATUSES, C as Outbox, D as Timer, E as Wakeup, F as CronSpec, G as RunSpec, H as RunPage, I as DeliveredSignal, J as StepOutcome, K as RunStatus, M as Queue, N as QueueDepth, O as TimerDueOpts, P as CronRow, R as FlowError, S as EnqueueRequest, T as TimerRequest, U as RunRow, V as RunFilter, W as RunSnapshot, X as SuspendStatus, Y as StepStatus, Z as TerminalOutcome, a as RECONCILABLE_STATUSES, b as Store, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as Lease, k as ClaimOpts, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as StepCheckpoint, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, w as SpawnRequest, x as Backend, y as StartResult, z as Page } from "./id-<hash>.mjs";
+import { A as EnqueueOpts, B as Page, C as Outbox, D as Timer, E as Wakeup, F as CronRow, G as RunSnapshot, H as RunFilter, I as CronSpec, J as StepCheckpoint, K as RunSpec, L as DeliveredSignal, M as Queue, N as QueueDepth, O as TimerDueOpts, P as queueDepthOf, Q as TerminalOutcome, S as EnqueueRequest, T as TimerRequest, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, Z as SuspendStatus, a as RECONCILABLE_STATUSES, b as Store, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as Lease, k as ClaimOpts, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as RunStatus, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, w as SpawnRequest, x as Backend, y as StartResult, z as FlowError } from "./id-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -42,7 +42,7 @@ interface OrphanView {
  */
 declare const isOrphaned: (r: OrphanRun, v: OrphanView) => boolean;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, queueDepthOf, statusList, zeroRunStats };
 ```
 
 ## id-<hash>.d.mts
@@ -205,6 +205,15 @@ interface QueueDepth {
   /** Age (ms) of the oldest claimable job, or `null` if none is claimable. */
   oldestClaimableAgeMs: number | null;
 }
+/**
+ * Compute a {@link QueueDepth} from an in-memory job set — the shared body of the memory + DynamoDB
+ * `Queue.depth`, so the claimable/leased/oldest-age definition lives once. Postgres derives the same
+ * numbers in SQL and doesn't use this.
+ */
+declare const queueDepthOf: (jobs: readonly {
+  runAt: number;
+  leaseExpires?: number;
+}[], nowMs: number) => QueueDepth;
 /** A held claim on a run. `token` proves ownership for heartbeat/ack. */
 interface Lease {
   runId: string;
@@ -616,13 +625,13 @@ type IdGen = () => string;
 /** Default id generator — RFC-4122 v4. Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { EnqueueOpts as A, RUN_STATUSES as B, Outbox as C, Timer as D, Wakeup as E, CronSpec as F, RunSpec as G, RunPage as H, DeliveredSignal as I, StepOutcome as J, RunStatus as K, DriftPolicy as L, Queue as M, QueueDepth as N, TimerDueOpts as O, CronRow as P, FlowError as R, EnqueueRequest as S, TimerRequest as T, RunRow as U, RunFilter as V, RunSnapshot as W, SuspendStatus as X, StepStatus as Y, TerminalOutcome as Z, Span as _, RECONCILABLE_STATUSES as a, Store as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, Lease as j, ClaimOpts as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, StepCheckpoint as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Tracer as v, SpawnRequest as w, Backend as x, StartResult as y, Page as z };
+export { EnqueueOpts as A, Page as B, Outbox as C, Timer as D, Wakeup as E, CronRow as F, RunSnapshot as G, RunFilter as H, CronSpec as I, StepCheckpoint as J, RunSpec as K, DeliveredSignal as L, Queue as M, QueueDepth as N, TimerDueOpts as O, queueDepthOf as P, TerminalOutcome as Q, DriftPolicy as R, EnqueueRequest as S, TimerRequest as T, RunPage as U, RUN_STATUSES as V, RunRow as W, StepStatus as X, StepOutcome as Y, SuspendStatus as Z, Span as _, RECONCILABLE_STATUSES as a, Store as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, Lease as j, ClaimOpts as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, RunStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Tracer as v, SpawnRequest as w, Backend as x, StartResult as y, FlowError as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { A as EnqueueOpts, B as RUN_STATUSES, H as RunPage, I as DeliveredSignal, J as StepOutcome, K as RunStatus, L as DriftPolicy, N as QueueDepth, R as FlowError, U as RunRow, V as RunFilter, W as RunSnapshot, Y as StepStatus, _ as Span, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as Lease, m as FlowEvent, n as newId, p as EventType, s as isRunStatus, t as IdGen, v as Tracer, x as Backend, z as Page } from "./id-<hash>.mjs";
+import { A as EnqueueOpts, B as Page, G as RunSnapshot, H as RunFilter, L as DeliveredSignal, N as QueueDepth, R as DriftPolicy, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, _ as Span, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as Lease, m as FlowEvent, n as newId, p as EventType, q as RunStatus, s as isRunStatus, t as IdGen, v as Tracer, x as Backend, z as FlowError } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
