@@ -262,7 +262,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       return stats;
     },
 
-    async orphanedRuns(max) {
+    async orphanedRuns(limit) {
       const view: OrphanView = {
         hasJob: (runId) => jobs.has(runId),
         hasTimer: (runId) => deadlines.has(runId),
@@ -272,7 +272,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       return [...runs.values()]
         .filter((r) => isOrphaned(r, view))
         .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
-        .slice(0, max)
+        .slice(0, limit)
         .map((r) => r.id);
     },
 
@@ -300,11 +300,11 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       });
     },
 
-    async dueCrons(now, max) {
+    async dueCrons(now, limit) {
       return [...crons.values()]
         .filter((c) => c.nextRunAt.getTime() <= now.getTime())
         .sort((a, b) => a.nextRunAt.getTime() - b.nextRunAt.getTime())
-        .slice(0, max)
+        .slice(0, limit)
         .map((c) => structuredClone(c));
     },
 
@@ -322,14 +322,14 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       enqueueCore(runId, opts);
     },
 
-    async claim({ max, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now }: ClaimOpts) {
       const t = ms(now);
       const due = [...jobs.values()].filter(
         (j) => j.runAtMs <= t && (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t),
       );
       due.sort((a, b) => a.priority - b.priority || a.runAtMs - b.runAtMs);
       const leases: Lease[] = [];
-      for (const j of due.slice(0, max)) {
+      for (const j of due.slice(0, limit)) {
         const token = `${j.runId}#${++seq}`;
         j.leaseToken = token;
         j.leaseExpiresMs = t + leaseMs;
@@ -385,12 +385,12 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       scheduleCore(runId, fireAt);
     },
 
-    async dueBatch({ now, max }: TimerDueOpts) {
+    async dueBatch({ now, limit }: TimerDueOpts) {
       const t = ms(now);
       const due = [...deadlines.entries()]
         .filter(([, fireAtMs]) => fireAtMs <= t)
         .sort((a, b) => a[1] - b[1])
-        .slice(0, max)
+        .slice(0, limit)
         .map(([runId]) => runId);
       for (const runId of due) deadlines.delete(runId);
       return due;

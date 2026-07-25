@@ -140,9 +140,9 @@ export interface Store {
   /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no
    * pending timer (stranded by a crash between a state write and its enqueue, or by a lost
-   * wakeup). The reconciler re-enqueues them. Returns up to `max`, oldest first.
+   * wakeup). The reconciler re-enqueues them. Returns up to `limit`, oldest first.
    */
-  orphanedRuns(max: number): Promise<readonly string[]>;
+  orphanedRuns(limit: number): Promise<readonly string[]>;
 
   /**
    * Re-drive a `failed` run: reset it to `pending`, clear the error, and re-enqueue —
@@ -155,7 +155,7 @@ export interface Store {
   upsertCron(spec: CronSpec): Promise<void>;
 
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
-  dueCrons(now: Date, max: number): Promise<readonly CronRow[]>;
+  dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
 
   /**
    * Advance a cron's `nextRunAt` — but ONLY if it still equals `expectedNextRunAt` (CAS). The

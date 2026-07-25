@@ -3,7 +3,7 @@ export interface TimerDueOpts {
   /** Injectable clock. Defaults to now. */
   now?: Date;
   /** Max runs to return this drain. */
-  max: number;
+  limit: number;
 }
 
 /**
@@ -19,7 +19,7 @@ export interface Timer {
   schedule(runId: string, fireAt: Date): Promise<void>;
 
   /**
-   * Return AND consume up to `max` runs whose deadline has passed — earliest first,
+   * Return AND consume up to `limit` runs whose deadline has passed — earliest first,
    * fire-once (a consumed timer is not returned again). The caller re-enqueues them.
    */
   dueBatch(opts: TimerDueOpts): Promise<string[]>;

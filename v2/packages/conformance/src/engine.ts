@@ -219,7 +219,7 @@ export const engineConformance = (
         status: "failed",
         error: { code: "X", message: "died" },
       });
-      await reconcile(backend, { max: 16 });
+      await reconcile(backend, { limit: 16 });
       await tickOnce(backend, registry([orphan]), { ...base, now });
       expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
     });

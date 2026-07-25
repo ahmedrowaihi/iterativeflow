@@ -258,7 +258,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return stats;
     },
 
-    async orphanedRuns(max) {
+    async orphanedRuns(limit) {
       const rows = await sql.query<{ id: string }>(
         `SELECT id FROM (
            -- crash-stranded: non-terminal, off the queue, no pending timer to wake it
@@ -287,7 +287,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
          ) q
          ORDER BY q.seq
          LIMIT $1`,
-        [max],
+        [limit],
       );
       return rows.map((r) => r.id);
     },
@@ -328,7 +328,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       );
     },
 
-    async dueCrons(now, max) {
+    async dueCrons(now, limit) {
       const rows = await sql.query<{
         name: string;
         schedule: string;
@@ -340,7 +340,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         last_run_at: Date | null;
       }>(
         `SELECT * FROM ${t.cron} WHERE next_run_at <= $1::timestamptz ORDER BY next_run_at LIMIT $2`,
-        [now, max],
+        [now, limit],
       );
       return rows.map((r) => ({
         name: r.name,

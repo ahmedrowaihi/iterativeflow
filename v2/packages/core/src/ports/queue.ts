@@ -9,7 +9,7 @@ export interface EnqueueOpts {
 /** Options for a claim cycle — all tunable per deployment. */
 export interface ClaimOpts {
   /** Max runs to lease this cycle (batch size). */
-  max: number;
+  limit: number;
   /** How long the lease is held before it expires and another worker may re-claim. */
   leaseMs: number;
   /** Injectable clock (tests / deterministic conformance). Defaults to now. */
@@ -41,7 +41,7 @@ export interface Queue {
   enqueue(runId: string, opts?: EnqueueOpts): Promise<void>;
 
   /**
-   * Lease up to `max` due, unleased runs to this worker for `leaseMs`. A leased run is
+   * Lease up to `limit` due, unleased runs to this worker for `leaseMs`. A leased run is
    * invisible to other claimers until its lease expires (crash recovery) or is `ack`ed.
    */
   claim(opts: ClaimOpts): Promise<Lease[]>;

@@ -12,7 +12,7 @@ export const createPgTimer = (sql: Sql, schema: string): Timer => {
       await scheduleStmt(sql, t, runId, fireAt);
     },
 
-    async dueBatch({ now, max }: TimerDueOpts) {
+    async dueBatch({ now, limit }: TimerDueOpts) {
       // Select-order-delete-return: fire-once (the DELETE consumes them) AND earliest-first
       // (the final SELECT re-imposes fire_at order, which DELETE ... RETURNING would not).
       const rows = await sql.query<{ run_id: string }>(
@@ -26,7 +26,7 @@ export const createPgTimer = (sql: Sql, schema: string): Timer => {
            DELETE FROM ${t.timer} WHERE run_id IN (SELECT run_id FROM due)
          )
          SELECT run_id FROM due ORDER BY fire_at`,
-        [now ?? new Date(), max],
+        [now ?? new Date(), limit],
       );
       return rows.map((r) => r.run_id);
     },

@@ -228,7 +228,7 @@ describe("engine — end to end on the memory backend", () => {
     let clock = new Date("2030-01-01T00:00:00Z");
     const now = (): Date => clock;
     for (let i = 0; i < 5 && !settled; i++) {
-      await reconcile(backend, { max: 16 });
+      await reconcile(backend, { limit: 16 });
       await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
       settled = (await backend.store.loadRun(runId))?.run.status === "done";
       clock = new Date(clock.getTime() + 2_000);

@@ -188,7 +188,7 @@ describe.skipIf(skip)("postgres backend", () => {
       const now = new Date("2030-01-01T00:00:00Z");
       // Four workers claim concurrently; no run may be leased twice.
       const batches = await Promise.all(
-        Array.from({ length: 4 }, () => backend.queue.claim({ max: 10, leaseMs: 1000, now })),
+        Array.from({ length: 4 }, () => backend.queue.claim({ limit: 10, leaseMs: 1000, now })),
       );
       const claimed = batches.flat().map((l) => l.runId);
       expect(claimed).toHaveLength(20); // all leased, none dropped

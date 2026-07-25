@@ -11,45 +11,45 @@ export const timerConformance = (label: string, makeTimer: () => Timer | Promise
     it("a scheduled timer is due once its fireAt has passed", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(1000));
-      expect(await tm.dueBatch({ now: at(999), max: 10 })).toEqual([]);
-      expect(await tm.dueBatch({ now: at(1000), max: 10 })).toEqual(["r1"]);
+      expect(await tm.dueBatch({ now: at(999), limit: 10 })).toEqual([]);
+      expect(await tm.dueBatch({ now: at(1000), limit: 10 })).toEqual(["r1"]);
     });
 
     it("dueBatch fires exactly once — a consumed timer is not returned again", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(0));
-      expect(await tm.dueBatch({ now: at(1), max: 10 })).toEqual(["r1"]);
-      expect(await tm.dueBatch({ now: at(2), max: 10 })).toEqual([]);
+      expect(await tm.dueBatch({ now: at(1), limit: 10 })).toEqual(["r1"]);
+      expect(await tm.dueBatch({ now: at(2), limit: 10 })).toEqual([]);
     });
 
     it("reschedule is an upsert — the latest fireAt wins", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(1000));
       await tm.schedule("r1", at(5000)); // pushed later
-      expect(await tm.dueBatch({ now: at(2000), max: 10 })).toEqual([]);
-      expect(await tm.dueBatch({ now: at(5000), max: 10 })).toEqual(["r1"]);
+      expect(await tm.dueBatch({ now: at(2000), limit: 10 })).toEqual([]);
+      expect(await tm.dueBatch({ now: at(5000), limit: 10 })).toEqual(["r1"]);
     });
 
     it("reschedule EARLIER also wins — upsert, not a LEAST(fire_at) merge", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(5000));
       await tm.schedule("r1", at(1000)); // pulled earlier
-      expect(await tm.dueBatch({ now: at(1000), max: 10 })).toEqual(["r1"]);
+      expect(await tm.dueBatch({ now: at(1000), limit: 10 })).toEqual(["r1"]);
     });
 
     it("cancel removes a pending timer", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(1000));
       await tm.cancel("r1");
-      expect(await tm.dueBatch({ now: at(2000), max: 10 })).toEqual([]);
+      expect(await tm.dueBatch({ now: at(2000), limit: 10 })).toEqual([]);
     });
 
-    it("dueBatch honours max and returns earliest-first", async () => {
+    it("dueBatch honours limit and returns earliest-first", async () => {
       const tm = await makeTimer();
       await tm.schedule("late", at(300));
       await tm.schedule("early", at(100));
       await tm.schedule("mid", at(200));
-      const due = await tm.dueBatch({ now: at(1000), max: 2 });
+      const due = await tm.dueBatch({ now: at(1000), limit: 2 });
       expect(due).toEqual(["early", "mid"]);
     });
   });

@@ -21,7 +21,7 @@ export const outboxConformance = (
         { runId, cursorKey: "a", status: "ok", result: 1, attempts: 1 },
         { enqueue: [{ runId }] },
       );
-      const leases = await queue.claim({ max: 10, leaseMs: 1000, now: at(0) });
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.map((l) => l.runId)).toEqual([runId]);
     });
 
@@ -34,7 +34,7 @@ export const outboxConformance = (
         { spawn: [{ runId: childId, spec: { name: "child", version: 1, input: { n: 1 } } }] },
       );
       expect((await store.loadRun(childId))?.run.input).toEqual({ n: 1 });
-      const leases = await queue.claim({ max: 10, leaseMs: 1000, now: at(0) });
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.map((l) => l.runId)).toContain(childId);
     });
 
@@ -54,7 +54,7 @@ export const outboxConformance = (
         { runId, cursorKey: "spawn", status: "ok", result: childId, attempts: 2 },
         spawn,
       );
-      const leases = await queue.claim({ max: 10, leaseMs: 1000, now: at(0) });
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.filter((l) => l.runId === childId)).toHaveLength(1); // not two enqueues
     });
 
@@ -64,8 +64,8 @@ export const outboxConformance = (
       await store.markRunning(runId);
       await store.suspendRun(runId, "sleeping", { timers: [{ runId, fireAt: at(5000) }] });
       expect((await store.loadRun(runId))?.run.status).toBe("sleeping");
-      expect(await timer.dueBatch({ now: at(4999), max: 10 })).toEqual([]);
-      expect(await timer.dueBatch({ now: at(5000), max: 10 })).toEqual([runId]);
+      expect(await timer.dueBatch({ now: at(4999), limit: 10 })).toEqual([]);
+      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([runId]);
     });
 
     it("suspendRun is a no-op on a terminal run — no zombie wake timer", async () => {
@@ -74,7 +74,7 @@ export const outboxConformance = (
       await store.markTerminal(runId, { status: "done", output: 1 });
       await store.suspendRun(runId, "sleeping", { timers: [{ runId, fireAt: at(5000) }] });
       expect((await store.loadRun(runId))?.run.status).toBe("done");
-      expect(await timer.dueBatch({ now: at(5000), max: 10 })).toEqual([]); // outbox skipped
+      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]); // outbox skipped
     });
 
     it("markTerminal wakes a suspended parent atomically (enqueue in the same write)", async () => {
@@ -93,7 +93,7 @@ export const outboxConformance = (
           enqueue: [{ runId: parent.runId }],
         },
       );
-      const leases = await queue.claim({ max: 10, leaseMs: 1000, now: at(0) });
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.map((l) => l.runId)).toContain(parent.runId);
     });
 
@@ -103,7 +103,7 @@ export const outboxConformance = (
       await store.markRunning(runId);
       await store.suspendRun(runId, "awaiting_signal", { timers: [{ runId, fireAt: at(5000) }] });
       await store.markTerminal(runId, { status: "done", output: 1 }, { cancelTimers: [runId] });
-      expect(await timer.dueBatch({ now: at(5000), max: 10 })).toEqual([]); // timeout was cleared
+      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]); // timeout was cleared
     });
 
     it("a canceled run's markTerminal is sticky AND skips its outbox", async () => {
@@ -112,7 +112,7 @@ export const outboxConformance = (
       await store.markTerminal(runId, { status: "canceled" });
       await store.markTerminal(runId, { status: "done", output: 1 }, { enqueue: [{ runId }] });
       expect((await store.loadRun(runId))?.run.status).toBe("canceled");
-      expect(await queue.claim({ max: 10, leaseMs: 1000, now: at(0) })).toEqual([]);
+      expect(await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) })).toEqual([]);
     });
   });
 };

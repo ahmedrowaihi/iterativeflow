@@ -186,7 +186,7 @@ interface EnqueueOpts {
 /** Options for a claim cycle — all tunable per deployment. */
 interface ClaimOpts {
   /** Max runs to lease this cycle (batch size). */
-  max: number;
+  limit: number;
   /** How long the lease is held before it expires and another worker may re-claim. */
   leaseMs: number;
   /** Injectable clock (tests / deterministic conformance). Defaults to now. */
@@ -215,7 +215,7 @@ interface Queue {
   /** Enqueue (or re-enqueue) a run. Re-enqueue is an upsert keyed by `runId`. */
   enqueue(runId: string, opts?: EnqueueOpts): Promise<void>;
   /**
-   * Lease up to `max` due, unleased runs to this worker for `leaseMs`. A leased run is
+   * Lease up to `limit` due, unleased runs to this worker for `leaseMs`. A leased run is
    * invisible to other claimers until its lease expires (crash recovery) or is `ack`ed.
    */
   claim(opts: ClaimOpts): Promise<Lease[]>;
@@ -253,7 +253,7 @@ interface TimerDueOpts {
   /** Injectable clock. Defaults to now. */
   now?: Date;
   /** Max runs to return this drain. */
-  max: number;
+  limit: number;
 }
 /**
  * Durable-deadline port — one of the four v2 ports. Every wait (sleep, retry backoff,
@@ -267,7 +267,7 @@ interface Timer {
   /** Set (upsert) the run's single wake deadline. The latest call wins. */
   schedule(runId: string, fireAt: Date): Promise<void>;
   /**
-   * Return AND consume up to `max` runs whose deadline has passed — earliest first,
+   * Return AND consume up to `limit` runs whose deadline has passed — earliest first,
    * fire-once (a consumed timer is not returned again). The caller re-enqueues them.
    */
   dueBatch(opts: TimerDueOpts): Promise<string[]>;
@@ -483,9 +483,9 @@ interface Store {
   /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no
    * pending timer (stranded by a crash between a state write and its enqueue, or by a lost
-   * wakeup). The reconciler re-enqueues them. Returns up to `max`, oldest first.
+   * wakeup). The reconciler re-enqueues them. Returns up to `limit`, oldest first.
    */
-  orphanedRuns(max: number): Promise<readonly string[]>;
+  orphanedRuns(limit: number): Promise<readonly string[]>;
   /**
    * Re-drive a `failed` run: reset it to `pending`, clear the error, and re-enqueue —
    * atomically. Completed (`ok`) step memos are KEPT, so replay skips them and only the work
@@ -497,7 +497,7 @@ interface Store {
   /** Register or update a cron. Keeps the existing `nextRunAt` if the cron already exists. */
   upsertCron(spec: CronSpec): Promise<void>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
-  dueCrons(now: Date, max: number): Promise<readonly CronRow[]>;
+  dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
   /**
    * Advance a cron's `nextRunAt` — but ONLY if it still equals `expectedNextRunAt` (CAS). The
    * winner of that CAS is the single worker that fires this occurrence, so a cron never
@@ -906,7 +906,7 @@ declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | stri
 }) => Promise<RunResult<O>>;
 /** Move every due timer back onto the queue. Returns how many were re-enqueued. */
 declare const drainTimers: (backend: Backend, opts: {
-  max: number;
+  limit: number;
   now?: Date;
 }) => Promise<number>;
 /**
@@ -916,7 +916,7 @@ declare const drainTimers: (backend: Backend, opts: {
  * many were re-enqueued.
  */
 declare const reconcile: (backend: Backend, opts: {
-  max: number;
+  limit: number;
 }) => Promise<number>;
 interface TickOnceOpts {
   batchMax: number;
