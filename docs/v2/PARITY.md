@@ -38,8 +38,16 @@ feature is silently missing.
 | Serverless execution          | `serverlessTick` / `engine.serverlessTick` — one cron-Lambda invocation fires crons + reconciles + drains + advances a batch (no daemon)                                                                                                                       |
 | Dashboard                     | `createDashboard(engine)` — mountable Web `fetch` handler + self-contained UI                                                                                                                                                                                  |
 | Postgres backend              | full ports + outbox, real-concurrency + torn-write proven                                                                                                                                                                                                      |
-| DynamoDB backend              | full ports + outbox (single-table + one GSI), `TransactWriteItems`, two-phase fan-out; same conformance suites                                                                                                                                                 |
+| DynamoDB backend              | full ports + outbox (single-table + two GSIs), `TransactWriteItems`, two-phase fan-out                                                                                                                                                                         |
+| SQLite backend                | full ports + outbox (`@libsql/client`) — embedded, Turso, or a single-node service                                                                                                                                                                             |
+| MySQL backend                 | full ports + outbox (InnoDB, `FOR UPDATE SKIP LOCKED`, READ COMMITTED)                                                                                                                                                                                         |
+| MongoDB backend               | full ports + outbox (multi-document transaction; replica set required)                                                                                                                                                                                         |
+| Redis backend                 | full ports + outbox (Lua-scripted, single-node)                                                                                                                                                                                                                |
+| Durable Objects backend       | the SQLite backend inside a Cloudflare Durable Object on `ctx.storage.sql` — no external DB                                                                                                                                                                    |
 | In-memory backend             | reference + oracle for conformance                                                                                                                                                                                                                             |
+| Inbound webhooks              | `@iterativeflow/webhooks` — verify a signed provider webhook (github preset / `hmacVerifier`) and deliver it as a durable signal a parked flow `await`s                                                                                                        |
+
+All eight backends implement the same four ports and pass the same nine conformance suites.
 
 ## Deliberately dropped (with sign-off)
 
@@ -55,7 +63,7 @@ feature is silently missing.
 
 - **Invoke depth cap** — `depth` on the run + `policy.maxDepth` (default 32); bounds runaway recursion.
 - **Retention / prune** — `Store.deleteRunsOlderThan` + `engine.prune`, terminal runs + their
-  steps/signals/events, across all three backends.
+  steps/signals/events, across all eight backends.
 - **`ctx.log`** — durable, replay-suppressed run log line to the event sink.
 - **`defineContract`** — type-only I/O + signal contract for cross-service typed `submit`/`result`/`signal`.
 - **Health liveness** — `Queue.depth` (backlog / in-flight / oldest-claimable age) + `engine.liveness`.

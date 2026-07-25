@@ -1,7 +1,7 @@
 # @iterativeflow/dynamodb
 
 DynamoDB [`Backend`](../core) for [iterativeflow](https://github.com/ahmedrowaihi/iterativeflow)
-v2. A single table with one GSI holds all four ports; a durable checkpoint
+v2. A single table with two GSIs holds all four ports; a durable checkpoint
 commits as one `TransactWriteItems`. Decision-path reads use `ConsistentRead`.
 A natural fit for serverless (Lambda + EventBridge) with `serverlessTick`.
 

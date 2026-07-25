@@ -8,23 +8,25 @@ Durable, backend-agnostic workflows for TypeScript.
 Write a flow as an ordinary async function; it survives process crashes, retries failed steps, sleeps
 for days, and resumes deterministically by replaying memoized steps. The same engine runs behind a
 four-port `Backend` interface — **Postgres, SQLite, MySQL, MongoDB, Redis, DynamoDB, Cloudflare
-Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*@2.0.0-alpha` scope.
+Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*` scope
+(latest `2.0.0-alpha.2`).
 
 > This is the v2 rewrite. The v1 API (`flow().step()` on graphile-worker) is unchanged and still
 > shipped as [`iterativeflow`](../README.md).
 
 ```ts
-import { createEngine, defineFlow } from "@iterativeflow/core";
+import { createEngine, defineFlow, signalType } from "@iterativeflow/core";
 import { createPgBackend, pgPool } from "@iterativeflow/postgres";
 import { Pool } from "pg";
 
-const onboard = defineFlow<{ userId: string }, { score: number }>({
+const onboard = defineFlow({
   name: "onboard",
   version: 1,
-  run: async (ctx, input) => {
+  signals: { survey: signalType<{ score: number }>() }, // declare the signal's payload type
+  run: async (ctx, input: { userId: string }): Promise<{ score: number }> => {
     await ctx.step("create-account", () => createAccount(input.userId));
     await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days, durable
-    const survey = await ctx.signal<{ score: number }>("survey");
+    const survey = await ctx.signal("survey"); // typed { score: number }
     return { score: survey.score };
   },
 });
@@ -139,7 +141,7 @@ const onboard = builder<{ userId: string }>("onboard", 1)
   .step("account", (acc) => createAccount(acc.input.userId))
   .step("survey", async (_acc, ctx) => {
     await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days
-    return ctx.signal<{ score: number }>("survey");
+    return (await ctx.signal("survey")) as { score: number };
   })
   .output((acc) => ({ score: acc.survey.score }));
 ```
