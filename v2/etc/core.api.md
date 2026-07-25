@@ -513,8 +513,8 @@ interface Store {
 //#region src/engine/observe.d.ts
 /** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
 type EventLevel = "all" | "lifecycle" | "off";
-/** The durable event kinds the sink records — run lifecycle transitions plus per-step completion. */
-type EventType = "run.started" | "run.completed" | "run.failed" | "run.suspended" | "step.finished";
+/** The durable event kinds the sink records — run lifecycle transitions, per-step completion, and `ctx.log`. */
+type EventType = "run.started" | "run.completed" | "run.failed" | "run.suspended" | "step.finished" | "run.log";
 /** One durable audit-log entry — the dashboard timeline reads these. */
 interface FlowEvent {
   runId: string;
@@ -645,6 +645,13 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
+  /**
+   * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
+   * run. Fire-and-forget and NOT memoized: it is suppressed while the flow replays its already-durable
+   * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
+   * no sink is wired or the observe `level` is `lifecycle`/`off`.
+   */
+  log(message: string, data?: unknown): void;
 }
 /** The clock the executor threads in — injectable for deterministic tests. */
 type Clock = () => Date;
