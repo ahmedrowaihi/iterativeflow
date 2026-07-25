@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { A as Queue, B as RunPage, C as TimerRequest, D as ClaimOpts, E as TimerDueOpts, G as StepCheckpoint, H as RunSnapshot, I as FlowError, J as SuspendStatus, K as StepOutcome, L as Page, M as CronRow, N as CronSpec, O as EnqueueOpts, P as DeliveredSignal, R as RUN_STATUSES, S as SpawnRequest, T as Timer, U as RunSpec, V as RunRow, W as RunStatus, Y as TerminalOutcome, _ as StartResult, a as RECONCILABLE_STATUSES, b as EnqueueRequest, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as QueueDepth, k as Lease, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as StepStatus, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, v as Store, w as Wakeup, x as Outbox, y as Backend, z as RunFilter } from "./id-<hash>.mjs";
+import { A as EnqueueOpts, B as RUN_STATUSES, C as Outbox, D as Timer, E as Wakeup, F as CronSpec, G as RunSpec, H as RunPage, I as DeliveredSignal, J as StepOutcome, K as RunStatus, M as Queue, N as QueueDepth, O as TimerDueOpts, P as CronRow, R as FlowError, S as EnqueueRequest, T as TimerRequest, U as RunRow, V as RunFilter, W as RunSnapshot, X as SuspendStatus, Y as StepStatus, Z as TerminalOutcome, a as RECONCILABLE_STATUSES, b as Store, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as Lease, k as ClaimOpts, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as StepCheckpoint, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, w as SpawnRequest, x as Backend, y as StartResult, z as Page } from "./id-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -544,6 +544,33 @@ interface FlowEvent {
 interface EventSink {
   record(event: FlowEvent): void | Promise<void>;
 }
+/**
+ * One completed step, as a tracing span. `traceId` is stable per run and `spanId` is derived from
+ * the step's positional cursor, so a step replayed across ticks/crashes keeps the SAME ids — the
+ * exporter dedups naturally. Emitted only when a step actually executes (a memoized replay is silent).
+ * A workflow that fans out links traces by run id: a child run's `traceId` derives from its own id,
+ * so an exporter joins parent→child on the spawned run id.
+ */
+interface Span {
+  runId: string;
+  /** 32-hex-char trace id (W3C traceparent shape), stable for the whole run. */
+  traceId: string;
+  /** 16-hex-char span id, derived from the step's cursor — identical on every replay of that step. */
+  spanId: string;
+  /** The step name (`ctx.step`'s first arg). */
+  name: string;
+  startedAt: Date;
+  endedAt: Date;
+  /** Present when the step failed permanently (the error that propagated). */
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+/** A span sink — wire it to `@opentelemetry/api` (or any tracer) to export durable step spans. */
+interface Tracer {
+  span(span: Span): void;
+}
 /** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
 interface Metrics {
   runStarted?(runId: string): void;
@@ -557,6 +584,8 @@ interface ObserveOpts {
   sink?: EventSink;
   level?: EventLevel;
   metrics?: Metrics;
+  /** Durable step-span sink, for OTel/tracing export. See {@link Span}. */
+  tracer?: Tracer;
 }
 //#endregion
 //#region src/status.d.ts
@@ -587,13 +616,13 @@ type IdGen = () => string;
 /** Default id generator — RFC-4122 v4. Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { Queue as A, RunPage as B, TimerRequest as C, ClaimOpts as D, TimerDueOpts as E, DriftPolicy as F, StepCheckpoint as G, RunSnapshot as H, FlowError as I, SuspendStatus as J, StepOutcome as K, Page as L, CronRow as M, CronSpec as N, EnqueueOpts as O, DeliveredSignal as P, RUN_STATUSES as R, SpawnRequest as S, Timer as T, RunSpec as U, RunRow as V, RunStatus as W, TerminalOutcome as Y, StartResult as _, RECONCILABLE_STATUSES as a, EnqueueRequest as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, QueueDepth as j, Lease as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, StepStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Store as v, Wakeup as w, Outbox as x, Backend as y, RunFilter as z };
+export { EnqueueOpts as A, RUN_STATUSES as B, Outbox as C, Timer as D, Wakeup as E, CronSpec as F, RunSpec as G, RunPage as H, DeliveredSignal as I, StepOutcome as J, RunStatus as K, DriftPolicy as L, Queue as M, QueueDepth as N, TimerDueOpts as O, CronRow as P, FlowError as R, EnqueueRequest as S, TimerRequest as T, RunRow as U, RunFilter as V, RunSnapshot as W, SuspendStatus as X, StepStatus as Y, TerminalOutcome as Z, Span as _, RECONCILABLE_STATUSES as a, Store as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, Lease as j, ClaimOpts as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, StepCheckpoint as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Tracer as v, SpawnRequest as w, Backend as x, StartResult as y, Page as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { B as RunPage, F as DriftPolicy, H as RunSnapshot, I as FlowError, K as StepOutcome, L as Page, O as EnqueueOpts, P as DeliveredSignal, R as RUN_STATUSES, V as RunRow, W as RunStatus, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as QueueDepth, k as Lease, m as FlowEvent, n as newId, p as EventType, q as StepStatus, s as isRunStatus, t as IdGen, y as Backend, z as RunFilter } from "./id-<hash>.mjs";
+import { A as EnqueueOpts, B as RUN_STATUSES, H as RunPage, I as DeliveredSignal, J as StepOutcome, K as RunStatus, L as DriftPolicy, N as QueueDepth, R as FlowError, U as RunRow, V as RunFilter, W as RunSnapshot, Y as StepStatus, _ as Span, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as Lease, m as FlowEvent, n as newId, p as EventType, s as isRunStatus, t as IdGen, v as Tracer, x as Backend, z as Page } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -1195,5 +1224,5 @@ declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

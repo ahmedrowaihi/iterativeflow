@@ -25,6 +25,32 @@ export interface EventSink {
   record(event: FlowEvent): void | Promise<void>;
 }
 
+/**
+ * One completed step, as a tracing span. `traceId` is stable per run and `spanId` is derived from
+ * the step's positional cursor, so a step replayed across ticks/crashes keeps the SAME ids — the
+ * exporter dedups naturally. Emitted only when a step actually executes (a memoized replay is silent).
+ * A workflow that fans out links traces by run id: a child run's `traceId` derives from its own id,
+ * so an exporter joins parent→child on the spawned run id.
+ */
+export interface Span {
+  runId: string;
+  /** 32-hex-char trace id (W3C traceparent shape), stable for the whole run. */
+  traceId: string;
+  /** 16-hex-char span id, derived from the step's cursor — identical on every replay of that step. */
+  spanId: string;
+  /** The step name (`ctx.step`'s first arg). */
+  name: string;
+  startedAt: Date;
+  endedAt: Date;
+  /** Present when the step failed permanently (the error that propagated). */
+  error?: { code: string; message: string };
+}
+
+/** A span sink — wire it to `@opentelemetry/api` (or any tracer) to export durable step spans. */
+export interface Tracer {
+  span(span: Span): void;
+}
+
 /** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
 export interface Metrics {
   runStarted?(runId: string): void;
@@ -39,6 +65,8 @@ export interface ObserveOpts {
   sink?: EventSink;
   level?: EventLevel;
   metrics?: Metrics;
+  /** Durable step-span sink, for OTel/tracing export. See {@link Span}. */
+  tracer?: Tracer;
 }
 
 const LIFECYCLE = new Set<EventType>([
@@ -52,6 +80,7 @@ const LIFECYCLE = new Set<EventType>([
 export interface Observer {
   event(type: EventType, runId: string, at: Date, data?: unknown): Promise<void>;
   readonly metrics: Metrics;
+  readonly tracer?: Tracer;
 }
 
 export const makeObserver = (opts?: ObserveOpts): Observer => {
@@ -64,5 +93,6 @@ export const makeObserver = (opts?: ObserveOpts): Observer => {
       await sink.record({ runId, type, at, data });
     },
     metrics: opts?.metrics ?? {},
+    tracer: opts?.tracer,
   };
 };

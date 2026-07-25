@@ -2,6 +2,7 @@ import {
   type Backend,
   type FlowEvent,
   type Metrics,
+  type Span,
   cancelRun,
   defineFlow,
   reconcile,
@@ -443,6 +444,63 @@ describe("engine — end to end on the memory backend", () => {
       "after sleep",
     ]);
     expect((logs[0].data as { data: unknown }).data).toEqual({ n: 1 });
+  });
+
+  it("tracer emits one stable-id span per executed step and stays silent on replay", async () => {
+    const spans: Span[] = [];
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "traced",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.step("a", () => 1);
+        await ctx.sleep(1000);
+        await ctx.step("b", () => 2);
+        return "ok";
+      },
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([flow]);
+    const opts = {
+      batchMax: 8,
+      leaseMs: 600_000,
+      observe: { tracer: { span: (s: Span) => void spans.push(s) } },
+    };
+    await submit(backend, flow, {});
+    await tickOnce(backend, flows, { ...opts, now: () => new Date("2030-01-01T00:00:00Z") }); // step a, then sleeps
+    await tickOnce(backend, flows, { ...opts, now: () => new Date("2030-01-01T00:01:00Z") }); // replays (a NOT re-emitted), step b
+
+    expect(spans.map((s) => s.name)).toEqual(["a", "b"]); // step a exactly once despite the wake replay
+    expect(new Set(spans.map((s) => s.traceId)).size).toBe(1); // one run → one trace
+    expect(spans[0].traceId).toHaveLength(32);
+    expect(spans[0].spanId).toHaveLength(16);
+    expect(spans[0].spanId).not.toBe(spans[1].spanId); // distinct span per step
+  });
+
+  it("tracer records a failed step's error on its span", async () => {
+    const spans: Span[] = [];
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "traced-fail",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.step("boom", () => {
+          throw new Error("nope");
+        });
+        return "ok";
+      },
+    });
+    const backend = createMemoryBackend();
+    await submit(backend, flow, {});
+    await tickOnce(backend, registry([flow]), {
+      batchMax: 8,
+      leaseMs: 600_000,
+      now: () => new Date("2030-01-01T00:00:00Z"),
+      retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+      observe: { tracer: { span: (s: Span) => void spans.push(s) } },
+    });
+    const failed = spans.filter((s) => s.error);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].name).toBe("boom");
+    expect(failed[0].error?.message).toContain("nope");
   });
 
   it("a registered cron fires a run when due, exactly once per occurrence", async () => {
