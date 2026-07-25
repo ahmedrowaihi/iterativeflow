@@ -2,9 +2,11 @@ import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { RunRow, RunSnapshot, StepOutcome } from "#types";
 import {
+  type AnyFlow,
   type Flow,
-  type InvokeOutputs,
+  type FlowOutputs,
   type InvokeSpec,
+  type InvokeSpecFor,
   type SignalMap,
   type SignalName,
   type SignalPayload,
@@ -86,7 +88,9 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * — if any child fails (or is canceled), the parent fails and its still-running siblings are
    * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
    */
-  invoke<const T extends readonly InvokeSpec[]>(specs: T): Promise<InvokeOutputs<T>>;
+  invoke<const F extends readonly AnyFlow[]>(specs: {
+    readonly [K in keyof F]: InvokeSpecFor<F[K]>;
+  }): Promise<FlowOutputs<F>>;
 
   /**
    * Durably wait for an external signal named `name` and return its payload. If a matching

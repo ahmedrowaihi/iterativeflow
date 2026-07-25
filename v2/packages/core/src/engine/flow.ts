@@ -120,9 +120,16 @@ export interface InvokeSpec<CI = any, CO = any> {
   input: CI;
 }
 
-/** The tuple of child outputs a fan-out `ctx.invoke(specs)` resolves to, per-spec typed. */
-export type InvokeOutputs<T extends readonly InvokeSpec[]> = {
-  [K in keyof T]: T[K] extends InvokeSpec<any, infer CO> ? CO : never;
+/**
+ * The `{ flow, input }` shape a fan-out spec must have, with `input` bound to `F`'s OWN input type.
+ * Mapping it over an inferred flow tuple is what lets `ctx.invoke([{ flow: a, input }, ...])`
+ * type-check each input against its own flow instead of accepting `any`.
+ */
+export type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? { flow: F; input: CI } : never;
+
+/** The tuple of child outputs a fan-out over flows `F` resolves to — each flow's output, in order. */
+export type FlowOutputs<F extends readonly AnyFlow[]> = {
+  readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never;
 };
 
 /** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
