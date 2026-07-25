@@ -41,11 +41,10 @@ export interface Store {
 
   /**
    * Insert many runs, each created idempotently (per-spec idempotency key), results aligned 1:1
-   * with `specs` — a batch may mix created + already-existing runs. All-or-none atomicity holds
-   * where the backend commits the batch in one transaction (memory, Postgres); on DynamoDB the
-   * batch is created per-run (the `TransactWriteItems` 100-item cap makes whole-batch atomicity
-   * impossible for large batches), so a crash mid-batch can land it partially — the reconciler and
-   * idempotency keys make a re-submit safe.
+   * with `specs` — a batch may mix created + already-existing runs. Memory and Postgres commit the
+   * whole batch in one transaction (all-or-none). DynamoDB commits in atomic chunks bounded by the
+   * `TransactWriteItems` 100-item cap, so a batch larger than the cap spans chunks and a crash
+   * between them can land it partially — the reconciler and idempotency keys make a re-submit safe.
    */
   startManyRuns(specs: readonly RunSpec[]): Promise<StartResult[]>;
 
