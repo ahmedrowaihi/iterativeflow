@@ -467,7 +467,9 @@ interface Store {
   }): Promise<{
     delivered: boolean;
   }>;
-  /** Transition to `running` and increment `attempts`. Returns the new attempt count. */
+  /** Transition to `running` and increment `attempts`; returns the new attempt count. A terminal run
+   *  is never resurrected — a late re-dispatch (e.g. a stale timer after a cancel) returns its
+   *  attempts unchanged so the caller sees it is terminal and acks without executing. */
   markRunning(runId: string): Promise<number>;
   /**
    * Persist a step's terminal outcome — the single durable write per step. **Idempotent
@@ -532,7 +534,8 @@ interface Store {
   retryRun(runId: string): Promise<{
     retried: boolean;
   }>;
-  /** Register or update a cron. Keeps the existing `nextRunAt` if the cron already exists. */
+  /** Register or update a cron. Keeps the existing `nextRunAt` when the cron already exists, so a
+   *  redeploy re-registering it doesn't reset the schedule timing. */
   upsertCron(spec: CronSpec): Promise<void>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
