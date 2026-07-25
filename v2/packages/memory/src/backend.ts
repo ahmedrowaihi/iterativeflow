@@ -7,6 +7,7 @@ import {
   type IdGen,
   type Lease,
   type Outbox,
+  type OrphanView,
   type RunRow,
   type RunSpec,
   type StartResult,
@@ -15,9 +16,8 @@ import {
   type SuspendStatus,
   type TerminalOutcome,
   type TimerDueOpts,
-  NON_SUCCESS_TERMINAL_STATUSES,
-  RECONCILABLE_STATUSES,
   createLocalWakeup,
+  isOrphaned,
   isTerminal,
   newId,
   statusList,
@@ -263,19 +263,14 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async orphanedRuns(max) {
-      const stranded = (r: RunRow): boolean =>
-        RECONCILABLE_STATUSES.includes(r.status) && !jobs.has(r.id) && !deadlines.has(r.id);
-      const lostParentWake = (r: RunRow): boolean =>
-        r.status === "awaiting_child" &&
-        !jobs.has(r.id) &&
-        [...runs.values()].some((c) => c.parentRunId === r.id && isTerminal(c.status));
-      const orphanedChild = (r: RunRow): boolean => {
-        if (isTerminal(r.status) || !r.parentRunId) return false;
-        const p = runs.get(r.parentRunId);
-        return p !== undefined && NON_SUCCESS_TERMINAL_STATUSES.includes(p.status);
+      const view: OrphanView = {
+        hasJob: (runId) => jobs.has(runId),
+        hasTimer: (runId) => deadlines.has(runId),
+        childrenOf: (runId) => [...runs.values()].filter((c) => c.parentRunId === runId),
+        runById: (runId) => runs.get(runId),
       };
       return [...runs.values()]
-        .filter((r) => stranded(r) || lostParentWake(r) || orphanedChild(r))
+        .filter((r) => isOrphaned(r, view))
         .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
         .slice(0, max)
         .map((r) => r.id);
