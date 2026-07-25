@@ -51,20 +51,14 @@ feature is silently missing.
 - **Graph builder nodes + static drift detection** — dropped per decision. The linear builder plus
   imperative `defineFlow` (which does sleep/signal/loop/branch via `ctx`) covers control flow.
 
-## Deferred (small, noted — not silently missing)
-
-- **Tracing spans** — an OTel span per step/invoke needs trace-context propagation across durable
-  boundaries (a run that sleeps for days or crashes can't hold an in-process span open), so it wants
-  its own design — span-per-tick linked via stored trace context, not a naive wrapping. `metrics`
-  hooks cover the in-process case today.
-- **`defineContract`** — a type-only I/O + signal contract so another service (or the Go port) can
-  `submit`/`signal` a flow with full type-safety without importing its body. API-design follow-up.
-- **Health liveness beyond `runStats`** — `runStats` gives per-status counts; a richer probe
-  (oldest-unclaimed-job age, stuck-`running` count) for k8s liveness is a follow-up.
-
 ## Done since the first alpha
 
 - **Invoke depth cap** — `depth` on the run + `policy.maxDepth` (default 32); bounds runaway recursion.
 - **Retention / prune** — `Store.deleteRunsOlderThan` + `engine.prune`, terminal runs + their
   steps/signals/events, across all three backends.
 - **`ctx.log`** — durable, replay-suppressed run log line to the event sink.
+- **`defineContract`** — type-only I/O + signal contract for cross-service typed `submit`/`result`/`signal`.
+- **Health liveness** — `Queue.depth` (backlog / in-flight / oldest-claimable age) + `engine.liveness`.
+- **Tracing** — a `Tracer` hook emitting a durable span per executed step; `traceId` per run and
+  `spanId` per cursor, idempotent across replay. Dependency-free (wire to OTel yourself).
+- **Live progress push** — opt-in pg `applyProgressTrigger` + `createPgListener.watch`/`onProgress`.
