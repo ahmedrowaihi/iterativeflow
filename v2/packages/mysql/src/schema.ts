@@ -2,14 +2,17 @@ import { assertSqlIdentifier } from "@iterativeflow/core/backend";
 import type { Sql } from "#sql";
 
 /** @internal */
-export const tables = (prefix: string) => ({
-  run: `\`${prefix}run\``,
-  step: `\`${prefix}step\``,
-  job: `\`${prefix}job\``,
-  timer: `\`${prefix}timer\``,
-  signal: `\`${prefix}signal\``,
-  cron: `\`${prefix}cron\``,
-});
+export const tables = (prefix: string) => {
+  assertSqlIdentifier(prefix);
+  return {
+    run: `\`${prefix}run\``,
+    step: `\`${prefix}step\``,
+    job: `\`${prefix}job\``,
+    timer: `\`${prefix}timer\``,
+    signal: `\`${prefix}signal\``,
+    cron: `\`${prefix}cron\``,
+  };
+};
 
 export type Tables = ReturnType<typeof tables>;
 
@@ -101,6 +104,5 @@ export const ddl = (prefix = ""): string[] => {
 
 /** Apply the schema DDL (idempotent). Run once before use. */
 export const applySchema = async (sql: Sql, prefix = ""): Promise<void> => {
-  assertSqlIdentifier(prefix);
   for (const stmt of ddl(prefix)) await sql.query(stmt);
 };

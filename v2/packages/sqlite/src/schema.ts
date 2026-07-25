@@ -2,14 +2,17 @@ import { assertSqlIdentifier } from "@iterativeflow/core/backend";
 import type { Sql } from "#sql";
 
 /** @internal */
-export const tables = (prefix: string) => ({
-  run: `${prefix}run`,
-  step: `${prefix}step`,
-  job: `${prefix}job`,
-  timer: `${prefix}timer`,
-  signal: `${prefix}signal`,
-  cron: `${prefix}cron`,
-});
+export const tables = (prefix: string) => {
+  assertSqlIdentifier(prefix);
+  return {
+    run: `${prefix}run`,
+    step: `${prefix}step`,
+    job: `${prefix}job`,
+    timer: `${prefix}timer`,
+    signal: `${prefix}signal`,
+    cron: `${prefix}cron`,
+  };
+};
 
 export type Tables = ReturnType<typeof tables>;
 
@@ -100,7 +103,6 @@ CREATE INDEX IF NOT EXISTS ${t.cron}_due ON ${t.cron} (next_run_at);
 
 /** Apply the schema DDL (idempotent). Splits on `;` because libsql executes one statement per call. */
 export const applySchema = async (sql: Sql, prefix = ""): Promise<void> => {
-  assertSqlIdentifier(prefix);
   for (const stmt of ddl(prefix).split(";")) {
     const s = stmt.trim();
     if (s) await sql.query(s);

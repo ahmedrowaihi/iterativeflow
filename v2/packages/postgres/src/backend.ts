@@ -1,10 +1,4 @@
-import {
-  type Backend,
-  type IdGen,
-  assertSqlIdentifier,
-  createLocalWakeup,
-  newId,
-} from "@iterativeflow/core/backend";
+import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
 import type { PgListener } from "#notify";
 import { createPgQueue } from "#queue";
 import { createPgStore } from "#store";
@@ -31,7 +25,6 @@ export interface PgBackendOpts {
  */
 export const createPgBackend = (sql: Sql, opts: PgBackendOpts = {}): Backend => {
   const schema = opts.schema ?? "workflow";
-  assertSqlIdentifier(schema);
   const id = opts.id ?? newId;
   const queue = createPgQueue(sql, schema, id);
   return {

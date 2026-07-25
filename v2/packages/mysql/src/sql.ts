@@ -33,23 +33,31 @@ const bind = (q: Pool | PoolConnection): Pick<Sql, "query" | "exec"> => ({
 const onConn = (c: PoolConnection): Sql => ({ ...bind(c), tx: (fn) => fn(onConn(c)) });
 
 /** Adapt a `mysql2/promise` {@link Pool} to {@link Sql}. `tx` checks out one connection for the unit. */
-export const mysqlPool = (pool: Pool): Sql => ({
-  ...bind(pool),
-  async tx(fn) {
-    const c = await pool.getConnection();
-    try {
-      // READ COMMITTED (not MySQL's REPEATABLE READ default): a first-writer-wins checkpoint's
-      // re-read must see a concurrent winner's just-committed row, as the Postgres-based model assumes.
-      await c.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
-      await c.beginTransaction();
-      const out = await fn(onConn(c));
-      await c.commit();
-      return out;
-    } catch (e) {
-      await c.rollback().catch(() => undefined);
-      throw e;
-    } finally {
-      c.release();
-    }
-  },
-});
+export const mysqlPool = (pool: Pool): Sql => {
+  // READ COMMITTED (not MySQL's REPEATABLE READ default): a first-writer-wins checkpoint's re-read
+  // must see a concurrent winner's just-committed row, as the Postgres-based model assumes. Set
+  // SESSION-scoped once per physical connection (the pool reuses connection objects), so it's off
+  // the per-transaction hot path but still applied before that connection's first transaction.
+  const configured = new WeakSet<PoolConnection>();
+  return {
+    ...bind(pool),
+    async tx(fn) {
+      const c = await pool.getConnection();
+      try {
+        if (!configured.has(c)) {
+          await c.query("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED");
+          configured.add(c);
+        }
+        await c.beginTransaction();
+        const out = await fn(onConn(c));
+        await c.commit();
+        return out;
+      } catch (e) {
+        await c.rollback().catch(() => undefined);
+        throw e;
+      } finally {
+        c.release();
+      }
+    },
+  };
+};
