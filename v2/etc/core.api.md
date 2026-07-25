@@ -74,6 +74,9 @@ interface RunSpec {
   parentCursorKey?: string;
   /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
   depth?: number;
+  /** Creation instant, stamped from the engine clock at submit/spawn. Drives retention. Backends
+   *  default it to their own clock when a direct `startRun` omits it. */
+  createdAt?: Date;
 }
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
  *  successful steps are ever written (their existence IS the success marker). */
@@ -112,8 +115,8 @@ interface RunRow {
   tags?: readonly string[];
   parentRunId?: string;
   parentCursorKey?: string;
-  /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
   depth?: number;
+  createdAt?: Date;
 }
 /** A durable signal delivered to a run's inbox, awaiting consumption by a `ctx.signal` wait. */
 interface DeliveredSignal {
@@ -260,7 +263,11 @@ interface Queue {
   ack(lease: Lease, opts?: {
     now?: Date;
   }): Promise<void>;
-  /** Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. */
+  /**
+   * Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. Postgres answers it
+   * with one aggregate query; memory and DynamoDB read the whole job set, so call it on a coarse
+   * cadence (a readiness probe every few seconds), not per request.
+   */
   depth(now: Date): Promise<QueueDepth>;
   /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
@@ -562,15 +569,11 @@ interface EventSink {
  */
 interface Span {
   runId: string;
-  /** 32-hex-char trace id (W3C traceparent shape), stable for the whole run. */
   traceId: string;
-  /** 16-hex-char span id, derived from the step's cursor — identical on every replay of that step. */
   spanId: string;
-  /** The step name (`ctx.step`'s first arg). */
   name: string;
   startedAt: Date;
   endedAt: Date;
-  /** Present when the step failed permanently (the error that propagated). */
   error?: {
     code: string;
     message: string;
@@ -593,7 +596,6 @@ interface ObserveOpts {
   sink?: EventSink;
   level?: EventLevel;
   metrics?: Metrics;
-  /** Durable step-span sink, for OTel/tracing export. See {@link Span}. */
   tracer?: Tracer;
 }
 //#endregion
@@ -806,7 +808,6 @@ declare const defineFlow: <I, O, S extends SignalMap = NoSignals>(flow: Flow<I, 
 interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
   name: string;
   version: number;
-  /** Optional submit-side input validator — the executing worker validates authoritatively regardless. */
   input?: InputSchema<I>;
   signals?: SignalSchemas<S>;
   /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */
@@ -952,7 +953,7 @@ interface SubmitOpts extends EnqueueOpts {
 }
 /** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle.
  *  Accepts a {@link Flow} or a {@link Contract} — the latter for a caller that doesn't own the body. */
-declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts) => Promise<RunHandle<O, S>>;
+declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts, now?: Clock) => Promise<RunHandle<O, S>>;
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
 interface SubmitSpec<I = unknown> {
   flow: Flow<I, any, any>;
@@ -967,7 +968,7 @@ interface SubmitSpec<I = unknown> {
  * then enqueue the freshly-created ones. Returns their ids, aligned with `items`. Idempotent
  * items that already existed are returned but not re-enqueued.
  */
-declare const submitMany: <I>(backend: Backend, items: readonly SubmitSpec<I>[]) => Promise<string[]>;
+declare const submitMany: <I>(backend: Backend, items: readonly SubmitSpec<I>[], now?: Clock) => Promise<string[]>;
 /**
  * Deliver an external signal to a run and wake it. The delivery + re-enqueue are atomic
  * (durable); the wakeup is a best-effort latency nudge. Idempotent on `idempotencyKey`.

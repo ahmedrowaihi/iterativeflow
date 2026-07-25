@@ -51,6 +51,7 @@ export const mapRun = (r: RunItem): RunRow => ({
   parentRunId: r.parentRunId,
   parentCursorKey: r.parentCursorKey,
   depth: r.depth ?? 0,
+  createdAt: r.createdAt ? new Date(r.createdAt) : undefined,
 });
 
 export interface CronItem {

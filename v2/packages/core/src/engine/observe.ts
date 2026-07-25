@@ -7,10 +7,9 @@ const hashHex = (seed: string, bytes: number): string =>
     .digest("hex")
     .slice(0, bytes * 2);
 
-/** The W3C-width (32 hex) trace id for a run — stable for the run's whole life. */
+/** @internal */
 export const traceIdOf = (runId: string): string => hashHex(runId, 16);
-
-/** The W3C-width (16 hex) span id for a step, derived from its replay-stable cursor. */
+/** @internal */
 export const spanIdOf = (runId: string, cursorKey: string): string =>
   hashHex(`${runId}:${cursorKey}`, 8);
 
@@ -48,15 +47,11 @@ export interface EventSink {
  */
 export interface Span {
   runId: string;
-  /** 32-hex-char trace id (W3C traceparent shape), stable for the whole run. */
   traceId: string;
-  /** 16-hex-char span id, derived from the step's cursor — identical on every replay of that step. */
   spanId: string;
-  /** The step name (`ctx.step`'s first arg). */
   name: string;
   startedAt: Date;
   endedAt: Date;
-  /** Present when the step failed permanently (the error that propagated). */
   error?: { code: string; message: string };
 }
 
@@ -79,7 +74,6 @@ export interface ObserveOpts {
   sink?: EventSink;
   level?: EventLevel;
   metrics?: Metrics;
-  /** Durable step-span sink, for OTel/tracing export. See {@link Span}. */
   tracer?: Tracer;
 }
 
@@ -93,6 +87,7 @@ const LIFECYCLE = new Set<EventType>([
 /** @internal */
 export interface Observer {
   event(type: EventType, runId: string, at: Date, data?: unknown): Promise<void>;
+  records(type: EventType): boolean;
   readonly metrics: Metrics;
   readonly tracer?: Tracer;
 }
@@ -100,12 +95,13 @@ export interface Observer {
 export const makeObserver = (opts?: ObserveOpts): Observer => {
   const level = opts?.level ?? "off";
   const sink = opts?.sink;
+  const records = (type: EventType): boolean =>
+    !!sink && level !== "off" && !(level === "lifecycle" && !LIFECYCLE.has(type));
   return {
     async event(type, runId, at, data) {
-      if (!sink || level === "off") return;
-      if (level === "lifecycle" && !LIFECYCLE.has(type)) return;
-      await sink.record({ runId, type, at, data });
+      if (records(type)) await sink!.record({ runId, type, at, data });
     },
+    records,
     metrics: opts?.metrics ?? {},
     tracer: opts?.tracer,
   };
