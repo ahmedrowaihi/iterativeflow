@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { RunRow, RunSnapshot, StepOutcome } from "#types";
@@ -132,6 +133,13 @@ const FAN_OUT_CHUNK = 40;
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Deterministic hex id of `bytes` bytes from `seed` — a stable trace/span id (no per-run storage). */
+const hashHex = (seed: string, bytes: number): string =>
+  createHash("sha256")
+    .update(seed)
+    .digest("hex")
+    .slice(0, bytes * 2);
+
 const errCode = (e: unknown): string =>
   e instanceof Error ? e.name || "STEP_FAILED" : "STEP_FAILED";
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -209,6 +217,7 @@ export const makeCtx = ({
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   const depth = snap.run.depth ?? 0;
+  const traceId = obs.tracer ? hashHex(runId, 16) : "";
   let cursor = 0;
 
   // Advance the cursor and fetch the memo at it. `shape` is the `kind:label` of the call being made
@@ -231,7 +240,22 @@ export const makeCtx = ({
     const shape = `step:${name}`;
     const { key, memo } = memoAt(shape);
     if (memo) return memo.result as T;
-    const result = await runWithPolicy(fn, policy);
+    const startedAt = now();
+    let result: T;
+    try {
+      result = await runWithPolicy(fn, policy);
+    } catch (e) {
+      obs.tracer?.span({
+        runId,
+        traceId,
+        spanId: hashHex(`${runId}:${key}`, 8),
+        name,
+        startedAt,
+        endedAt: now(),
+        error: { code: errCode(e), message: errMsg(e) },
+      });
+      throw e;
+    }
     const stored = await backend.store.checkpointStep({
       runId,
       cursorKey: key,
@@ -239,6 +263,14 @@ export const makeCtx = ({
       result,
       attempts: attempt,
       shape,
+    });
+    obs.tracer?.span({
+      runId,
+      traceId,
+      spanId: hashHex(`${runId}:${key}`, 8),
+      name,
+      startedAt,
+      endedAt: now(),
     });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
     obs.metrics.stepFinished?.(runId, key);

@@ -99,6 +99,8 @@ export type {
   FlowEvent,
   Metrics,
   ObserveOpts,
+  Span,
+  Tracer,
 } from "#engine/observe";
 
 export { newId } from "#id";
