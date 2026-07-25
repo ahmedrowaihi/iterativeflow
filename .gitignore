@@ -13,3 +13,6 @@ tests/docs-examples/*.ts
 # dashboard local dev server (mock API + HMR)
 src/dashboard/app/dev-mock.ts
 src/dashboard/app/vite.dev.config.ts
+
+# v2 local-only working docs (design notes, ADR drafts, review log, case studies)
+docs/v2/notes/

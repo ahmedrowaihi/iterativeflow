@@ -28,4 +28,4 @@ const engine = createEngine(backend, [
 - **Retention**: runs are pruned via `engine.prune`; you can also set an `AOF`/eviction policy to age
   out terminal runs. Configure AOF (`appendfsync everysec` or `always`) to set your durability window.
 - **Cluster**: the per-run keys are hash-tagged, but the outbox Lua also touches the shared dispatch
-  keys, so this targets a single node for now. See `docs/v2/redis-backend-study.md`.
+  keys, so this targets a single node for now.
