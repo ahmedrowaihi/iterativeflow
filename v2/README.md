@@ -126,6 +126,24 @@ Replay assumes the body is stable: each step memo records a shape fingerprint, a
 reorders the body triggers the flow's `driftPolicy` (park or fail) instead of running the wrong step.
 Keep step order and labels stable across deploys; bump `version` when the body changes meaningfully.
 
+### Builder (fluent, typed)
+
+Prefer a chain? `builder` compiles to the same `ctx.step` — each `.step` result is added to a typed
+accumulator (`acc.account`, `acc.survey`) that later steps and the output projection can read. Sleeps,
+signals, and invokes happen through `ctx` inside a step (there are no separate chain nodes for them):
+
+```ts
+import { builder } from "@iterativeflow/core";
+
+const onboard = builder<{ userId: string }>("onboard", 1)
+  .step("account", (acc) => createAccount(acc.input.userId))
+  .step("survey", async (_acc, ctx) => {
+    await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days
+    return ctx.signal<{ score: number }>("survey");
+  })
+  .output((acc) => ({ score: acc.survey.score }));
+```
+
 ## Docs
 
 - [ARCHITECTURE](../docs/v2/ARCHITECTURE.md) — the four ports + transactional outbox
