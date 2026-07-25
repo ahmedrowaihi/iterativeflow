@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
+import type { QueueDepth } from "#ports/queue";
 import type { Page, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
@@ -33,6 +34,12 @@ import {
   submitMany,
   tickOnce,
 } from "#engine/worker";
+
+/** A liveness snapshot: dispatch-queue health plus per-status run counts. */
+export interface Liveness {
+  queue: QueueDepth;
+  runs: Record<RunStatus, number>;
+}
 
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 export interface EngineOpts {
@@ -115,6 +122,11 @@ export interface Engine {
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
+  /**
+   * Liveness probe for a k8s/readiness check: the dispatch backlog + oldest-claimable age (rising ⇒
+   * workers can't keep up or are down) alongside the per-status run counts. Read-only.
+   */
+  liveness(): Promise<Liveness>;
 
   registerCron<I>(def: CronDef<I>): Promise<void>;
 
@@ -185,6 +197,10 @@ export const createEngine = (
     status: (runId) => backend.store.loadRun(runId),
     listRuns: (filter, page) => backend.store.listRuns(filter, page),
     health: () => backend.store.runStats(),
+    liveness: async () => ({
+      queue: await backend.queue.depth(clock()),
+      runs: await backend.store.runStats(),
+    }),
 
     registerCron: (def) => registerCron(backend, def, clock),
 

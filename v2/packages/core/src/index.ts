@@ -49,7 +49,8 @@ export { systemClock } from "#engine/context";
 export type { Clock, Ctx, StepArg, StepPolicy } from "#engine/context";
 
 export { createEngine } from "#engine/engine";
-export type { Engine, EngineOpts, RunLoopOpts } from "#engine/engine";
+export type { Engine, EngineOpts, Liveness, RunLoopOpts } from "#engine/engine";
+export type { QueueDepth } from "#ports/queue";
 export {
   submit,
   submitMany,

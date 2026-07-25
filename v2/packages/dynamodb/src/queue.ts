@@ -1,6 +1,6 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
+import type { ClaimOpts, IdGen, Lease, Queue, QueueDepth } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { JOB_GSI_PK, key } from "#schema";
 import { enqueueParams } from "#statements";
@@ -133,6 +133,37 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
           if (!(e2 instanceof ConditionalCheckFailedException)) throw e2; // stale/expired — no-op
         }
       }
+    },
+
+    async depth(now): Promise<QueueDepth> {
+      const t = at(now);
+      const jobs: JobItem[] = [];
+      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      do {
+        const res = await send<{ Items?: JobItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+          new QueryCommand({
+            TableName: table,
+            IndexName: "gsi1",
+            KeyConditionExpression: "gsi1pk = :job",
+            ExpressionAttributeValues: { ":job": JOB_GSI_PK },
+            ExclusiveStartKey,
+          }),
+        );
+        jobs.push(...(res.Items ?? []));
+        ExclusiveStartKey = res.LastEvaluatedKey;
+      } while (ExclusiveStartKey);
+      const claimable = jobs.filter(
+        (j) => j.runAt <= t && (j.leaseExpires === undefined || j.leaseExpires <= t),
+      );
+      const oldest = claimable.reduce<number | null>(
+        (m, j) => (m === null ? j.runAt : Math.min(m, j.runAt)),
+        null,
+      );
+      return {
+        claimable: claimable.length,
+        leased: jobs.filter((j) => j.leaseExpires !== undefined && j.leaseExpires > t).length,
+        oldestClaimableAgeMs: oldest === null ? null : t - oldest,
+      };
     },
   };
 };
