@@ -10,8 +10,9 @@ Consumer migration, schema-ownership, type-safety, replay-safety, and correctnes
   on every claim, and each durable resume (a `ctx.sleep` wake, a signal, a sequential `ctx.invoke`)
   is a fresh claim — so any run dispatched more than `maxAttempts` (default 10) times was failed with
   `RUN_ATTEMPTS_EXHAUSTED` despite zero failures, contradicting the durable-sleep guarantee. Attempts
-  now reset on forward-progress suspends (`sleeping`/`awaiting_signal`/`awaiting_child`); the
-  poison-pill cap still fires on no-progress re-claims. New `store.resetAttempts`.
+  now reset on forward-progress suspends (`sleeping`/`awaiting_signal`/`awaiting_child`) — the
+  `suspendRun` write zeroes the dispatch counter in the same write for those statuses; the
+  poison-pill cap still fires on no-progress re-claims.
 - **Robustness/perf**: the resident `engine.run()` loop routes background-tick rejections to a
   `metrics.tickError` hook instead of letting an unhandled rejection crash the process; `loadRun`
   (Postgres) and the `drainTimers`/`reconcile` re-enqueue loops now run their independent I/O in
@@ -35,8 +36,8 @@ Consumer migration, schema-ownership, type-safety, replay-safety, and correctnes
   `signals` map types both `ctx.signal(name)` on the await side and `signal(handle, name, payload)` on
   the send side — a wrong signal name or payload is a compile error on both ends. A `signals` entry is
   any **Standard-Schema** validator (zod/valibot/arktype), just like `input`: the payload is validated
-  (and parsed) as the flow consumes it, and a bad one fails the run. `type<T>()` is the type-only
-  escape hatch. `RunHandle` is a `string`, so plain-string `result`/`signal` and stored run ids keep
+  (and parsed) as the flow consumes it, and a bad one fails the run. `signalType<T>()` is the
+  type-only escape hatch. `RunHandle` is a `string`, so plain-string `result`/`signal` and stored run ids keep
   working. See `docs/v2/CONTRACTS.md`.
 - **DynamoDB consistency**: strongly-consistent reads on the durable decision path — the `loadRun`
   replay Query, the base-table point reads, and `childrenOf` (which drives the cancel cascade — a
