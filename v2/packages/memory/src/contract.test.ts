@@ -1,5 +1,6 @@
 import {
   type SignalSchema,
+  defineContract,
   defineFlow,
   registry,
   result,
@@ -118,6 +119,34 @@ describe("typed contract", () => {
     const run = (await backend.store.loadRun(handle))?.run;
     expect(run?.status).toBe("failed");
     expect(run?.error?.message).toContain("by must be a string");
+  });
+
+  it("submits by contract — output + signal types thread through without the flow body", async () => {
+    // The caller holds only the contract (name/version + I/O/signal types); the worker owns `approval`.
+    const approvalContract = defineContract<
+      { orderId: string },
+      { orderId: string; approvedBy: string; total: number },
+      { approve: { by: string } }
+    >({ name: "approval", version: 1, signals: { approve: signalType<{ by: string }>() } });
+
+    const backend = createMemoryBackend();
+    const flows = registry([approval]); // the real flow (same name@version) executes
+    const opts = { batchMax: 8, leaseMs: 60_000 };
+
+    const handle = await submit(backend, approvalContract, { orderId: "o9" });
+    await tickOnce(backend, flows, opts);
+    await signalRun(backend, handle, "approve", { by: "boss" }); // typed via the contract's signals
+    await tickOnce(backend, flows, opts);
+
+    const r = await result(backend, handle, { timeoutMs: 1000, now: () => new Date() });
+    expect(r.status).toBe("done");
+    expect(r.output?.total).toBe(42); // r.output typed from the contract's output param
+    expect(r.output?.approvedBy).toBe("boss");
+
+    // @ts-expect-error the contract's input is { orderId: string }, not a number
+    await submit(backend, approvalContract, { orderId: 123 });
+    // @ts-expect-error the contract declares only the "approve" signal
+    await signalRun(backend, handle, "reject", { by: "x" });
   });
 
   it("rejects a wrong signal name or payload at compile time", async () => {
