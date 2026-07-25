@@ -19,6 +19,7 @@ export interface RunRecord {
   tags: string[] | null;
   parent_run_id: string | null;
   parent_cursor_key: string | null;
+  depth: number;
 }
 
 export const mapRun = (r: RunRecord): RunRow => ({
@@ -34,6 +35,7 @@ export const mapRun = (r: RunRecord): RunRow => ({
   tags: orUndef(r.tags),
   parentRunId: orUndef(r.parent_run_id),
   parentCursorKey: orUndef(r.parent_cursor_key),
+  depth: r.depth,
 });
 
 export interface StepRecord {

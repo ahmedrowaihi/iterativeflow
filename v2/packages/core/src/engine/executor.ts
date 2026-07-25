@@ -189,6 +189,7 @@ export const runTick = async (
     obs,
     signals: flow.signals,
     maxFanOut: flow.policy?.maxFanOut,
+    maxDepth: flow.policy?.maxDepth,
   });
 
   try {

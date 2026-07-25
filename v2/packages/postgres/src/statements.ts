@@ -32,8 +32,8 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
     // Insert-by-id is first-writer-wins: a replayed spawn is a no-op, so the child is created once.
     await sql.query(
       `INSERT INTO ${t.run}
-         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key)
-       VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8)
+         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth)
+       VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO NOTHING`,
       [
         s.runId,
@@ -44,6 +44,7 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
         s.spec.tags ?? null,
         s.spec.parentRunId ?? null,
         s.spec.parentCursorKey ?? null,
+        s.spec.depth ?? 0,
       ],
     );
     await enqueueStmt(sql, t, s.runId, s.enqueue);

@@ -41,8 +41,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     if (spec.idempotencyKey) {
       const ins = await exec.query<{ id: string }>(
         `INSERT INTO ${t.run}
-           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key)
-         VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8)
+           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth)
+         VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9)
          ON CONFLICT (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL
          DO NOTHING
          RETURNING id`,
@@ -55,6 +55,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           spec.tags ?? null,
           spec.parentRunId ?? null,
           spec.parentCursorKey ?? null,
+          spec.depth ?? 0,
         ],
       );
       if (ins[0]) return { runId: ins[0].id, created: true, status: "pending" };
@@ -66,8 +67,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     }
     await exec.query(
       `INSERT INTO ${t.run}
-         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key)
-       VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7)`,
+         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key, depth)
+       VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8)`,
       [
         runId,
         spec.name,
@@ -76,6 +77,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         spec.tags ?? null,
         spec.parentRunId ?? null,
         spec.parentCursorKey ?? null,
+        spec.depth ?? 0,
       ],
     );
     return { runId, created: true, status: "pending" };

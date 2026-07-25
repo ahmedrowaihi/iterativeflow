@@ -74,6 +74,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       tags: spec.tags ? [...spec.tags] : undefined,
       parentRunId: spec.parentRunId,
       parentCursorKey: spec.parentCursorKey,
+      depth: spec.depth ?? 0,
     });
     steps.set(runId, new Map());
     if (spec.idempotencyKey) {

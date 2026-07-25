@@ -57,6 +57,7 @@ const MODEL: TableModel[] = [
       t("tags", `text("tags").array()`),
       t("parentRunId", `text("parent_run_id")`),
       t("parentCursorKey", `text("parent_cursor_key")`),
+      t("depth", `integer("depth").notNull().default(0)`),
       t("joinRemaining", `integer("join_remaining").notNull().default(0)`),
     ],
     extras: [
