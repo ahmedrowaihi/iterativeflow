@@ -72,6 +72,8 @@ interface RunSpec {
   tags?: readonly string[];
   parentRunId?: string;
   parentCursorKey?: string;
+  /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
+  depth?: number;
 }
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
  *  successful steps are ever written (their existence IS the success marker). */
@@ -110,6 +112,8 @@ interface RunRow {
   tags?: readonly string[];
   parentRunId?: string;
   parentCursorKey?: string;
+  /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
+  depth?: number;
 }
 /** A durable signal delivered to a run's inbox, awaiting consumption by a `ctx.signal` wait. */
 interface DeliveredSignal {
@@ -720,6 +724,7 @@ interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
 interface FlowPolicy {
   drift?: DriftPolicy;
   maxFanOut?: number;
+  maxDepth?: number;
 }
 /** Validate `input` against a flow's schema (if any). Throws with the collected issues. */
 declare const validateInput: <I>(flow: Flow<I, any, any>, input: I) => Promise<I>;

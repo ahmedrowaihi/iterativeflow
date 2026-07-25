@@ -1,5 +1,6 @@
 import {
   type Backend,
+  type Flow,
   type RetryPolicy,
   cancelRun,
   defineFlow,
@@ -262,6 +263,35 @@ export const engineConformance = (
         retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
       });
       expect((await backend.store.loadRunRow(runId))?.status).toBe("failed");
+    });
+
+    it("caps invoke recursion at the depth limit and persists each run's depth", async () => {
+      const backend = await makeBackend();
+      // Always invokes itself — unbounded recursion without the cap.
+      const recurse: Flow<number, number> = defineFlow({
+        name: "recurse",
+        version: 1,
+        policy: { maxDepth: 3 },
+        run: async (ctx, n: number): Promise<number> => ctx.invoke(recurse, n + 1),
+      });
+      const runId = await submit(backend, recurse, 0);
+      const top = await drive(backend, registry([recurse]), runId, {
+        maxAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+      });
+      expect(top.status).toBe("failed");
+      // The tree stops growing at the cap: the deepest descendant is the one that hit it.
+      let cur = runId;
+      let deepest = await backend.store.loadRunRow(cur);
+      for (;;) {
+        const kids = await backend.store.childrenOf(cur);
+        if (kids.length === 0) break;
+        deepest = kids[0];
+        cur = kids[0].id;
+      }
+      expect(deepest?.depth).toBe(3);
+      expect(deepest?.error?.message).toContain("depth");
     });
 
     it("fans out a batch larger than one spawn chunk (crosses chunk boundaries)", async () => {

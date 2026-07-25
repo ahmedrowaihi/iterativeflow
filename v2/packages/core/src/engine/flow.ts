@@ -92,6 +92,7 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
 export interface FlowPolicy {
   drift?: DriftPolicy;
   maxFanOut?: number;
+  maxDepth?: number;
 }
 
 /** Validate `input` against a flow's schema (if any). Throws with the collected issues. */

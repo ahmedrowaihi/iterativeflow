@@ -113,6 +113,9 @@ export const systemClock: Clock = () => new Date();
 /** Upper bound on children per `ctx.invoke([...])` — a guard against an unbounded runaway fan-out. */
 const MAX_FAN_OUT = 10_000;
 
+/** Upper bound on `ctx.invoke` nesting depth — a guard against unbounded runaway recursion (self-invoke). */
+const MAX_DEPTH = 32;
+
 // Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
 // chunk count and memo shapes are identical on every backend — a backend's transaction budget must
 // not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
@@ -181,6 +184,7 @@ export interface CtxDeps {
   obs: Observer;
   signals?: SignalSchemas<SignalMap>;
   maxFanOut?: number;
+  maxDepth?: number;
 }
 
 /** @internal */
@@ -193,8 +197,10 @@ export const makeCtx = ({
   obs,
   signals,
   maxFanOut,
+  maxDepth,
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
+  const depth = snap.run.depth ?? 0;
   let cursor = 0;
 
   // Advance the cursor and fetch the memo at it. `shape` is the `kind:label` of the call being made
@@ -254,7 +260,15 @@ export const makeCtx = ({
     input,
     parentRunId: runId,
     parentCursorKey: key,
+    depth: depth + 1,
   });
+
+  const guardDepth = (): void => {
+    const cap = maxDepth ?? MAX_DEPTH;
+    if (depth + 1 > cap) {
+      throw new Error(`ctx.invoke: child depth ${depth + 1} exceeds the ${cap} nesting cap`);
+    }
+  };
 
   // A child's join outcome. Throws StepFailedError on a failed/canceled child (fast-fail); `done`
   // false means the child is still running (or not yet visible), so the caller parks.
@@ -270,6 +284,7 @@ export const makeCtx = ({
   };
 
   const invokeOne = async (flow: Flow<unknown, unknown, any>, input: unknown): Promise<unknown> => {
+    guardDepth();
     const shape = `invoke:${flowKey(flow.name, flow.version)}`;
     const { key, memo } = memoAt(shape);
     let childId: string;
@@ -294,6 +309,7 @@ export const makeCtx = ({
   };
 
   const invokeMany = async (specs: readonly InvokeSpec[]): Promise<unknown[]> => {
+    guardDepth();
     const cap = maxFanOut ?? MAX_FAN_OUT;
     if (specs.length > cap) {
       throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${cap} cap`);

@@ -32,6 +32,7 @@ export interface RunItem {
   tags?: string[];
   parentRunId?: string;
   parentCursorKey?: string;
+  depth?: number;
   seq: number;
 }
 
@@ -48,6 +49,7 @@ export const mapRun = (r: RunItem): RunRow => ({
   tags: r.tags,
   parentRunId: r.parentRunId,
   parentCursorKey: r.parentCursorKey,
+  depth: r.depth ?? 0,
 });
 
 export interface CronItem {
