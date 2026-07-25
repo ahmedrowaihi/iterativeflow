@@ -2,8 +2,7 @@ import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend
 import { queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys } from "#keys";
-
-const ms = (now?: Date): number => (now ?? new Date()).getTime();
+import { ms } from "#time";
 
 const CLAIM = `
 local nowMs = tonumber(ARGV[1])
@@ -73,7 +72,7 @@ return 1
 /** @internal */
 export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Queue => {
   // CLAIM builds each job key inside Lua (it can't call keys.job), so hand it the affixes around runId.
-  const [jobPrefix, jobSuffix] = keys.job("\u0000").split("\u0000");
+  const [jobPrefix, jobSuffix] = keys.jobAffix;
 
   return {
     async enqueue(runId, opts) {

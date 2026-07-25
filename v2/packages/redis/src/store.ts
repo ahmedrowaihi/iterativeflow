@@ -203,14 +203,11 @@ return 1`;
 
 /** The Redis {@link Store}: durable run state + the transactional outbox over one ioredis client. */
 export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): Store => {
-  const sigIdemKey = (runId: string): string => `${keys.inbox(runId)}:idem`;
-
   const evalLua = <T>(script: string, k: string[], args: (string | number)[]): Promise<T> =>
     client.eval(script, k.length, ...k, ...args) as Promise<T>;
 
   const flatFields = (spec: RunSpec, runId: string): string[] => {
-    const f = runFields(spec, runId, 0);
-    delete f[RUN.seq];
+    const f = runFields(spec, runId);
     const out: string[] = [];
     for (const [k, v] of Object.entries(f)) out.push(k, v);
     return out;
@@ -297,14 +294,16 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     },
 
     async loadRun(runId) {
-      const run = await loadRunRow(runId);
+      const [[, rawRun], [, rawSteps], [, rawSignals]] = (await client
+        .pipeline()
+        .hgetall(keys.run(runId))
+        .hgetall(keys.steps(runId))
+        .lrange(keys.inbox(runId), 0, -1)
+        .exec()) as [[Error | null, Hash], [Error | null, Hash], [Error | null, string[]]];
+      const run = toRunRow(rawRun);
       if (!run) return undefined;
-      const [rawSteps, rawSignals] = await Promise.all([
-        client.hgetall(keys.steps(runId)),
-        client.lrange(keys.inbox(runId), 0, -1),
-      ]);
       const steps = new Map<string, StepOutcome>();
-      for (const [cursor, v] of Object.entries(rawSteps as Hash)) steps.set(cursor, decodeStep(v));
+      for (const [cursor, v] of Object.entries(rawSteps)) steps.set(cursor, decodeStep(v));
       return { run, steps, signals: rawSignals.map(decodeSignal) };
     },
 
@@ -320,7 +319,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     async postSignal(runId, name, payload, opts) {
       const delivered = await evalLua<number>(
         POST_SIGNAL_LUA,
-        [sigIdemKey(runId), keys.inbox(runId), keys.job(runId), keys.queue],
+        [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue],
         [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, 0],
       );
       return { delivered: delivered === 1 };
@@ -506,7 +505,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           keys.inbox(r.id),
           keys.job(r.id),
           keys.children(r.id),
-          sigIdemKey(r.id),
+          keys.sigIdem(r.id),
         );
         del.zrem(keys.runIndex, r.id);
         del.zrem(keys.timers, r.id);
