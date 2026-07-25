@@ -1,0 +1,36 @@
+{
+  "name": "@iterativeflow/sqlite",
+  "version": "2.0.0-alpha.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git",
+    "directory": "v2/packages/sqlite"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "@iterativeflow/core": "2.0.0-alpha.1"
+  },
+  "peerDependencies": {
+    "@libsql/client": ">=0.14.0"
+  }
+}
