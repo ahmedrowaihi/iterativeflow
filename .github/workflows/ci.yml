@@ -207,17 +207,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # hasChangesets=='false' stays true after a release too (all changesets recorded in pre.json),
-      # so skip when this fixed-group version is already on npm — else it re-publishes and 403s.
+      # `changeset publish` is per-package idempotent — it skips versions already on npm and
+      # publishes only the missing ones (so it also recovers a partial publish), and no-ops once
+      # everything is published. No coarse version gate, which would wrongly skip missing packages
+      # after a partial publish.
       - name: publish v2 via oidc
         if: steps.v2changesets.outputs.hasChangesets == 'false'
-        run: |
-          VERSION=$(node -p "require('./packages/core/package.json').version")
-          if npm view "@iterativeflow/core@${VERSION}" version >/dev/null 2>&1; then
-            echo "@iterativeflow/* @${VERSION} already published — skipping."
-          else
-            npx changeset publish
-          fi
+        run: npx changeset publish
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
