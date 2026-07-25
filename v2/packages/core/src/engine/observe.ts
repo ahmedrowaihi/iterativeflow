@@ -1,4 +1,18 @@
+import { createHash } from "node:crypto";
 import type { SuspendStatus } from "#types";
+
+const hashHex = (seed: string, bytes: number): string =>
+  createHash("sha256")
+    .update(seed)
+    .digest("hex")
+    .slice(0, bytes * 2);
+
+/** The W3C-width (32 hex) trace id for a run — stable for the run's whole life. */
+export const traceIdOf = (runId: string): string => hashHex(runId, 16);
+
+/** The W3C-width (16 hex) span id for a step, derived from its replay-stable cursor. */
+export const spanIdOf = (runId: string, cursorKey: string): string =>
+  hashHex(`${runId}:${cursorKey}`, 8);
 
 /** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
 export type EventLevel = "all" | "lifecycle" | "off";

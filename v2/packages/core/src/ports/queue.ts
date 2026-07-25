@@ -26,6 +26,26 @@ export interface QueueDepth {
   oldestClaimableAgeMs: number | null;
 }
 
+/**
+ * Compute a {@link QueueDepth} from an in-memory job set — the shared body of the memory + DynamoDB
+ * `Queue.depth`, so the claimable/leased/oldest-age definition lives once. Postgres derives the same
+ * numbers in SQL and doesn't use this.
+ */
+export const queueDepthOf = (
+  jobs: readonly { runAt: number; leaseExpires?: number }[],
+  nowMs: number,
+): QueueDepth => {
+  const claimable = jobs.filter(
+    (j) => j.runAt <= nowMs && (j.leaseExpires === undefined || j.leaseExpires <= nowMs),
+  );
+  const oldest = claimable.length ? Math.min(...claimable.map((j) => j.runAt)) : null;
+  return {
+    claimable: claimable.length,
+    leased: jobs.filter((j) => j.leaseExpires !== undefined && j.leaseExpires > nowMs).length,
+    oldestClaimableAgeMs: oldest === null ? null : nowMs - oldest,
+  };
+};
+
 /** A held claim on a run. `token` proves ownership for heartbeat/ack. */
 export interface Lease {
   runId: string;
