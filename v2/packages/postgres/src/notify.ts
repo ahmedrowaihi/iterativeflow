@@ -18,6 +18,7 @@ import type { Sql } from "#sql";
 
 const wakeChannel = (schema: string): string => `${schema}_wake`;
 const doneChannel = (schema: string): string => `${schema}_done`;
+const progressChannel = (schema: string): string => `${schema}_progress`;
 
 /**
  * DDL for the NOTIFY triggers. `wake` is a per-STATEMENT trigger on the `job` insert (an enqueue is
@@ -56,6 +57,38 @@ export const applyNotifyTriggers = async (sql: Sql, schema = "workflow"): Promis
   await sql.query(notifyDdl(schema));
 };
 
+/**
+ * DDL for the OPT-IN live-progress trigger — a per-row NOTIFY on the `event` table carrying
+ * `{ runId, type }`. It rides the already-opt-in event log: a deployment with events off has no rows
+ * to fire on, so it pays nothing. Install it ONLY on a dashboard host (never a worker pod) — see the
+ * progress-push spec. The payload is tiny (id + type); an observer reads the full row by id.
+ */
+export const progressDdl = (schema = "workflow"): string => {
+  const t = tables(schema);
+  const q = `"${schema}"`;
+  return `
+CREATE OR REPLACE FUNCTION ${q}.if_notify_progress() RETURNS trigger AS $$
+BEGIN PERFORM pg_notify('${progressChannel(schema)}',
+  json_build_object('runId', NEW.run_id, 'type', NEW.type)::text); RETURN NULL; END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS if_progress ON ${t.event};
+CREATE TRIGGER if_progress AFTER INSERT ON ${t.event}
+  FOR EACH ROW EXECUTE FUNCTION ${q}.if_notify_progress();
+`;
+};
+
+/** Install the opt-in progress trigger. Run once (idempotent) on a dashboard host, after {@link applySchema}. */
+export const applyProgressTrigger = async (sql: Sql, schema = "workflow"): Promise<void> => {
+  await sql.query(progressDdl(schema));
+};
+
+/** One live-progress event pushed by the `progress` channel — the observer reads the full row by id. */
+export interface ProgressEvent {
+  runId: string;
+  type: string;
+}
+
 /** @internal */
 export type ListenerState = "idle" | "listening" | "reconnecting" | "stopped";
 
@@ -66,6 +99,14 @@ export interface PgListener {
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
    *  enqueue notify or after `timeoutMs`. */
   waitForWork(timeoutMs: number): Promise<void>;
+  /**
+   * Live progress for one run as an async iterator — yields `{ runId, type }` per event as it lands,
+   * across processes. Requires {@link applyProgressTrigger} installed. Break the loop (or call
+   * `.return()`) to unsubscribe. Opt-in: costs nothing unless something is watching.
+   */
+  watch(runId: string): AsyncIterableIterator<ProgressEvent>;
+  /** Progress for ALL runs (fleet view) — filter client-side. Returns an unsubscribe function. */
+  onProgress(cb: (ev: ProgressEvent) => void): () => void;
   /** Open the LISTEN connection and start dispatching notifications. */
   start(): void;
   /** Stop listening and release the connection. */
@@ -91,10 +132,18 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
   const schema = opts.schema ?? "workflow";
   const wake = wakeChannel(schema);
   const done = doneChannel(schema);
+  const progress = progressChannel(schema);
 
   // Completion side is exactly a local wakeup keyed by runId; the `done` notify feeds its `signal`.
   const completion = createLocalWakeup();
   const workWaiters = new Set<() => void>();
+  const progressByRun = new Map<string, Set<(ev: ProgressEvent) => void>>();
+  const progressAll = new Set<(ev: ProgressEvent) => void>();
+  const emitProgress = (ev: ProgressEvent): void => {
+    const subs = progressByRun.get(ev.runId);
+    if (subs) for (const s of [...subs]) s(ev);
+    for (const s of [...progressAll]) s(ev);
+  };
   // Latch (graphile's `nudge`): a wake that arrives while the loop is mid-tick — with no waiter
   // registered — is remembered, so the next `waitForWork` returns immediately instead of stalling a
   // full tick. Closes the edge-trigger gap without a thundering herd (SKIP LOCKED does the rest).
@@ -136,12 +185,20 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
             conn.on("notification", (msg) => {
               if (msg.channel === wake) fireWork();
               else if (msg.channel === done && msg.payload) void completion.signal(msg.payload);
+              else if (msg.channel === progress && msg.payload) {
+                try {
+                  emitProgress(JSON.parse(msg.payload) as ProgressEvent);
+                } catch {
+                  // a malformed payload is a dropped progress event, never a correctness issue
+                }
+              }
             });
             conn.on("error", () => resolve());
             conn.once("end", () => resolve());
           });
           await conn.query(`LISTEN "${wake}"`);
           await conn.query(`LISTEN "${done}"`);
+          await conn.query(`LISTEN "${progress}"`);
           state = "listening";
           attempt = 0;
           fireWork(); // a wake may have arrived while we were disconnected — poll once now
@@ -190,6 +247,51 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
         workWaiters.add(settle);
         t = setTimeout(settle, timeoutMs);
       });
+    },
+    onProgress(cb) {
+      progressAll.add(cb);
+      return () => progressAll.delete(cb);
+    },
+    watch(runId) {
+      const buffer: ProgressEvent[] = [];
+      let waiting: ((r: IteratorResult<ProgressEvent>) => void) | null = null;
+      let closed = false;
+      const subs = progressByRun.get(runId) ?? new Set<(ev: ProgressEvent) => void>();
+      progressByRun.set(runId, subs);
+      const push = (ev: ProgressEvent): void => {
+        if (waiting) {
+          const w = waiting;
+          waiting = null;
+          w({ value: ev, done: false });
+        } else buffer.push(ev);
+      };
+      subs.add(push);
+      const stop = (): void => {
+        closed = true;
+        subs.delete(push);
+        if (subs.size === 0) progressByRun.delete(runId);
+      };
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next() {
+          if (buffer.length > 0) return Promise.resolve({ value: buffer.shift()!, done: false });
+          if (closed) return Promise.resolve({ value: undefined, done: true });
+          return new Promise<IteratorResult<ProgressEvent>>((resolve) => {
+            waiting = resolve;
+          });
+        },
+        return() {
+          stop();
+          if (waiting) {
+            const w = waiting;
+            waiting = null;
+            w({ value: undefined, done: true });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      };
     },
     start,
     async close() {

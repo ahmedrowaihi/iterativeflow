@@ -71,6 +71,20 @@ declare const drizzleSchema: (schema?: string) => string;
 declare const notifyDdl: (schema?: string) => string;
 /** Install the NOTIFY triggers. Run once (idempotent), after {@link applySchema}. */
 declare const applyNotifyTriggers: (sql: Sql, schema?: string) => Promise<void>;
+/**
+ * DDL for the OPT-IN live-progress trigger — a per-row NOTIFY on the `event` table carrying
+ * `{ runId, type }`. It rides the already-opt-in event log: a deployment with events off has no rows
+ * to fire on, so it pays nothing. Install it ONLY on a dashboard host (never a worker pod) — see the
+ * progress-push spec. The payload is tiny (id + type); an observer reads the full row by id.
+ */
+declare const progressDdl: (schema?: string) => string;
+/** Install the opt-in progress trigger. Run once (idempotent) on a dashboard host, after {@link applySchema}. */
+declare const applyProgressTrigger: (sql: Sql, schema?: string) => Promise<void>;
+/** One live-progress event pushed by the `progress` channel — the observer reads the full row by id. */
+interface ProgressEvent {
+  runId: string;
+  type: string;
+}
 /** @internal */
 type ListenerState = "idle" | "listening" | "reconnecting" | "stopped";
 /** The shared LISTEN connection: a completion {@link Wakeup} plus a dispatch `waitForWork`. */
@@ -80,6 +94,14 @@ interface PgListener {
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
    *  enqueue notify or after `timeoutMs`. */
   waitForWork(timeoutMs: number): Promise<void>;
+  /**
+   * Live progress for one run as an async iterator — yields `{ runId, type }` per event as it lands,
+   * across processes. Requires {@link applyProgressTrigger} installed. Break the loop (or call
+   * `.return()`) to unsubscribe. Opt-in: costs nothing unless something is watching.
+   */
+  watch(runId: string): AsyncIterableIterator<ProgressEvent>;
+  /** Progress for ALL runs (fleet view) — filter client-side. Returns an unsubscribe function. */
+  onProgress(cb: (ev: ProgressEvent) => void): () => void;
   /** Open the LISTEN connection and start dispatching notifications. */
   start(): void;
   /** Stop listening and release the connection. */
@@ -145,5 +167,5 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type Sql, applyNotifyTriggers, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgPool };
+export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgPool, progressDdl };
 ```
