@@ -83,19 +83,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # hasChangesets=='false' is true on every changeset-free push, not just after a version
+      # bump — so skip when this version is already on npm, or the frozen v1 root re-publishes
+      # itself and npm 403s on the duplicate.
       - name: publish via oidc
         if: steps.changesets.outputs.hasChangesets == 'false'
-        run: npx changeset publish
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "iterativeflow@${VERSION}" version >/dev/null 2>&1; then
+            echo "iterativeflow@${VERSION} already published — nothing to publish."
+          else
+            npx changeset publish
+          fi
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
       - name: push tags + github release
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
-          git push --tags
           VERSION=$(node -p "require('./package.json').version")
-          awk "/^## ${VERSION}/{flag=1; next} /^## [0-9]/{flag=0} flag" CHANGELOG.md > /tmp/notes.md
-          gh release create "v${VERSION}" --title "v${VERSION}" --notes-file /tmp/notes.md
+          if git ls-remote --exit-code --tags origin "v${VERSION}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists — skipping release."
+          else
+            git push origin "refs/tags/v${VERSION}"
+            awk "/^## ${VERSION}/{flag=1; next} /^## [0-9]/{flag=0} flag" CHANGELOG.md > /tmp/notes.md
+            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file /tmp/notes.md
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
