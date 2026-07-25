@@ -3,13 +3,14 @@ import type { SuspendStatus } from "#types";
 /** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
 export type EventLevel = "all" | "lifecycle" | "off";
 
-/** The durable event kinds the sink records — run lifecycle transitions plus per-step completion. */
+/** The durable event kinds the sink records — run lifecycle transitions, per-step completion, and `ctx.log`. */
 export type EventType =
   | "run.started"
   | "run.completed"
   | "run.failed"
   | "run.suspended"
-  | "step.finished";
+  | "step.finished"
+  | "run.log";
 
 /** One durable audit-log entry — the dashboard timeline reads these. */
 export interface FlowEvent {

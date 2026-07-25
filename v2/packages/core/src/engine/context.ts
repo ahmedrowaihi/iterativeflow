@@ -102,6 +102,14 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
+
+  /**
+   * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
+   * run. Fire-and-forget and NOT memoized: it is suppressed while the flow replays its already-durable
+   * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
+   * no sink is wired or the observe `level` is `lifecycle`/`off`.
+   */
+  log(message: string, data?: unknown): void;
 }
 
 /** The clock the executor threads in — injectable for deterministic tests. */
@@ -384,6 +392,11 @@ export const makeCtx = ({
         { consumeSignals: [pending.id] },
       );
       return stored.result as T;
+    },
+
+    log(message, data) {
+      if (cursor < snap.steps.size) return;
+      void Promise.resolve(obs.event("run.log", runId, now(), { message, data })).catch(() => {});
     },
   };
 };

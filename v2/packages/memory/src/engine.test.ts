@@ -412,6 +412,39 @@ describe("engine — end to end on the memory backend", () => {
     expect(runId2).not.toBe(runId);
   });
 
+  it("ctx.log emits a durable line once — suppressed while replaying the durable prefix", async () => {
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "logger",
+      version: 1,
+      run: async (ctx) => {
+        ctx.log("before sleep", { n: 1 });
+        await ctx.sleep(1000);
+        ctx.log("after sleep");
+        return "ok";
+      },
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([flow]);
+    const events: FlowEvent[] = [];
+    const opts = {
+      batchMax: 16,
+      leaseMs: 600_000,
+      observe: { sink: { record: (e: FlowEvent) => void events.push(e) }, level: "all" as const },
+    };
+    const runId = await submit(backend, flow, {});
+    await tickOnce(backend, flows, { ...opts, now: () => new Date("2030-01-01T00:00:00Z") }); // logs "before", parks
+    await tickOnce(backend, flows, { ...opts, now: () => new Date("2030-01-01T00:01:00Z") }); // drains timer, replays (no re-log), logs "after"
+
+    expect((await backend.store.loadRunRow(runId))?.status).toBe("done");
+    const logs = events.filter((e) => e.type === "run.log");
+    // "before sleep" must appear exactly once despite the body re-running on the wake replay.
+    expect(logs.map((l) => (l.data as { message: string }).message)).toEqual([
+      "before sleep",
+      "after sleep",
+    ]);
+    expect((logs[0].data as { data: unknown }).data).toEqual({ n: 1 });
+  });
+
   it("a registered cron fires a run when due, exactly once per occurrence", async () => {
     const flow = defineFlow<{ kind: string }, string>({
       name: "report",
