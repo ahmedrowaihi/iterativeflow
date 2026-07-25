@@ -11,8 +11,8 @@ export const enqueueStmt = (
   opts?: EnqueueOpts,
 ): Promise<unknown> =>
   sql.query(
-    `INSERT INTO ${t.job} AS j (run_id, run_at, priority)
-     VALUES ($1, COALESCE($2::timestamptz, 'epoch'::timestamptz), $3)
+    `INSERT INTO ${t.job} AS j (run_id, run_at, priority, version)
+     VALUES ($1, COALESCE($2::timestamptz, 'epoch'::timestamptz), $3, 1)
      ON CONFLICT (run_id) DO UPDATE
        SET run_at = EXCLUDED.run_at, priority = EXCLUDED.priority, version = j.version + 1`,
     [runId, opts?.runAt ?? null, opts?.priority ?? 0],

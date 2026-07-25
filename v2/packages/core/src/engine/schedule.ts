@@ -38,10 +38,10 @@ export const registerCron = async <I>(
 };
 
 /**
- * Fire every due cron once. Each occurrence is claimed by a single worker via the CAS in
- * `advanceCron`, so a fleet never double-fires; the run is also keyed by an idempotency key
- * (`cron:name:fireTime`) as a second guard. Run this on a slow interval or as an internal cron.
- * Returns how many runs were started.
+ * Fire every due cron once. Each occurrence's run is deduped across a fleet by the occurrence-scoped
+ * idempotency key (`cron:name:fireTime`), and the schedule is advanced by the `advanceCron` CAS so
+ * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
+ * many occurrences this worker advanced.
  */
 export const runDueCrons = async (
   backend: Backend,
@@ -51,15 +51,19 @@ export const runDueCrons = async (
   let fired = 0;
   for (const c of due) {
     const next = nextCronAfter(c.schedule, now());
-    const won = await backend.store.advanceCron(c.name, c.nextRunAt, next, now());
-    if (!won) continue; // another worker fired this occurrence
+
     if (c.overlap === "skip") {
       const active = await backend.store.listRuns(
         { status: ACTIVE_STATUSES, tag: cronTag(c.name) },
         { limit: 1 },
       );
-      if (active.runs.length > 0) continue; // prior run still in flight
+      // Consume the occurrence (advance) without starting, so it doesn't re-fire while a run is live.
+      if (active.runs.length > 0) {
+        await backend.store.advanceCron(c.name, c.nextRunAt, next, now());
+        continue;
+      }
     }
+    // Start (idempotent) BEFORE advancing the CAS: a crash between re-drives the occurrence, never drops it.
     const { runId, created } = await backend.store.startRun({
       name: c.flowName,
       version: c.flowVersion,
@@ -68,7 +72,7 @@ export const runDueCrons = async (
       tags: [cronTag(c.name)],
     });
     if (created) await backend.queue.enqueue(runId);
-    fired += 1;
+    if (await backend.store.advanceCron(c.name, c.nextRunAt, next, now())) fired += 1;
   }
   return fired;
 };

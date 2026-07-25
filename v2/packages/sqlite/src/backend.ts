@@ -1,4 +1,10 @@
-import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
+import {
+  type Backend,
+  type IdGen,
+  assertSqlIdentifier,
+  createLocalWakeup,
+  newId,
+} from "@iterativeflow/core/backend";
 import { createSqliteQueue } from "#queue";
 import { type Tables, tables } from "#schema";
 import type { Sql } from "#sql";
@@ -19,6 +25,7 @@ export interface SqliteBackendOpts {
  * in-process. Run {@link applySchema} once before use.
  */
 export const createSqliteBackend = (sql: Sql, opts: SqliteBackendOpts = {}): Backend => {
+  assertSqlIdentifier(opts.prefix ?? "");
   const t: Tables = tables(opts.prefix ?? "");
   const id = opts.id ?? newId;
   return {

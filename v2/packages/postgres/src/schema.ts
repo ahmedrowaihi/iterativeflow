@@ -1,3 +1,4 @@
+import { assertSqlIdentifier } from "@iterativeflow/core/backend";
 import type { Sql } from "#sql";
 
 /** @internal */
@@ -119,5 +120,6 @@ CREATE INDEX IF NOT EXISTS cron_due ON ${t.cron} (next_run_at);
 
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */
 export const applySchema = async (sql: Sql, schema = "workflow"): Promise<void> => {
+  assertSqlIdentifier(schema);
   await sql.query(ddl(schema));
 };

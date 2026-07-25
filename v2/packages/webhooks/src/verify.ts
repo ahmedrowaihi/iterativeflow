@@ -69,6 +69,9 @@ export interface HmacVerifierOptions {
  * when the body isn't JSON. On any throw the request is untrusted — reject it.
  */
 export function hmacVerifier(opts: HmacVerifierOptions): WebhookVerifier {
+  if (!opts.secret) {
+    throw new Error("hmacVerifier requires a non-empty `secret`");
+  }
   const scheme = opts.scheme ?? "";
   const hash = opts.hash ?? "SHA-256";
   return async ({ body, headers }, cryptoImpl) => {

@@ -51,7 +51,9 @@ export const createMongoQueue = (db: Db, n: Names, id: IdGen): Queue => {
             runId: cand._id,
             token,
             expiresAt: new Date(expires),
-            version: cand.version,
+            // `won` is the doc AS OF the atomic lease write; a wake bumping version between the
+            // candidate `find` and here is captured here, not by the stale `cand`.
+            version: won.version,
           });
         }
       }
@@ -74,7 +76,6 @@ export const createMongoQueue = (db: Db, n: Names, id: IdGen): Queue => {
       const held = { lease_token: lease.token, lease_expires: { $gt: t } };
       const done = await jobs.deleteOne({ _id: lease.runId, ...held, version: lease.version });
       if (done.deletedCount === 0) {
-        // Re-enqueued mid-lease (a wake bumped version) → release for re-claim, never delete.
         await jobs.updateOne(
           { _id: lease.runId, ...held, version: { $ne: lease.version } },
           { $unset: { lease_token: "", lease_expires: "" }, $set: { run_at: 0 } },

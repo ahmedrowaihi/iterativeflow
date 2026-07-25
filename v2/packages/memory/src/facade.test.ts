@@ -28,6 +28,12 @@ describe("createEngine — the cohesive facade", () => {
     expect(health.done).toBe(1);
     const listed = await engine.listRuns({ status: "done" }, { limit: 10 });
     expect(listed.runs.map((r) => r.id)).toEqual([runId]);
+
+    const live = await engine.liveness();
+    expect(live.runs.done).toBe(1);
+    expect(live.queue.claimable).toBe(0); // nothing left to dispatch once the run is done
+    expect(live.queue.leased).toBe(0);
+    expect(live.queue.oldestClaimableAgeMs).toBeNull();
   });
 
   it("rejects a submit whose input fails the flow's Standard-Schema validator", async () => {

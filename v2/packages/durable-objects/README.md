@@ -12,7 +12,6 @@ import { createEngine } from "@iterativeflow/core";
 export class WorkflowDO {
   #engine;
   constructor(ctx: DurableObjectState) {
-    this.#ctx = ctx;
     ctx.blockConcurrencyWhile(() => applySchema(ctx.storage.sql));
     this.#engine = createEngine(createDurableObjectBackend(ctx.storage.sql), [
       /* your flows */

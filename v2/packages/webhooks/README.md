@@ -6,8 +6,8 @@ deploy, a payment, a human approval — and resume crash-safe when it arrives.
 
 Provider-agnostic: a pluggable **verifier** (with a `github` preset) plus a **correlate** callback
 that maps the event to the runs it should wake. Zero runtime dependencies beyond
-`@iterativeflow/core` — Web Crypto HMAC (no `node:crypto`, no `Buffer`) and the global `fetch`, so it
-runs on Node, Workers, and the edge.
+`@iterativeflow/core` — verification is Web Crypto HMAC (no `node:crypto`, no `Buffer`), so it runs
+on Node, Workers, and the edge.
 
 ```ts
 import { webhookSignalBridge, github } from "@iterativeflow/webhooks";

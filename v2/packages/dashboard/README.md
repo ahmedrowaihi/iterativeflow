@@ -22,4 +22,7 @@ omit it if the backend records no events.
 
 > **Unauthenticated by design.** The handler exposes mutations (cancel, retry,
 > signal) with no built-in auth — mount it **behind your host's authentication**.
-> It is an internal operator surface, not a public endpoint.
+> It is an internal operator surface, not a public endpoint. If you protect it
+> with cookie/session auth, also add CSRF protection: the mutating `POST` routes
+> take no custom header, so a logged-in operator's browser could be made to
+> trigger them cross-site.

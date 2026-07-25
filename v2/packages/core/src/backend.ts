@@ -47,5 +47,6 @@ export {
 } from "#status";
 export { newId } from "#id";
 export type { IdGen } from "#id";
-export { isOrphaned } from "#orphan";
-export type { OrphanView, OrphanRun } from "#orphan";
+export { isOrphaned, orphanedRunsSql } from "#orphan";
+export type { OrphanView, OrphanRun, OrphanSqlOpts } from "#orphan";
+export { assertSqlIdentifier } from "#sql-name";
