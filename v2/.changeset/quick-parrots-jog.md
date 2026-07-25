@@ -11,7 +11,8 @@ Close out the deferred parity items:
   (default 32) reject runaway `ctx.invoke` recursion before spawning. Persisted on all three backends.
 - **Retention**: `Store.deleteRunsOlderThan(before, limit)` + `engine.prune(olderThanMs, limit?)`
   delete terminal runs (and their steps/signals/events) past a cutoff; not wired into the loop —
-  schedule it yourself.
+  schedule it yourself. Runs now carry `createdAt` (on `RunRow`), stamped once from the engine clock
+  at submit/spawn so it agrees with the prune cutoff under any injected clock.
 - **`ctx.log(message, data?)`**: a durable, replay-suppressed run log line to the event sink.
 - **`defineContract`**: a type-only I/O + signal contract so a caller that doesn't own a flow's body
   (another service, the Go worker) can `submit`/`result`/`signal` it with full type-safety.
