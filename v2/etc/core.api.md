@@ -398,11 +398,10 @@ interface Store {
   startRun(spec: RunSpec): Promise<StartResult>;
   /**
    * Insert many runs, each created idempotently (per-spec idempotency key), results aligned 1:1
-   * with `specs` — a batch may mix created + already-existing runs. All-or-none atomicity holds
-   * where the backend commits the batch in one transaction (memory, Postgres); on DynamoDB the
-   * batch is created per-run (the `TransactWriteItems` 100-item cap makes whole-batch atomicity
-   * impossible for large batches), so a crash mid-batch can land it partially — the reconciler and
-   * idempotency keys make a re-submit safe.
+   * with `specs` — a batch may mix created + already-existing runs. Memory and Postgres commit the
+   * whole batch in one transaction (all-or-none). DynamoDB commits in atomic chunks bounded by the
+   * `TransactWriteItems` 100-item cap, so a batch larger than the cap spans chunks and a crash
+   * between them can land it partially — the reconciler and idempotency keys make a re-submit safe.
    */
   startManyRuns(specs: readonly RunSpec[]): Promise<StartResult[]>;
   /** Load the run + its completed-step memo + pending signal inbox. `undefined` if gone. */
@@ -631,7 +630,7 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * — if any child fails (or is canceled), the parent fails and its still-running siblings are
    * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
    */
-  invoke<const T extends readonly InvokeSpec[]>(specs: T): Promise<InvokeOutputs<T>>;
+  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }): Promise<FlowOutputs<F>>;
   /**
    * Durably wait for an external signal named `name` and return its payload. If a matching
    * signal is already in the inbox it is consumed immediately; otherwise the run parks until
@@ -733,8 +732,17 @@ interface InvokeSpec<CI = any, CO = any> {
   flow: Flow<CI, CO, any>;
   input: CI;
 }
-/** The tuple of child outputs a fan-out `ctx.invoke(specs)` resolves to, per-spec typed. */
-type InvokeOutputs<T extends readonly InvokeSpec[]> = { [K in keyof T]: T[K] extends InvokeSpec<any, infer CO> ? CO : never; };
+/**
+ * The `{ flow, input }` shape a fan-out spec must have, with `input` bound to `F`'s OWN input type.
+ * Mapping it over an inferred flow tuple is what lets `ctx.invoke([{ flow: a, input }, ...])`
+ * type-check each input against its own flow instead of accepting `any`.
+ */
+type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? {
+  flow: F;
+  input: CI;
+} : never;
+/** The tuple of child outputs a fan-out over flows `F` resolves to — each flow's output, in order. */
+type FlowOutputs<F extends readonly AnyFlow[]> = { readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never; };
 /** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
 type FlowRegistry = ReadonlyMap<string, AnyFlow>;
 /** Build a {@link FlowRegistry} from a list of flows. */
@@ -1106,5 +1114,5 @@ declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeOutputs, type InvokeSpec, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

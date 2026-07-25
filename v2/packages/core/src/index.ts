@@ -25,11 +25,12 @@ export { defineFlow, registry, signalType, validateInput, validateSignal } from 
 export type {
   AnyFlow,
   Flow,
+  FlowOutputs,
   FlowPolicy,
   FlowRegistry,
   InputSchema,
-  InvokeOutputs,
   InvokeSpec,
+  InvokeSpecFor,
   NoSignals,
   SignalMap,
   SignalSchema,

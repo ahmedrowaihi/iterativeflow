@@ -38,6 +38,33 @@ defineFlow({
   },
 });
 
+// Fan-out input typing: each spec's `input` is checked against ITS flow, and the joined result
+// stays per-child typed. Compile-only — the body never runs.
+const childNum = defineFlow({
+  name: "child-num",
+  version: 1,
+  run: async (_ctx, n: number) => n * 2,
+});
+const childStr = defineFlow({
+  name: "child-str",
+  version: 1,
+  run: async (_ctx, s: string) => s.length,
+});
+defineFlow({
+  name: "fan-strict",
+  version: 1,
+  run: async (ctx) => {
+    const [a, b] = await ctx.invoke([
+      { flow: childNum, input: 2 },
+      { flow: childStr, input: "hi" },
+    ]);
+    const outs: number = a + b; // both children return numbers — reads compile only if outputs survive
+    // @ts-expect-error childNum takes a number input, not a string
+    await ctx.invoke([{ flow: childNum, input: "nope" }]);
+    return outs;
+  },
+});
+
 describe("typed contract", () => {
   it("threads output type through submit → result and payload type through signal", async () => {
     const backend = createMemoryBackend();
