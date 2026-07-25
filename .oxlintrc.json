@@ -5,5 +5,8 @@
     "correctness": "error",
     "suspicious": "warn"
   },
+  "rules": {
+    "no-underscore-dangle": ["warn", { "allow": ["_id"] }]
+  },
   "ignorePatterns": ["dist/", "node_modules/", ".changeset/"]
 }

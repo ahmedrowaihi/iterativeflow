@@ -12,7 +12,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGES = ["core", "memory", "postgres", "dynamodb", "redis", "sqlite", "mysql", "conformance", "dashboard"];
+const PACKAGES = ["core", "memory", "postgres", "dynamodb", "redis", "sqlite", "mysql", "mongodb", "conformance", "dashboard"];
 
 // Neutralize the content-hash in chunk names/imports (any extension): `id-BcSPNTfG.mjs` → `id-<hash>`.
 const normalize = (src) => src.replace(/id-[A-Za-z0-9_-]{6,}/g, "id-<hash>");
