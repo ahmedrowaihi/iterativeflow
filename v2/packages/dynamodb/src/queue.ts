@@ -23,11 +23,11 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       await send(new UpdateCommand(enqueueParams(table, runId, opts)));
     },
 
-    async claim({ max, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now }: ClaimOpts) {
       const t = at(now);
       // Query only the JOB partition on GSI1 (ordered priority#runAt) — never a full-table Scan.
       // The lease/runAt predicate is a post-read filter, so a backlog of leased/future jobs can
-      // fill the ≤1MB page and bury due ones; page until we hold `max`. PAGE_CAP bounds the reads.
+      // fill the ≤1MB page and bury due ones; page until we hold `limit`. PAGE_CAP bounds the reads.
       const PAGE_CAP = 10;
       const candidates: JobItem[] = [];
       let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -45,12 +45,12 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         );
         candidates.push(...(res.Items ?? []));
         ExclusiveStartKey = res.LastEvaluatedKey;
-        // GSI is priority#runAt-ordered, so once we hold `max`, later pages can't rank higher.
-        if (!ExclusiveStartKey || candidates.length >= max) break;
+        // GSI is priority#runAt-ordered, so once we hold `limit`, later pages can't rank higher.
+        if (!ExclusiveStartKey || candidates.length >= limit) break;
       }
       const leases: Lease[] = [];
       for (const j of candidates) {
-        if (leases.length >= max) break;
+        if (leases.length >= limit) break;
         const token = `${id()}:${j.runId}`;
         const expires = t + leaseMs;
         try {

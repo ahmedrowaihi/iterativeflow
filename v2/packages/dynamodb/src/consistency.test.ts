@@ -37,7 +37,7 @@ describe("dynamodb read consistency", () => {
   it("claim reads the JOB partition off the GSI, which cannot be strongly consistent", async () => {
     const { doc, commands } = spy();
     const backend = createDynamoBackend(doc, { table: "t" });
-    await backend.queue.claim({ max: 1, leaseMs: 1000, now: new Date("2030-01-01T00:00:00Z") });
+    await backend.queue.claim({ limit: 1, leaseMs: 1000, now: new Date("2030-01-01T00:00:00Z") });
     const query = commands.find((c) => c.name === "QueryCommand");
     expect(query?.input.IndexName).toBe("gsi1");
     expect(query?.input.ConsistentRead).toBeUndefined(); // GSI: eventually consistent, CAS-guarded

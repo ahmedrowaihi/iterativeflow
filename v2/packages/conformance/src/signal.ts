@@ -21,7 +21,7 @@ export const signalConformance = (
       expect(snap?.signals.map((s) => ({ name: s.name, payload: s.payload }))).toEqual([
         { name: "approve", payload: { ok: true } },
       ]);
-      const leases = await queue.claim({ max: 10, leaseMs: 1000, now: at(0) });
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.map((l) => l.runId)).toEqual([runId]); // woken
     });
 

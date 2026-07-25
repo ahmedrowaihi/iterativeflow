@@ -20,7 +20,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
       await enqueueStmt(sql, t, runId, opts);
     },
 
-    async claim({ max, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now }: ClaimOpts) {
       // SKIP LOCKED: many workers claim disjoint batches with no contention. The lease token is
       // a per-claim nonce from the runtime's IdGen, made per-row-unique by appending run_id —
       // no DB-side id generation, so the token shape is the caller's choice, not the schema's.
@@ -37,7 +37,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
            LIMIT $3
          )
          RETURNING run_id, lease_token, lease_expires, version`,
-        [at(now), leaseMs, max, id()],
+        [at(now), leaseMs, limit, id()],
       );
       return rows.map((r) => ({
         runId: r.run_id,

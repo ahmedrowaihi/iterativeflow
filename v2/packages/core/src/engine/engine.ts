@@ -181,7 +181,7 @@ export const createEngine = (
     registerCron: (def) => registerCron(backend, def, clock),
 
     tick: () => tickOnce(backend, reg, tickOpts),
-    reconcile: () => reconcile(backend, { max: tickOpts.batchMax }),
+    reconcile: () => reconcile(backend, { limit: tickOpts.batchMax }),
     runCrons: () => runDueCrons(backend, clock),
     serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 
@@ -223,7 +223,7 @@ export const createEngine = (
       })();
       const maintenance = setInterval(() => {
         if (signal.aborted) return;
-        void reconcile(backend, { max: tickOpts.batchMax }).catch(onTickError);
+        void reconcile(backend, { limit: tickOpts.batchMax }).catch(onTickError);
         void runDueCrons(backend, clock).catch(onTickError);
       }, maintenanceMs);
       return async () => {

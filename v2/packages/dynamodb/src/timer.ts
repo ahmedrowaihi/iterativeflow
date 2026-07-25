@@ -30,7 +30,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
       );
     },
 
-    async dueBatch({ now, max }: TimerDueOpts) {
+    async dueBatch({ now, limit }: TimerDueOpts) {
       const t = (now ?? new Date()).getTime();
       const res = await send<{ Items?: TimerItem[] }>(
         new QueryCommand({
@@ -39,7 +39,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
           KeyConditionExpression: "gsi1pk = :tp AND gsi1sk <= :now",
           ExpressionAttributeValues: { ":tp": TIMER_GSI_PK, ":now": pad(t) },
           ScanIndexForward: true,
-          Limit: max,
+          Limit: limit,
         }),
       );
       const fired: string[] = [];

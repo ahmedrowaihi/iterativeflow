@@ -169,7 +169,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
       ).filter(Boolean);
       expect(created).toHaveLength(30);
       const leases = await backend.queue.claim({
-        max: 200,
+        limit: 200,
         leaseMs: 1000,
         now: new Date("2030-01-01T00:00:00Z"),
       });
@@ -202,7 +202,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
       for (const runId of ids) await backend.queue.enqueue(runId);
       const now = new Date("2030-01-01T00:00:00Z");
       const batches = await Promise.all(
-        Array.from({ length: 4 }, () => backend.queue.claim({ max: 10, leaseMs: 1000, now })),
+        Array.from({ length: 4 }, () => backend.queue.claim({ limit: 10, leaseMs: 1000, now })),
       );
       const claimed = batches.flat().map((l) => l.runId);
       expect(claimed).toHaveLength(20); // all leased, none dropped

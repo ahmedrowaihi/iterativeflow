@@ -171,9 +171,9 @@ export { cancelRun } from "#engine/cancel";
 /** Move every due timer back onto the queue. Returns how many were re-enqueued. */
 export const drainTimers = async (
   backend: Backend,
-  opts: { max: number; now?: Date },
+  opts: { limit: number; now?: Date },
 ): Promise<number> => {
-  const due = await backend.timer.dueBatch({ now: opts.now, max: opts.max });
+  const due = await backend.timer.dueBatch({ now: opts.now, limit: opts.limit });
   await Promise.all(due.map((runId) => backend.queue.enqueue(runId)));
   return due.length;
 };
@@ -184,8 +184,8 @@ export const drainTimers = async (
  * re-check and re-suspend. Run this on a slow interval (or as an internal cron). Returns how
  * many were re-enqueued.
  */
-export const reconcile = async (backend: Backend, opts: { max: number }): Promise<number> => {
-  const orphans = await backend.store.orphanedRuns(opts.max);
+export const reconcile = async (backend: Backend, opts: { limit: number }): Promise<number> => {
+  const orphans = await backend.store.orphanedRuns(opts.limit);
   await Promise.all(orphans.map((runId) => backend.queue.enqueue(runId)));
   return orphans.length;
 };
@@ -211,9 +211,9 @@ export const tickOnce = async (
   opts: TickOnceOpts,
 ): Promise<TickResult[]> => {
   const now = opts.now ?? systemClock;
-  await drainTimers(backend, { max: opts.batchMax, now: now() });
+  await drainTimers(backend, { limit: opts.batchMax, now: now() });
   const leases = await backend.queue.claim({
-    max: opts.batchMax,
+    limit: opts.batchMax,
     leaseMs: opts.leaseMs,
     now: now(),
   });
@@ -266,7 +266,7 @@ export const serverlessTick = async (
   // Both must land before tickOnce claims, so this cycle's crons/orphans are claimable now.
   const [fired, reconciled] = await Promise.all([
     runDueCrons(backend, now),
-    reconcile(backend, { max: opts.batchMax }),
+    reconcile(backend, { limit: opts.batchMax }),
   ]);
   const results = await tickOnce(backend, flows, opts);
   return { fired, reconciled, results };
