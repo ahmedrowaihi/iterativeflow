@@ -7,7 +7,27 @@
     "@iterativeflow/dashboard": "2.0.0-alpha.0",
     "@iterativeflow/dynamodb": "2.0.0-alpha.0",
     "@iterativeflow/memory": "2.0.0-alpha.0",
-    "@iterativeflow/postgres": "2.0.0-alpha.0"
+    "@iterativeflow/postgres": "2.0.0-alpha.0",
+    "@iterativeflow/durable-objects": "2.0.0-alpha.1",
+    "@iterativeflow/mongodb": "2.0.0-alpha.1",
+    "@iterativeflow/mysql": "2.0.0-alpha.1",
+    "@iterativeflow/redis": "2.0.0-alpha.1",
+    "@iterativeflow/sqlite": "2.0.0-alpha.1",
+    "@iterativeflow/webhooks": "2.0.0-alpha.1"
   },
-  "changesets": ["six-engines-hum"]
+  "changesets": [
+    "audit-pass-fixes",
+    "brave-owls-fan-out",
+    "calm-doors-shine",
+    "edge-objects-durable",
+    "keen-webhooks-signal",
+    "loud-schemas-travel",
+    "quick-parrots-jog",
+    "red-foxes-relax",
+    "silly-mongos-roll",
+    "six-engines-hum",
+    "tame-sqlite-swims",
+    "warm-mules-mysql",
+    "wise-otters-polish"
+  ]
 }

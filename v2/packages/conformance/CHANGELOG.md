@@ -1,10 +1,24 @@
 # @iterativeflow/conformance
 
+## 2.0.0-alpha.2
+
+### Patch Changes
+
+- a624058: Declare `license: MIT` and the repository field in every package manifest — the alpha.1 tarballs showed as "Proprietary" on npm.
+- Updated dependencies [e1ef077]
+- Updated dependencies [3377316]
+- Updated dependencies [a624058]
+- Updated dependencies [f7bf20f]
+- Updated dependencies [dc2b059]
+- Updated dependencies [11d3aa2]
+  - @iterativeflow/core@2.0.0-alpha.2
+
 ## 2.0.0-alpha.1
 
 ### Patch Changes
 
 - First public alpha of iterativeflow v2 — a ground-up durable-execution engine.
+
   - **Four-port architecture** (store / queue / timer / wakeup) with a transactional-outbox seam: every durable write commits its side-effects (child spawns, enqueues, timers, signal consumption) atomically. One durable write per step.
   - **Three backends against one conformance suite**: in-memory (reference), Postgres (`BEGIN…COMMIT`, `SKIP LOCKED`, proven under real concurrency), DynamoDB (single-table, `TransactWriteItems`, two-phase fan-out past the 100-item cap).
   - **Authoring**: imperative `defineFlow` + a fully-typed accumulator `builder`, per-step policy (retries, timeout, transient/permanent classification, AbortSignal), Standard-Schema input validation.
