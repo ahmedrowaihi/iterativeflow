@@ -1,8 +1,9 @@
-# Spec (future opt-in): live cross-process progress push
+# Opt-in: live cross-process progress push
 
-- **Status:** Spec, not built. A design for real-time step-level progress over `LISTEN/NOTIFY`,
-  should a live ops dashboard ever want it. None of the current apps need it (they read progress by
-  polling `engine.status()` / the event log).
+- **Status:** Built. `applyProgressTrigger(sql, schema?)` installs the trigger; `createPgListener`
+  exposes `watch(runId)` (async iterator) and `onProgress(cb)` (fleet view) on the existing socket.
+  Opt-in and off the worker hot path — install the trigger only on a dashboard host. Real-time
+  step-level progress over `LISTEN/NOTIFY`; polling `engine.status()` / the event log still backstops.
 - **Scope:** `@iterativeflow/postgres` only, layered on the existing opt-in event log + the one
   `createPgListener` connection.
 
