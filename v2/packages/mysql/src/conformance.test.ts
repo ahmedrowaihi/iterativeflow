@@ -10,7 +10,7 @@ import {
   timerConformance,
   wakeupConformance,
 } from "@iterativeflow/conformance";
-import { type Backend, builder, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
+import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
 import { type Pool, createPool } from "mysql2/promise";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -167,23 +167,6 @@ describe.skipIf(skip)("mysql backend", () => {
       }
       throw new Error("run did not settle");
     };
-
-    it("runs a builder flow with a durable sleep to completion", async () => {
-      const backend = await makeBackend();
-      const flow = builder<{ x: number }>("mysql-sleep", 1)
-        .step("doubled", (acc) => acc.input.x * 2)
-        .step("nap", async (_acc, ctx) => {
-          await ctx.sleep(5_000);
-          return "rested";
-        })
-        .output((acc) => ({ doubled: acc.doubled, nap: acc.nap }));
-      const flows = registry([flow]);
-      const runId = await submit(backend, flow, { x: 21 });
-      expect(await drive(backend, flows, runId)).toMatchObject({
-        status: "done",
-        output: { doubled: 42, nap: "rested" },
-      });
-    });
 
     it("invokes a child flow across the outbox and resumes with its output", async () => {
       const backend = await makeBackend();

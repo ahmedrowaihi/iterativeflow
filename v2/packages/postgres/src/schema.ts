@@ -2,15 +2,18 @@ import { assertSqlIdentifier } from "@iterativeflow/core/backend";
 import type { Sql } from "#sql";
 
 /** @internal */
-export const tables = (schema: string) => ({
-  run: `"${schema}".run`,
-  step: `"${schema}".step`,
-  job: `"${schema}".job`,
-  timer: `"${schema}".timer`,
-  signal: `"${schema}".signal`,
-  event: `"${schema}".event`,
-  cron: `"${schema}".cron`,
-});
+export const tables = (schema: string) => {
+  assertSqlIdentifier(schema);
+  return {
+    run: `"${schema}".run`,
+    step: `"${schema}".step`,
+    job: `"${schema}".job`,
+    timer: `"${schema}".timer`,
+    signal: `"${schema}".signal`,
+    event: `"${schema}".event`,
+    cron: `"${schema}".cron`,
+  };
+};
 
 export type Tables = ReturnType<typeof tables>;
 
@@ -120,6 +123,5 @@ CREATE INDEX IF NOT EXISTS cron_due ON ${t.cron} (next_run_at);
 
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */
 export const applySchema = async (sql: Sql, schema = "workflow"): Promise<void> => {
-  assertSqlIdentifier(schema);
   await sql.query(ddl(schema));
 };

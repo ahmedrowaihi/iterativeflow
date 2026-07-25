@@ -51,6 +51,7 @@ export const runDueCrons = async (
   let fired = 0;
   for (const c of due) {
     const next = nextCronAfter(c.schedule, now());
+    const advance = () => backend.store.advanceCron(c.name, c.nextRunAt, next, now());
 
     if (c.overlap === "skip") {
       const active = await backend.store.listRuns(
@@ -59,7 +60,7 @@ export const runDueCrons = async (
       );
       // Consume the occurrence (advance) without starting, so it doesn't re-fire while a run is live.
       if (active.runs.length > 0) {
-        await backend.store.advanceCron(c.name, c.nextRunAt, next, now());
+        await advance();
         continue;
       }
     }
@@ -72,7 +73,7 @@ export const runDueCrons = async (
       tags: [cronTag(c.name)],
     });
     if (created) await backend.queue.enqueue(runId);
-    if (await backend.store.advanceCron(c.name, c.nextRunAt, next, now())) fired += 1;
+    if (await advance()) fired += 1;
   }
   return fired;
 };

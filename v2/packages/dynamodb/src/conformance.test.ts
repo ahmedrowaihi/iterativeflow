@@ -14,7 +14,6 @@ import {
 } from "@iterativeflow/conformance";
 import {
   type Backend,
-  builder,
   defineFlow,
   registry,
   serverlessTick,
@@ -229,21 +228,6 @@ describe.skipIf(skip)("dynamodb backend", () => {
       }
       throw new Error("run did not settle");
     };
-
-    it("runs a builder flow with a durable sleep to completion", async () => {
-      const backend = await makeBackend();
-      const flow = builder<{ x: number }>("ddb-sleep", 1)
-        .step("doubled", (acc) => acc.input.x * 2)
-        .step("nap", async (_acc, ctx) => {
-          await ctx.sleep(5_000);
-          return "rested";
-        })
-        .output((acc) => ({ doubled: acc.doubled, nap: acc.nap }));
-      const flows = registry([flow]);
-      const runId = await submit(backend, flow, { x: 21 });
-      const settled = await driveToSettle(backend, flows, runId);
-      expect(settled).toMatchObject({ status: "done", output: { doubled: 42, nap: "rested" } });
-    });
 
     it("invokes a child flow across the outbox and resumes with its output", async () => {
       const backend = await makeBackend();

@@ -2,6 +2,7 @@ import {
   type Backend,
   type Flow,
   type RetryPolicy,
+  builder,
   cancelRun,
   defineFlow,
   reconcile,
@@ -60,6 +61,20 @@ export const engineConformance = (
         maxDelayMs: 1,
       });
       expect(run).toMatchObject({ status: "done", output: "settled" });
+    });
+
+    it("runs a builder flow with a durable sleep to completion", async () => {
+      const backend = await makeBackend();
+      const flow = builder<{ x: number }>(`${label}-sleep`, 1)
+        .step("doubled", (acc) => acc.input.x * 2)
+        .step("nap", async (_acc, ctx) => {
+          await ctx.sleep(5_000);
+          return "rested";
+        })
+        .output((acc) => ({ doubled: acc.doubled, nap: acc.nap }));
+      const runId = await submit(backend, flow, { x: 21 });
+      const run = await drive(backend, registry([flow]), runId);
+      expect(run).toMatchObject({ status: "done", output: { doubled: 42, nap: "rested" } });
     });
 
     it("a genuinely failing step still dead-letters after its retry budget", async () => {
