@@ -48,7 +48,7 @@ That run lives in Postgres for three days. Workers can crash, deploys can roll, 
 
 > ### v2 (alpha) — backend-agnostic rewrite
 >
-> A ground-up rewrite is published under the `@iterativeflow/*@2.0.0-alpha` scope. It keeps the
+> A ground-up rewrite is published under the `@iterativeflow/*` scope (latest `2.0.0-alpha.2`). It keeps the
 > durable model (memoized steps, crash-safe replay, signals, sleeps) but runs behind a four-port
 > `Backend` interface, so the same engine runs on **Postgres, SQLite, MySQL, MongoDB, Redis,
 > DynamoDB, Cloudflare Durable Objects, or in-memory** — resident or serverless (`serverlessTick`).

@@ -5,7 +5,7 @@ function; it survives process crashes, retries failed steps, sleeps for days,
 and resumes deterministically by replaying memoized steps. Backend-agnostic —
 run it on Postgres, DynamoDB, or in-memory behind one interface.
 
-Part of [iterativeflow](https://github.com/ahmedrowaihi/iterativeflow) v2 (`2.0.0-alpha`).
+Part of [iterativeflow](https://github.com/ahmedrowaihi/iterativeflow) v2 (`2.0.0-alpha.2`).
 
 ```bash
 npm install @iterativeflow/core @iterativeflow/memory

@@ -1,15 +1,19 @@
 # iterativeflow v2 — Architecture (north star)
 
-> Status: **original design manifesto (pre-build).** This captured the committed direction
-> before v2 shipped; parts have since been superseded. For what actually shipped, the
-> authoritative docs are [`PARITY.md`](./PARITY.md) (the v1→v2 parity ledger) and
-> [`CONTRACTS.md`](./CONTRACTS.md) (typed flows/signals + the drift guard). Two notable
-> changes from this doc: the **node-graph builder + static determinism guard was dropped**
-> in favor of a **linear builder + imperative `defineFlow`** whose determinism is guarded at
-> **runtime** (the drift guard, `CONTRACTS.md`); and the "crash/partition harness" and
-> "time-skip testing" described below are **not yet built** (crashes are simulated ad-hoc in
-> the tests). Port sketches in §4 are illustrative — the shipped port names live in
-> `packages/core/src/ports/`.
+> Status: **original design manifesto (pre-build), with concrete facts refreshed.** This captured
+> the committed direction before v2 shipped; the design prose is kept as the historical north star,
+> but the backend list, roadmap (§9), and once-open decisions have been updated to what shipped. For
+> the current picture, the authoritative docs are the **[v2 README](../../v2/README.md)** (quick
+> start + package table), [`PARITY.md`](./PARITY.md) (the v1→v2 parity ledger), and
+> [`CONTRACTS.md`](./CONTRACTS.md) (typed flows/signals + the drift guard).
+>
+> What actually shipped vs. this manifesto: **eight backends**, not the three sketched here (memory,
+> postgres, dynamodb, redis, sqlite, mysql, mongodb, durable-objects), plus `@iterativeflow/webhooks`
+> and `@iterativeflow/dashboard`; the **node-graph builder + static determinism guard was dropped**
+> for a **linear builder + imperative `defineFlow`** guarded at **runtime** (the drift guard,
+> `CONTRACTS.md`); and the "crash/partition harness" + "time-skip testing" below are **not yet built**
+> (crashes are simulated ad-hoc in tests). Port sketches in §4 are illustrative — the shipped port
+> interfaces live in `packages/core/src/ports/`.
 
 ## 1. Why v2
 
@@ -60,7 +64,7 @@ Postgres, DynamoDB, graphile, HTTP, or Lambda.
             │  durable core     │  state machine · memoization · replay · reconcile
             └─┬───┬────┬────┬──┘
               │   │    │    │
-     StateStore  WorkQueue  Timer  Wakeup     ← four ports (backend-specific)
+     Store  Queue  Timer  Wakeup     ← four ports (backend-specific)
 ```
 
 ## 4. The four ports (contracts)
@@ -68,10 +72,10 @@ Postgres, DynamoDB, graphile, HTTP, or Lambda.
 Each port is small and orthogonal. Backends implement each with the _best primitive
 available_, not a lowest-common-denominator. Sketches (final types live in `src`):
 
-### 4.1 StateStore — durable checkpoint
+### 4.1 Store — durable checkpoint
 
 ```ts
-interface StateStore {
+interface Store {
   /** Insert the run if new; return existing on idempotency-key hit. Idempotent. */
   startRun(spec: RunSpec): Promise<{ runId: string; created: boolean; status: RunStatus }>;
   /** Load the memo needed to replay: completed steps, timers, signals. One read. */
@@ -95,10 +99,10 @@ interface StateStore {
 Invariant: **one durable write per step** (the checkpoint). `startStep`/`step_started`
 events are gone; run-level attempt-bounding replaces the per-step start marker.
 
-### 4.2 WorkQueue — claim / lease (this is where graphile goes)
+### 4.2 Queue — claim / lease (this is where graphile goes)
 
 ```ts
-interface WorkQueue {
+interface Queue {
   enqueue(runId: string, opts?: { runAt?: Date; priority?: number }): Promise<void>;
   /** Lease up to `max` due runs to this worker for `leaseMs`. Batchable. */
   claim(opts: { max: number; leaseMs: number }): Promise<Lease[]>;
@@ -154,7 +158,7 @@ too heavy for a self-hostable lib.
 
 ## 6. Deployment profiles (same core)
 
-| Profile                  | StateStore                                  | WorkQueue           | Timer                 | Wakeup                 |
+| Profile                  | Store                                       | Queue               | Timer                 | Wakeup                 |
 | ------------------------ | ------------------------------------------- | ------------------- | --------------------- | ---------------------- |
 | **resident** (self-host) | Postgres                                    | SKIP LOCKED + batch | `fireAt` index        | poll + optional NOTIFY |
 | **serverless-postgres**  | Postgres (pooler-safe: unnamed params)      | lease-CAS           | `fireAt` index        | poll                   |
@@ -186,10 +190,10 @@ every backend must pass it.**
    - `startRun` is **idempotent** on the idempotency key;
    - the transactional outbox is **all-or-nothing** (state + enqueue land together);
    - concurrent claims of the same run yield **exactly one** winner.
-2. **Every backend runs the SAME suite** — in-memory, Postgres, DynamoDB. An impl is not
-   "done" until green on the full conformance suite (in-memory via a fake clock/crash
-   harness; PG/Dynamo via real containers). This mechanically prevents a backend from
-   silently dropping a guarantee.
+2. **Every backend runs the SAME suite** — all eight (memory, postgres, dynamodb, redis,
+   sqlite, mysql, mongodb, durable-objects). An impl is not "done" until green on the full
+   conformance suite (memory/sqlite/durable-objects via a fake clock; the rest via real
+   containers). This mechanically prevents a backend from silently dropping a guarantee.
 3. **Definition of Done per change (machine-checkable, no exceptions):**
    `tsc` clean · lint · format · unit + **behavior** tests (drive the real path, not
    types) · the change is **verified by running the affected flow**, not just compiled ·
@@ -206,10 +210,13 @@ isn't specced, conformance-green, behavior-verified, and adversarially reviewed.
 
 ## 9. Backends & roadmap
 
-- **v2.0**: core + ports + **in-memory** (reference/tests) + **Postgres** backend. Ship
-  the conformance suite first (TDD the invariants), then the impls.
-- **v2.x**: **DynamoDB** backend — the proof-of-freedom that validates the port split
-  (StateStore abstracts cleanly; Dispatcher/Timer/Signal are purpose-built per backend).
+_Shipped at `2.0.0-alpha.2`:_ **eight** backends behind the ports —
+**memory** (reference/oracle), **postgres**, **dynamodb**, **redis**, **sqlite**, **mysql**,
+**mongodb**, and **durable-objects** (the SQLite backend inside a Cloudflare Durable Object). Each
+passes the same nine conformance suites — the port split held: `Store` abstracts cleanly while
+`Queue`/`Timer`/`Wakeup` are purpose-built per backend. Alongside the backends: `@iterativeflow/webhooks`
+(inbound signed-webhook → durable signal), `@iterativeflow/dashboard` (ops UI), and
+`@iterativeflow/conformance` (the shared suites).
 
 ## 10. Versioning & migration — the upgrade must feel like a promotion
 
@@ -237,13 +244,14 @@ and never costs them a goodie they relied on. Concretely:
 Mechanics:
 
 - `iterativeflow@2` is a new major; 5.x continues on maintenance.
-- The StateStore schema is new (no in-place 5.x→2 data migration promised at v2.0); a
+- The Store schema is new (no in-place 5.x→2 data migration promised at v2.0); a
   data-migration tool is a post-2.0 consideration and, if a user needs it, must not lose
   in-flight runs.
 
-## Open decisions (tracked, not blocking the skeleton)
+## Resolved decisions (were open at design time)
 
-- Package layout: single package with sub-paths vs monorepo (`@iterativeflow/core`,
-  `/postgres`, `/dynamodb`). Leaning monorepo so backends are opt-in deps.
-- Whether `defineFlow` (imperative) ships in 2.0 or 2.x.
-- Exact lease/heartbeat defaults and the batch-claim size knob.
+- **Package layout → monorepo.** Shipped as separate `@iterativeflow/*` packages (`core`, one per
+  backend, `webhooks`, `dashboard`, `conformance`), so backends are opt-in deps.
+- **`defineFlow` ships now.** Both authoring APIs are first-class: the fluent `builder()` and the
+  imperative `defineFlow` (both exported from `@iterativeflow/core`).
+- Lease/heartbeat defaults and the batch-claim knob are settled in each backend's `Queue` impl.

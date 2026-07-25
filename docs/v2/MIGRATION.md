@@ -78,7 +78,7 @@ ever drift, that test fails — the file you own cannot silently diverge from wh
 
 ## 1b. Owning your DynamoDB table
 
-Same principle. The single table + its one GSI, as data:
+Same principle. The single table + its two GSIs, as data:
 
 ```ts
 import { tableSpec, REQUIRED_IAM_ACTIONS, ensureTable } from "@iterativeflow/dynamodb";
