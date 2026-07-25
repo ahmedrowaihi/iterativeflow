@@ -1,7 +1,8 @@
 # Study: an all-Redis backend (Valkey / Dragonfly)
 
 Design study for a Redis-family backend implementing the four v2 ports (Store / Queue / Timer /
-Wakeup) against the existing conformance suites. Not built yet — this is the reference for when we do.
+Wakeup) against the existing conformance suites. **Built** — shipped as `@iterativeflow/redis`,
+green on all nine conformance suites against real Valkey. This records the design decisions.
 
 ## Scope and tier
 
