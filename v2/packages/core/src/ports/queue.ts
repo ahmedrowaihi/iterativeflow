@@ -16,6 +16,16 @@ export interface ClaimOpts {
   now?: Date;
 }
 
+/** A liveness snapshot of the dispatch queue — a rising backlog or age means workers can't keep up. */
+export interface QueueDepth {
+  /** Jobs due and unleased right now — the backlog waiting for a free worker. */
+  claimable: number;
+  /** Jobs currently leased to a worker (in flight). */
+  leased: number;
+  /** Age (ms) of the oldest claimable job, or `null` if none is claimable. */
+  oldestClaimableAgeMs: number | null;
+}
+
 /** A held claim on a run. `token` proves ownership for heartbeat/ack. */
 export interface Lease {
   runId: string;
@@ -61,6 +71,9 @@ export interface Queue {
    * expiry.
    */
   ack(lease: Lease, opts?: { now?: Date }): Promise<void>;
+
+  /** Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. */
+  depth(now: Date): Promise<QueueDepth>;
 
   /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A

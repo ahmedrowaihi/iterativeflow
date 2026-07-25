@@ -405,6 +405,23 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         jobs.delete(lease.runId);
       }
     },
+
+    async depth(now) {
+      const t = ms(now);
+      const all = [...jobs.values()];
+      const claimable = all.filter(
+        (j) => j.runAtMs <= t && (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t),
+      );
+      const oldest = claimable.reduce<number | null>(
+        (min, j) => (min === null ? j.runAtMs : Math.min(min, j.runAtMs)),
+        null,
+      );
+      return {
+        claimable: claimable.length,
+        leased: all.filter((j) => j.leaseExpiresMs !== undefined && j.leaseExpiresMs > t).length,
+        oldestClaimableAgeMs: oldest === null ? null : t - oldest,
+      };
+    },
   };
 
   const timer: Backend["timer"] = {

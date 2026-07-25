@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { A as Queue, B as RunRow, C as TimerRequest, D as ClaimOpts, E as TimerDueOpts, F as FlowError, G as StepOutcome, H as RunSpec, I as Page, J as TerminalOutcome, K as StepStatus, L as RUN_STATUSES, M as CronSpec, N as DeliveredSignal, O as EnqueueOpts, R as RunFilter, S as SpawnRequest, T as Timer, U as RunStatus, V as RunSnapshot, W as StepCheckpoint, _ as StartResult, a as RECONCILABLE_STATUSES, b as EnqueueRequest, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as CronRow, k as Lease, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as SuspendStatus, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, v as Store, w as Wakeup, x as Outbox, y as Backend, z as RunPage } from "./id-<hash>.mjs";
+import { A as Queue, B as RunPage, C as TimerRequest, D as ClaimOpts, E as TimerDueOpts, G as StepCheckpoint, H as RunSnapshot, I as FlowError, J as SuspendStatus, K as StepOutcome, L as Page, M as CronRow, N as CronSpec, O as EnqueueOpts, P as DeliveredSignal, R as RUN_STATUSES, S as SpawnRequest, T as Timer, U as RunSpec, V as RunRow, W as RunStatus, Y as TerminalOutcome, _ as StartResult, a as RECONCILABLE_STATUSES, b as EnqueueRequest, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as QueueDepth, k as Lease, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as StepStatus, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, v as Store, w as Wakeup, x as Outbox, y as Backend, z as RunFilter } from "./id-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -42,7 +42,7 @@ interface OrphanView {
  */
 declare const isOrphaned: (r: OrphanRun, v: OrphanView) => boolean;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, statusList, zeroRunStats };
 ```
 
 ## id-<hash>.d.mts
@@ -196,6 +196,15 @@ interface ClaimOpts {
   /** Injectable clock (tests / deterministic conformance). Defaults to now. */
   now?: Date;
 }
+/** A liveness snapshot of the dispatch queue — a rising backlog or age means workers can't keep up. */
+interface QueueDepth {
+  /** Jobs due and unleased right now — the backlog waiting for a free worker. */
+  claimable: number;
+  /** Jobs currently leased to a worker (in flight). */
+  leased: number;
+  /** Age (ms) of the oldest claimable job, or `null` if none is claimable. */
+  oldestClaimableAgeMs: number | null;
+}
 /** A held claim on a run. `token` proves ownership for heartbeat/ack. */
 interface Lease {
   runId: string;
@@ -242,6 +251,8 @@ interface Queue {
   ack(lease: Lease, opts?: {
     now?: Date;
   }): Promise<void>;
+  /** Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. */
+  depth(now: Date): Promise<QueueDepth>;
   /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
    * backend backed by a real notification bus (Postgres `LISTEN/NOTIFY`) implements this so the
@@ -576,13 +587,13 @@ type IdGen = () => string;
 /** Default id generator — RFC-4122 v4. Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { Queue as A, RunRow as B, TimerRequest as C, ClaimOpts as D, TimerDueOpts as E, FlowError as F, StepOutcome as G, RunSpec as H, Page as I, TerminalOutcome as J, StepStatus as K, RUN_STATUSES as L, CronSpec as M, DeliveredSignal as N, EnqueueOpts as O, DriftPolicy as P, RunFilter as R, SpawnRequest as S, Timer as T, RunStatus as U, RunSnapshot as V, StepCheckpoint as W, StartResult as _, RECONCILABLE_STATUSES as a, EnqueueRequest as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, CronRow as j, Lease as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, SuspendStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Store as v, Wakeup as w, Outbox as x, Backend as y, RunPage as z };
+export { Queue as A, RunPage as B, TimerRequest as C, ClaimOpts as D, TimerDueOpts as E, DriftPolicy as F, StepCheckpoint as G, RunSnapshot as H, FlowError as I, SuspendStatus as J, StepOutcome as K, Page as L, CronRow as M, CronSpec as N, EnqueueOpts as O, DeliveredSignal as P, RUN_STATUSES as R, SpawnRequest as S, Timer as T, RunSpec as U, RunRow as V, RunStatus as W, TerminalOutcome as Y, StartResult as _, RECONCILABLE_STATUSES as a, EnqueueRequest as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, QueueDepth as j, Lease as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, StepStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Store as v, Wakeup as w, Outbox as x, Backend as y, RunFilter as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { B as RunRow, F as FlowError, G as StepOutcome, I as Page, K as StepStatus, L as RUN_STATUSES, N as DeliveredSignal, O as EnqueueOpts, P as DriftPolicy, R as RunFilter, U as RunStatus, V as RunSnapshot, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, k as Lease, m as FlowEvent, n as newId, p as EventType, s as isRunStatus, t as IdGen, y as Backend, z as RunPage } from "./id-<hash>.mjs";
+import { B as RunPage, F as DriftPolicy, H as RunSnapshot, I as FlowError, K as StepOutcome, L as Page, O as EnqueueOpts, P as DeliveredSignal, R as RUN_STATUSES, V as RunRow, W as RunStatus, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as QueueDepth, k as Lease, m as FlowEvent, n as newId, p as EventType, q as StepStatus, s as isRunStatus, t as IdGen, y as Backend, z as RunFilter } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -1014,6 +1025,11 @@ interface SweepResult {
 declare const serverlessTick: (backend: Backend, flows: FlowRegistry, opts: TickOnceOpts) => Promise<SweepResult>;
 //#endregion
 //#region src/engine/engine.d.ts
+/** A liveness snapshot: dispatch-queue health plus per-status run counts. */
+interface Liveness {
+  queue: QueueDepth;
+  runs: Record<RunStatus, number>;
+}
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 interface EngineOpts {
   /** Max runs claimed per worker cycle. Default 20. */
@@ -1081,6 +1097,11 @@ interface Engine {
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
+  /**
+   * Liveness probe for a k8s/readiness check: the dispatch backlog + oldest-claimable age (rising ⇒
+   * workers can't keep up or are down) alongside the per-status run counts. Read-only.
+   */
+  liveness(): Promise<Liveness>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;
@@ -1174,5 +1195,5 @@ declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

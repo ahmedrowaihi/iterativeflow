@@ -19,6 +19,25 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       expect(leases[0].expiresAt.getTime()).toBe(at(1000).getTime());
     });
 
+    it("depth reports backlog, in-flight, and the oldest-claimable age", async () => {
+      const q = await makeQueue();
+      expect(await q.depth(at(0))).toEqual({ claimable: 0, leased: 0, oldestClaimableAgeMs: null });
+
+      await q.enqueue("r1", { runAt: at(0) });
+      await q.enqueue("r2", { runAt: at(5000) }); // future — not due at t=1000
+      const backlog = await q.depth(at(1000));
+      expect(backlog).toEqual({ claimable: 1, leased: 0, oldestClaimableAgeMs: 1000 });
+
+      const leases = await q.claim({ limit: 10, leaseMs: 1000, now: at(1000) });
+      expect(leases.map((l) => l.runId)).toEqual(["r1"]);
+      // r1 now leased (in flight), r2 still future → nothing claimable
+      expect(await q.depth(at(1000))).toEqual({
+        claimable: 0,
+        leased: 1,
+        oldestClaimableAgeMs: null,
+      });
+    });
+
     it("a future runAt is not claimable until due", async () => {
       const q = await makeQueue();
       await q.enqueue("r1", { runAt: at(5000) });

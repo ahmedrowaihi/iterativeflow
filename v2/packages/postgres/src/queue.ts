@@ -1,4 +1,4 @@
-import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
+import type { ClaimOpts, IdGen, Lease, Queue, QueueDepth } from "@iterativeflow/core/backend";
 import { type Tables, tables } from "#schema";
 import { enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
@@ -75,6 +75,23 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
            AND version <> $4::bigint`,
         params,
       );
+    },
+
+    async depth(now): Promise<QueueDepth> {
+      const claimable = `run_at <= $1::timestamptz AND (lease_expires IS NULL OR lease_expires <= $1::timestamptz)`;
+      const rows = await sql.query<{ claimable: number; leased: number; oldest: Date | null }>(
+        `SELECT count(*) FILTER (WHERE ${claimable})::int AS claimable,
+                count(*) FILTER (WHERE lease_expires > $1::timestamptz)::int AS leased,
+                min(run_at) FILTER (WHERE ${claimable}) AS oldest
+         FROM ${t.job}`,
+        [at(now)],
+      );
+      const r = rows[0];
+      return {
+        claimable: r.claimable,
+        leased: r.leased,
+        oldestClaimableAgeMs: r.oldest ? now.getTime() - r.oldest.getTime() : null,
+      };
     },
   };
 };
