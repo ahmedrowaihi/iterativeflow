@@ -118,7 +118,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        # Node 22+ only: the durable-objects equivalence test uses the built-in `node:sqlite`
+        # (added in 22.5), and the testcontainers/undici stack needs 22+ (`markAsUncloneable`).
+        # The packages run on Node 20 at runtime; the test tooling does not.
+        node: ["22"]
     defaults:
       run:
         working-directory: v2
