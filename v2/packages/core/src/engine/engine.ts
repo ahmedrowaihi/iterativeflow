@@ -22,6 +22,7 @@ import {
   type SubmitOpts,
   type SweepResult,
   cancelRun,
+  prune,
   reconcile,
   result,
   retryRun,
@@ -120,6 +121,12 @@ export interface Engine {
   tick(): Promise<TickResult[]>;
   /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
   reconcile(): Promise<number>;
+  /**
+   * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
+   * (default 1000). Returns how many were deleted. Schedule this yourself — retention window is a
+   * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
+   */
+  prune(olderThanMs: number, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -182,6 +189,8 @@ export const createEngine = (
 
     tick: () => tickOnce(backend, reg, tickOpts),
     reconcile: () => reconcile(backend, { limit: tickOpts.batchMax }),
+    prune: (olderThanMs, limit = 1000) =>
+      prune(backend, { before: new Date(clock().getTime() - olderThanMs), limit }),
     runCrons: () => runDueCrons(backend, clock),
     serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 

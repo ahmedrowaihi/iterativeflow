@@ -206,6 +206,41 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect((await s.loadRun(runId))?.run.status).toBe("canceled");
     });
 
+    it("deleteRunsOlderThan prunes terminal runs (with steps + signals) before the cutoff, spares live ones", async () => {
+      const s = await makeStore();
+      const doomed = await s.startRun({ name: "f", version: 1, input: {} });
+      // a step + a signal so the cascade delete is exercised (on Postgres the run FK would block if not)
+      await s.checkpointStep({
+        runId: doomed.runId,
+        cursorKey: "a",
+        status: "ok",
+        result: 1,
+        attempts: 1,
+      });
+      await s.postSignal(doomed.runId, "go", { ok: true });
+      await s.markTerminal(doomed.runId, { status: "done", output: 1 });
+      const live = await s.startRun({ name: "f", version: 1, input: {} });
+
+      // future cutoff → the terminal run goes; the pending run is spared by its (non-terminal) status
+      expect(await s.deleteRunsOlderThan(new Date(Date.now() + 60_000), 100)).toBe(1);
+      expect(await s.loadRun(doomed.runId)).toBeUndefined();
+      expect((await s.loadRun(live.runId))?.run.status).toBe("pending");
+    });
+
+    it("deleteRunsOlderThan honours the cutoff and the per-sweep limit", async () => {
+      const s = await makeStore();
+      const a = await s.startRun({ name: "f", version: 1, input: {} });
+      const b = await s.startRun({ name: "f", version: 1, input: {} });
+      await s.markTerminal(a.runId, { status: "done", output: 1 });
+      await s.markTerminal(b.runId, { status: "failed", error: { code: "X", message: "x" } });
+      // a past cutoff spares everything (both were created after it)
+      expect(await s.deleteRunsOlderThan(new Date(Date.now() - 60_000), 100)).toBe(0);
+      // the limit caps one sweep, so a backlog drains over repeated calls
+      expect(await s.deleteRunsOlderThan(new Date(Date.now() + 60_000), 1)).toBe(1);
+      expect(await s.deleteRunsOlderThan(new Date(Date.now() + 60_000), 1)).toBe(1);
+      expect(await s.deleteRunsOlderThan(new Date(Date.now() + 60_000), 1)).toBe(0);
+    });
+
     it("checkpointStep on an unknown run is rejected (no orphan step)", async () => {
       const s = await makeStore();
       await expect(

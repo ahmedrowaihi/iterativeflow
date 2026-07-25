@@ -294,6 +294,28 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return rows.map((r) => r.id);
     },
 
+    deleteRunsOlderThan(before, limit) {
+      return sql.tx(async (tx) => {
+        const ids = (
+          await tx.query<{ id: string }>(
+            `SELECT id FROM ${t.run}
+             WHERE status IN ${TERMINAL} AND created_at < $1
+             ORDER BY created_at LIMIT $2`,
+            [before, limit],
+          )
+        ).map((r) => r.id);
+        if (ids.length === 0) return 0;
+        // step/signal FK the run; event/job/timer don't — delete all before the run itself.
+        await tx.query(`DELETE FROM ${t.step} WHERE run_id = ANY($1)`, [ids]);
+        await tx.query(`DELETE FROM ${t.signal} WHERE run_id = ANY($1)`, [ids]);
+        await tx.query(`DELETE FROM ${t.event} WHERE run_id = ANY($1)`, [ids]);
+        await tx.query(`DELETE FROM ${t.job} WHERE run_id = ANY($1)`, [ids]);
+        await tx.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1)`, [ids]);
+        await tx.query(`DELETE FROM ${t.run} WHERE id = ANY($1)`, [ids]);
+        return ids.length;
+      });
+    },
+
     retryRun(runId) {
       return sql.tx(async (tx) => {
         const rows = await tx.query(

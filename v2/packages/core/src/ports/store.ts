@@ -138,6 +138,14 @@ export interface Store {
   runStats(): Promise<Record<RunStatus, number>>;
 
   /**
+   * Delete up to `limit` TERMINAL runs (done/failed/canceled) created before `before`, together with
+   * their steps, signals, and events — the retention sweep. Live runs are never touched. Returns how
+   * many runs were deleted. Deleting a parent whose (also-terminal) children outlive it leaves those
+   * children's `parentRunId` dangling, which is harmless — `childrenOf` simply stops finding the parent.
+   */
+  deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
+
+  /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no
    * pending timer (stranded by a crash between a state write and its enqueue, or by a lost
    * wakeup). The reconciler re-enqueues them. Returns up to `limit`, oldest first.
