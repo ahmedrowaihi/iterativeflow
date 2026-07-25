@@ -169,11 +169,22 @@ jobs:
       - name: detect pending v2 changesets
         id: v2changesets
         run: |
-          if ls .changeset/*.md 2>/dev/null | grep -v README.md | grep -q .; then
-            echo "hasChangesets=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hasChangesets=false" >> "$GITHUB_OUTPUT"
+          pending=false
+          if [ -f .changeset/pre.json ]; then
+            # Prerelease mode keeps changeset files until `pre exit`, so file-existence is always
+            # true and publish would never fire. "Pending" here means a changeset NOT yet recorded
+            # (applied) in pre.json — once the version PR records them all, this flips to false.
+            applied=$(node -p "(require('./.changeset/pre.json').changesets||[]).join('\n')")
+            for f in .changeset/*.md; do
+              [ -e "$f" ] || continue
+              name=$(basename "$f" .md)
+              [ "$name" = "README" ] && continue
+              printf '%s\n' "$applied" | grep -qxF "$name" || pending=true
+            done
+          elif ls .changeset/*.md 2>/dev/null | grep -v README.md | grep -q .; then
+            pending=true
           fi
+          echo "hasChangesets=$pending" >> "$GITHUB_OUTPUT"
 
       - name: open v2 version PR
         if: steps.v2changesets.outputs.hasChangesets == 'true'
@@ -193,9 +204,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # hasChangesets=='false' stays true after a release too (all changesets recorded in pre.json),
+      # so skip when this fixed-group version is already on npm — else it re-publishes and 403s.
       - name: publish v2 via oidc
         if: steps.v2changesets.outputs.hasChangesets == 'false'
-        run: npx changeset publish
+        run: |
+          VERSION=$(node -p "require('./packages/core/package.json').version")
+          if npm view "@iterativeflow/core@${VERSION}" version >/dev/null 2>&1; then
+            echo "@iterativeflow/* @${VERSION} already published — skipping."
+          else
+            npx changeset publish
+          fi
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
