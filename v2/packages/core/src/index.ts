@@ -21,9 +21,17 @@ export { isRunStatus } from "#status";
 /** The backend `createEngine` runs on; construct one with a backend package (or the SPI). */
 export type { Backend } from "#ports/outbox";
 
-export { defineFlow, registry, signalType, validateInput, validateSignal } from "#engine/flow";
+export {
+  defineContract,
+  defineFlow,
+  registry,
+  signalType,
+  validateInput,
+  validateSignal,
+} from "#engine/flow";
 export type {
   AnyFlow,
+  Contract,
   Flow,
   FlowOutputs,
   FlowPolicy,

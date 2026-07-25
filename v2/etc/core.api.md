@@ -740,10 +740,34 @@ interface FlowPolicy {
   maxFanOut?: number;
   maxDepth?: number;
 }
-/** Validate `input` against a flow's schema (if any). Throws with the collected issues. */
-declare const validateInput: <I>(flow: Flow<I, any, any>, input: I) => Promise<I>;
+/** Validate `input` against a flow's (or contract's) schema (if any). Throws with the collected issues. */
+declare const validateInput: <I>(flow: {
+  name: string;
+  input?: InputSchema<I>;
+}, input: I) => Promise<I>;
 /** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
 declare const defineFlow: <I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>) => Flow<I, O, S>;
+/**
+ * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
+ * signals, WITHOUT the run body. A caller that doesn't own the implementation (another service, or a
+ * Go worker sharing the database) can `submit`/`result`/`signal` against it with full type-safety;
+ * `submit` accepts a {@link Flow} or a `Contract` interchangeably. The declaring worker still owns
+ * execution and the authoritative input validation.
+ */
+interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
+  name: string;
+  version: number;
+  /** Optional submit-side input validator — the executing worker validates authoritatively regardless. */
+  input?: InputSchema<I>;
+  signals?: SignalSchemas<S>;
+  /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */
+  readonly __out?: O;
+}
+/**
+ * Declare a flow's {@link Contract} for cross-service typed submits. The output type is explicit
+ * (there is no body to infer it from): `defineContract<Input, Output, Signals>({ name, version })`.
+ */
+declare const defineContract: <I = unknown, O = unknown, S extends SignalMap = NoSignals>(contract: Contract<I, O, S>) => Contract<I, O, S>;
 /** A flow of any shape — the registry and executor dispatch flows type-erased. */
 type AnyFlow = Flow<any, any, any>;
 /** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
@@ -877,8 +901,9 @@ interface SubmitOpts extends EnqueueOpts {
   /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
   onDuplicate?: OnDuplicate;
 }
-/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle. */
-declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S>, input: I, opts?: SubmitOpts) => Promise<RunHandle<O, S>>;
+/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle.
+ *  Accepts a {@link Flow} or a {@link Contract} — the latter for a caller that doesn't own the body. */
+declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts) => Promise<RunHandle<O, S>>;
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
 interface SubmitSpec<I = unknown> {
   flow: Flow<I, any, any>;
@@ -1040,7 +1065,7 @@ interface RunLoopOpts {
  */
 interface Engine {
   readonly backend: Backend;
-  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
+  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
   submitMany<I>(items: readonly SubmitSpec<I>[]): Promise<string[]>;
   signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
     idempotencyKey?: string;
@@ -1149,5 +1174,5 @@ declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

@@ -6,6 +6,7 @@ import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
 import {
   type AnyFlow,
+  type Contract,
   type Flow,
   type NoSignals,
   type SignalMap,
@@ -91,7 +92,7 @@ export interface Engine {
   readonly backend: Backend;
 
   submit<I, O, S extends SignalMap = NoSignals>(
-    flow: Flow<I, O, S>,
+    flow: Flow<I, O, S> | Contract<I, O, S>,
     input: I,
     opts?: SubmitOpts,
   ): Promise<RunHandle<O, S>>;

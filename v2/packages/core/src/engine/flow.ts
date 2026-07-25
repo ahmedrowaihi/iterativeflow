@@ -95,8 +95,11 @@ export interface FlowPolicy {
   maxDepth?: number;
 }
 
-/** Validate `input` against a flow's schema (if any). Throws with the collected issues. */
-export const validateInput = async <I>(flow: Flow<I, any, any>, input: I): Promise<I> => {
+/** Validate `input` against a flow's (or contract's) schema (if any). Throws with the collected issues. */
+export const validateInput = async <I>(
+  flow: { name: string; input?: InputSchema<I> },
+  input: I,
+): Promise<I> => {
   if (!flow.input) return input;
   const r = await flow.input["~standard"].validate(input);
   if (r.issues) {
@@ -111,6 +114,31 @@ export const validateInput = async <I>(flow: Flow<I, any, any>, input: I): Promi
 export const defineFlow = <I, O, S extends SignalMap = NoSignals>(
   flow: Flow<I, O, S>,
 ): Flow<I, O, S> => flow;
+
+/**
+ * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
+ * signals, WITHOUT the run body. A caller that doesn't own the implementation (another service, or a
+ * Go worker sharing the database) can `submit`/`result`/`signal` against it with full type-safety;
+ * `submit` accepts a {@link Flow} or a `Contract` interchangeably. The declaring worker still owns
+ * execution and the authoritative input validation.
+ */
+export interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
+  name: string;
+  version: number;
+  /** Optional submit-side input validator — the executing worker validates authoritatively regardless. */
+  input?: InputSchema<I>;
+  signals?: SignalSchemas<S>;
+  /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */
+  readonly __out?: O;
+}
+
+/**
+ * Declare a flow's {@link Contract} for cross-service typed submits. The output type is explicit
+ * (there is no body to infer it from): `defineContract<Input, Output, Signals>({ name, version })`.
+ */
+export const defineContract = <I = unknown, O = unknown, S extends SignalMap = NoSignals>(
+  contract: Contract<I, O, S>,
+): Contract<I, O, S> => contract;
 
 /** A flow of any shape — the registry and executor dispatch flows type-erased. */
 export type AnyFlow = Flow<any, any, any>;

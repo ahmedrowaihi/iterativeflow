@@ -6,6 +6,7 @@ import type { FlowError, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult, runTick } from "#engine/executor";
 import {
+  type Contract,
   type Flow,
   type FlowRegistry,
   type NoSignals,
@@ -40,10 +41,11 @@ export interface SubmitOpts extends EnqueueOpts {
   onDuplicate?: OnDuplicate;
 }
 
-/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle. */
+/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle.
+ *  Accepts a {@link Flow} or a {@link Contract} — the latter for a caller that doesn't own the body. */
 export const submit = async <I, O, S extends SignalMap = NoSignals>(
   backend: Backend,
-  flow: Flow<I, O, S>,
+  flow: Flow<I, O, S> | Contract<I, O, S>,
   input: I,
   opts?: SubmitOpts,
 ): Promise<RunHandle<O, S>> => {
