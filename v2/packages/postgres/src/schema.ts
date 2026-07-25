@@ -41,11 +41,15 @@ CREATE TABLE IF NOT EXISTS ${t.run} (
   parent_run_id     text,
   parent_cursor_key text,
   depth             int  NOT NULL DEFAULT 0,
-  join_remaining    int  NOT NULL DEFAULT 0
+  join_remaining    int  NOT NULL DEFAULT 0,
+  created_at        timestamptz NOT NULL DEFAULT now()
 );
 -- Idempotent upgrades for tables created before these columns existed (applySchema runs on boot).
 ALTER TABLE ${t.run} ADD COLUMN IF NOT EXISTS join_remaining int NOT NULL DEFAULT 0;
 ALTER TABLE ${t.run} ADD COLUMN IF NOT EXISTS depth int NOT NULL DEFAULT 0;
+ALTER TABLE ${t.run} ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+-- Retention sweep scans terminal runs by age.
+CREATE INDEX IF NOT EXISTS run_created ON ${t.run} (created_at);
 CREATE INDEX IF NOT EXISTS run_parent ON ${t.run} (parent_run_id) WHERE parent_run_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS run_idem
   ON ${t.run} (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL;

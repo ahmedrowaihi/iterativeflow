@@ -59,6 +59,7 @@ const MODEL: TableModel[] = [
       t("parentCursorKey", `text("parent_cursor_key")`),
       t("depth", `integer("depth").notNull().default(0)`),
       t("joinRemaining", `integer("join_remaining").notNull().default(0)`),
+      t("createdAt", `timestamp("created_at", { withTimezone: true }).notNull().defaultNow()`),
     ],
     extras: [
       { name: "run_parent", on: ["parentRunId"], where: "sql`${t.parentRunId} is not null`" },

@@ -50,6 +50,7 @@ export {
   retryRun,
   result,
   reconcile,
+  prune,
   drainTimers,
   tickOnce,
   serverlessTick,

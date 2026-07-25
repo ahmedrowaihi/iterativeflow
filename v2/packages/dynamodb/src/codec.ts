@@ -33,6 +33,7 @@ export interface RunItem {
   parentRunId?: string;
   parentCursorKey?: string;
   depth?: number;
+  createdAt?: string;
   seq: number;
 }
 

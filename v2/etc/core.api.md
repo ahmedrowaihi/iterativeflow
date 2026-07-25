@@ -485,6 +485,13 @@ interface Store {
   /** Count of runs per status — the health / overview snapshot. */
   runStats(): Promise<Record<RunStatus, number>>;
   /**
+   * Delete up to `limit` TERMINAL runs (done/failed/canceled) created before `before`, together with
+   * their steps, signals, and events — the retention sweep. Live runs are never touched. Returns how
+   * many runs were deleted. Deleting a parent whose (also-terminal) children outlive it leaves those
+   * children's `parentRunId` dangling, which is harmless — `childrenOf` simply stops finding the parent.
+   */
+  deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
+  /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no
    * pending timer (stranded by a crash between a state write and its enqueue, or by a lost
    * wakeup). The reconciler re-enqueues them. Returns up to `limit`, oldest first.
@@ -930,6 +937,16 @@ declare const drainTimers: (backend: Backend, opts: {
 declare const reconcile: (backend: Backend, opts: {
   limit: number;
 }) => Promise<number>;
+/**
+ * Retention sweep: delete up to `limit` terminal runs (with their steps/signals/events) created
+ * before `before`. Live runs are untouched. Returns how many were deleted. Schedule it on a slow
+ * cadence (a cron, or your own timer) — the window is a deployment policy, so it is not wired into
+ * the worker loop. Call repeatedly until it returns `< limit` to drain a large backlog.
+ */
+declare const prune: (backend: Backend, opts: {
+  before: Date;
+  limit: number;
+}) => Promise<number>;
 interface TickOnceOpts {
   batchMax: number;
   leaseMs: number;
@@ -1044,6 +1061,12 @@ interface Engine {
   tick(): Promise<TickResult[]>;
   /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
   reconcile(): Promise<number>;
+  /**
+   * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
+   * (default 1000). Returns how many were deleted. Schedule this yourself — retention window is a
+   * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
+   */
+  prune(olderThanMs: number, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -1126,5 +1149,5 @@ declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, builder, cancelRun, createEngine, cronTag, defaultRetry, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

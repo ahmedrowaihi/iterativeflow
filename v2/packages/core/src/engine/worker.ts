@@ -190,6 +190,17 @@ export const reconcile = async (backend: Backend, opts: { limit: number }): Prom
   return orphans.length;
 };
 
+/**
+ * Retention sweep: delete up to `limit` terminal runs (with their steps/signals/events) created
+ * before `before`. Live runs are untouched. Returns how many were deleted. Schedule it on a slow
+ * cadence (a cron, or your own timer) — the window is a deployment policy, so it is not wired into
+ * the worker loop. Call repeatedly until it returns `< limit` to drain a large backlog.
+ */
+export const prune = async (
+  backend: Backend,
+  opts: { before: Date; limit: number },
+): Promise<number> => backend.store.deleteRunsOlderThan(opts.before, opts.limit);
+
 export interface TickOnceOpts {
   batchMax: number;
   leaseMs: number;

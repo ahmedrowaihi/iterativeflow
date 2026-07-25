@@ -55,6 +55,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
   const signals = new Map<string, DeliveredSignal[]>(); // runId -> ordered inbox
   const signalIdem = new Set<string>(); // delivered signal idem keys `${runId} ${idemKey}` — dedups repeat delivery
   const runSeq = new Map<string, number>(); // runId -> insertion order (listing cursor)
+  const runCreatedAt = new Map<string, number>(); // runId -> creation epoch ms (retention sweep)
   const crons = new Map<string, CronRow>();
   const joinRemaining = new Map<string, number>(); // parent runId -> children still to arrive at its join
   let seq = 0;
@@ -63,6 +64,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
   const insertRunCore = (spec: RunSpec, runId: string): void => {
     if (runs.has(runId)) return; // first-writer-wins by id (idempotent spawn on replay)
     runSeq.set(runId, ++runCounter);
+    runCreatedAt.set(runId, Date.now());
     runs.set(runId, {
       id: runId,
       name: spec.name,
@@ -275,6 +277,30 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
         .slice(0, limit)
         .map((r) => r.id);
+    },
+
+    async deleteRunsOlderThan(before, limit) {
+      const cutoff = before.getTime();
+      const victims = [...runs.values()]
+        .filter((r) => isTerminal(r.status) && (runCreatedAt.get(r.id) ?? 0) < cutoff)
+        .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
+        .slice(0, limit)
+        .map((r) => r.id);
+      const gone = new Set(victims);
+      for (const runId of victims) {
+        const r = runs.get(runId);
+        if (r?.idempotencyKey) idemIndex.delete(idemKey(r.name, r.version, r.idempotencyKey));
+        runs.delete(runId);
+        steps.delete(runId);
+        signals.delete(runId);
+        jobs.delete(runId);
+        deadlines.delete(runId);
+        joinRemaining.delete(runId);
+        runSeq.delete(runId);
+        runCreatedAt.delete(runId);
+      }
+      for (const k of signalIdem) if (gone.has(k.slice(0, k.indexOf(" ")))) signalIdem.delete(k);
+      return victims.length;
     },
 
     async retryRun(runId) {
