@@ -67,7 +67,6 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
            AND version = $4::bigint`,
         params,
       );
-      // Re-enqueued mid-lease (a wake raced this ack) → keep the job, release for re-claim.
       await sql.query(
         `UPDATE ${t.job}
            SET lease_token = NULL, lease_expires = NULL, run_at = 'epoch'::timestamptz
