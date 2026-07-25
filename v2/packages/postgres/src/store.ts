@@ -267,13 +267,17 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
              AND NOT EXISTS (SELECT 1 FROM ${t.job} j WHERE j.run_id = r.id)
              AND NOT EXISTS (SELECT 1 FROM ${t.timer} tm WHERE tm.run_id = r.id)
            UNION
-           -- lost parent-wake: awaiting_child parent whose child already finished
+           -- lost parent-wake: awaiting_child parent whose join has RESOLVED (any child failed/canceled
+           -- ⇒ fast-fail, or every child terminal) but whose wake was lost
            SELECT r.id, r.seq FROM ${t.run} r
            WHERE r.status = 'awaiting_child'
              AND NOT EXISTS (SELECT 1 FROM ${t.job} j WHERE j.run_id = r.id)
-             AND EXISTS (
-               SELECT 1 FROM ${t.run} c
-               WHERE c.parent_run_id = r.id AND c.status IN ${TERMINAL}
+             AND EXISTS (SELECT 1 FROM ${t.run} c WHERE c.parent_run_id = r.id)
+             AND (
+               EXISTS (SELECT 1 FROM ${t.run} c
+                       WHERE c.parent_run_id = r.id AND c.status IN ${NON_SUCCESS_TERMINAL})
+               OR NOT EXISTS (SELECT 1 FROM ${t.run} c
+                              WHERE c.parent_run_id = r.id AND c.status NOT IN ${TERMINAL})
              )
            UNION
            -- orphaned child: non-terminal, but its parent terminally failed/canceled

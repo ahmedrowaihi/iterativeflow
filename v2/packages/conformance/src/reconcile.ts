@@ -57,6 +57,35 @@ export const reconcileConformance = (
       expect(await store.orphanedRuns(10)).toContain(parent.runId);
     });
 
+    it("a fan-out parent with a still-running child is NOT an orphan (join not resolved)", async () => {
+      const { store } = await makeBackend();
+      const parent = await store.startRun({ name: "p", version: 1, input: {} });
+      const kids = await store.startManyRuns([
+        { name: "c", version: 1, input: {}, parentRunId: parent.runId },
+        { name: "c", version: 1, input: {}, parentRunId: parent.runId },
+      ]);
+      await store.markRunning(parent.runId);
+      await store.suspendRun(parent.runId, "awaiting_child");
+      await store.markTerminal(kids[0].runId, { status: "done", output: 1 }); // 1 of 2 done, 1 running
+      expect(await store.orphanedRuns(10)).not.toContain(parent.runId);
+    });
+
+    it("a fan-out parent with a FAILED child IS an orphan even while siblings run (fast-fail)", async () => {
+      const { store } = await makeBackend();
+      const parent = await store.startRun({ name: "p", version: 1, input: {} });
+      const kids = await store.startManyRuns([
+        { name: "c", version: 1, input: {}, parentRunId: parent.runId },
+        { name: "c", version: 1, input: {}, parentRunId: parent.runId },
+      ]);
+      await store.markRunning(parent.runId);
+      await store.suspendRun(parent.runId, "awaiting_child");
+      await store.markTerminal(kids[0].runId, {
+        status: "failed",
+        error: { code: "X", message: "boom" },
+      }); // one failed, sibling still running — parent must fast-fail
+      expect(await store.orphanedRuns(10)).toContain(parent.runId);
+    });
+
     it("a terminal run is never an orphan", async () => {
       const { store } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });

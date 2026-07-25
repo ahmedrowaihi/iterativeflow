@@ -17,7 +17,32 @@ import { A as Queue, B as RunRow, C as TimerRequest, D as ClaimOpts, E as TimerD
  */
 declare const createLocalWakeup: () => Wakeup;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type Outbox, type Page, type Queue, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isRunStatus, isTerminal, newId, statusList, zeroRunStats };
+//#region src/orphan.d.ts
+/** The minimal run shape the orphan check reads — satisfied by both `RunRow` and a backend's raw row. */
+interface OrphanRun {
+  id: string;
+  status: RunStatus;
+  parentRunId?: string;
+}
+/**
+ * The lookups the orphan check needs over the current run set. A backend builds this from its own
+ * scan (memory/DynamoDB); Postgres expresses the same predicate in SQL instead.
+ */
+interface OrphanView {
+  hasJob(runId: string): boolean;
+  hasTimer(runId: string): boolean;
+  childrenOf(runId: string): readonly OrphanRun[];
+  runById(runId: string): OrphanRun | undefined;
+}
+/**
+ * Whether reconcile should re-drive `r`. Three cases: crash-stranded (reconcilable but off the queue
+ * with no wake timer); a fan-out parent whose join has RESOLVED — any child failed/canceled
+ * (fast-fail) or every child terminal — but whose wake was lost; or a live child whose parent
+ * terminated without success (structured-concurrency cancel that never reached it).
+ */
+declare const isOrphaned: (r: OrphanRun, v: OrphanView) => boolean;
+//#endregion
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, statusList, zeroRunStats };
 ```
 
 ## id-<hash>.d.mts

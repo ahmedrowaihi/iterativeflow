@@ -46,3 +46,5 @@ export {
 } from "#status";
 export { newId } from "#id";
 export type { IdGen } from "#id";
+export { isOrphaned } from "#orphan";
+export type { OrphanView, OrphanRun } from "#orphan";
