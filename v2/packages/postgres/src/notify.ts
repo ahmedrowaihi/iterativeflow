@@ -111,6 +111,7 @@ export interface PgListener {
   start(): void;
   /** Stop listening and release the connection. */
   close(): Promise<void>;
+  /** Current connection state — `listening` once LISTEN is live, `reconnecting` on backoff. */
   state(): ListenerState;
 }
 

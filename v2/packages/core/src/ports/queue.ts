@@ -92,7 +92,11 @@ export interface Queue {
    */
   ack(lease: Lease, opts?: { now?: Date }): Promise<void>;
 
-  /** Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. */
+  /**
+   * Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. Postgres answers it
+   * with one aggregate query; memory and DynamoDB read the whole job set, so call it on a coarse
+   * cadence (a readiness probe every few seconds), not per request.
+   */
   depth(now: Date): Promise<QueueDepth>;
 
   /**

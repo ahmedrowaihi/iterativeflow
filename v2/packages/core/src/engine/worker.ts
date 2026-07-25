@@ -48,6 +48,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
   flow: Flow<I, O, S> | Contract<I, O, S>,
   input: I,
   opts?: SubmitOpts,
+  now: Clock = systemClock,
 ): Promise<RunHandle<O, S>> => {
   const validated = await validateInput(flow, input);
   const { runId, created } = await backend.store.startRun({
@@ -56,6 +57,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
     input: validated,
     idempotencyKey: opts?.idempotencyKey,
     tags: opts?.tags,
+    createdAt: now(),
   });
   if (created) {
     await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
@@ -83,7 +85,9 @@ export interface SubmitSpec<I = unknown> {
 export const submitMany = async <I>(
   backend: Backend,
   items: readonly SubmitSpec<I>[],
+  now: Clock = systemClock,
 ): Promise<string[]> => {
+  const createdAt = now();
   const specs = await Promise.all(
     items.map(async (it) => ({
       name: it.flow.name,
@@ -91,6 +95,7 @@ export const submitMany = async <I>(
       input: await validateInput(it.flow, it.input),
       idempotencyKey: it.idempotencyKey,
       tags: it.tags,
+      createdAt,
     })),
   );
   const results = await backend.store.startManyRuns(specs);

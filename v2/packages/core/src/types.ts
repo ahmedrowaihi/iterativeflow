@@ -38,6 +38,9 @@ export interface RunSpec {
   parentCursorKey?: string;
   /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
   depth?: number;
+  /** Creation instant, stamped from the engine clock at submit/spawn. Drives retention. Backends
+   *  default it to their own clock when a direct `startRun` omits it. */
+  createdAt?: Date;
 }
 
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
@@ -80,8 +83,8 @@ export interface RunRow {
   tags?: readonly string[];
   parentRunId?: string;
   parentCursorKey?: string;
-  /** Distance from a top-level submit: 0 for a direct submit, parent+1 for a child. Bounds `ctx.invoke` recursion. */
   depth?: number;
+  createdAt?: Date;
 }
 
 /** A durable signal delivered to a run's inbox, awaiting consumption by a `ctx.signal` wait. */

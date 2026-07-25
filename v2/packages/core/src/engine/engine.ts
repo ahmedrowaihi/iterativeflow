@@ -182,11 +182,11 @@ export const createEngine = (
 
     submit: async (flow, input, o) => {
       guard(input);
-      return submit(backend, flow, input, o);
+      return submit(backend, flow, input, o, clock);
     },
     submitMany: async (items) => {
       for (const it of items) guard(it.input);
-      return submitMany(backend, items);
+      return submitMany(backend, items, clock);
     },
     signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) =>
       signalRun(backend, runId, name, payload, o),

@@ -118,10 +118,8 @@ export type Clock = () => Date;
 /** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
 export const systemClock: Clock = () => new Date();
 
-/** Upper bound on children per `ctx.invoke([...])` — a guard against an unbounded runaway fan-out. */
+// Guards against an unbounded runaway fan-out (children per invoke) and recursion (invoke nesting).
 const MAX_FAN_OUT = 10_000;
-
-/** Upper bound on `ctx.invoke` nesting depth — a guard against unbounded runaway recursion (self-invoke). */
 const MAX_DEPTH = 32;
 
 // Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
@@ -289,6 +287,7 @@ export const makeCtx = ({
     parentRunId: runId,
     parentCursorKey: key,
     depth: depth + 1,
+    createdAt: now(),
   });
 
   const guardDepth = (): void => {
@@ -415,7 +414,8 @@ export const makeCtx = ({
     },
 
     log(message, data) {
-      if (replayingPrefix()) return; // don't re-emit a line the durable prefix already logged
+      // Skip entirely when nothing records it, and while replaying the already-logged durable prefix.
+      if (!obs.records("run.log") || replayingPrefix()) return;
       void Promise.resolve(obs.event("run.log", runId, now(), { message, data })).catch(() => {});
     },
   };

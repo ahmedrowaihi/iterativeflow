@@ -12,29 +12,22 @@
  * from the DDL the engine actually runs on.
  */
 
-/** A durable table's shape, mapped from the DDL — the single source the emitted TS is built from. */
 interface TableModel {
-  /** SQL table name; also the exported binding name (every table name is a valid JS identifier). */
   sql: string;
   columns: ColumnModel[];
-  /** Composite primary key column bindings; omit for a single-column `.primaryKey()`. */
   compositePk?: string[];
   extras?: IndexModel[];
 }
 
 interface ColumnModel {
-  /** JS property (camelCase). */
   js: string;
-  /** The full drizzle pg-core builder call, e.g. `text("id").primaryKey()`. */
   build: string;
 }
 
 interface IndexModel {
   name: string;
   unique?: boolean;
-  /** Column bindings the index is `.on(...)`. */
   on: string[];
-  /** Raw predicate for a partial index, referencing `t.<js>` columns. */
   where?: string;
 }
 

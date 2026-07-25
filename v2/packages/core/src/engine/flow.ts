@@ -125,7 +125,6 @@ export const defineFlow = <I, O, S extends SignalMap = NoSignals>(
 export interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
   name: string;
   version: number;
-  /** Optional submit-side input validator — the executing worker validates authoritatively regardless. */
   input?: InputSchema<I>;
   signals?: SignalSchemas<S>;
   /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */

@@ -20,6 +20,7 @@ export interface RunRecord {
   parent_run_id: string | null;
   parent_cursor_key: string | null;
   depth: number;
+  created_at: Date;
 }
 
 export const mapRun = (r: RunRecord): RunRow => ({
@@ -36,6 +37,7 @@ export const mapRun = (r: RunRecord): RunRow => ({
   parentRunId: orUndef(r.parent_run_id),
   parentCursorKey: orUndef(r.parent_cursor_key),
   depth: r.depth,
+  createdAt: r.created_at,
 });
 
 export interface StepRecord {
