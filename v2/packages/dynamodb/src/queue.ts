@@ -55,7 +55,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         const token = `${id()}:${j.runId}`;
         const expires = t + leaseMs;
         try {
-          await send(
+          const res = await send<{ Attributes?: { version?: number } }>(
             new UpdateCommand({
               TableName: table,
               Key: key.job(j.runId),
@@ -63,13 +63,16 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
               ConditionExpression:
                 "attribute_exists(pk) AND (attribute_not_exists(leaseExpires) OR leaseExpires <= :now)",
               ExpressionAttributeValues: { ":token": token, ":exp": expires, ":now": t },
+              // Capture `version` from the lease write itself: a wake that bumps it between the
+              // candidate read and this write must be reflected in the lease, or `ack` mis-decides.
+              ReturnValues: "ALL_NEW",
             }),
           );
           leases.push({
             runId: j.runId,
             token,
             expiresAt: new Date(expires),
-            version: j.version ?? 0,
+            version: Number(res.Attributes?.version ?? j.version ?? 0),
           });
         } catch (e) {
           if (!(e instanceof ConditionalCheckFailedException)) throw e; // lost the race — another worker leased it
@@ -103,7 +106,6 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
     async ack(lease: Lease, opts) {
       const now = at(opts?.now);
       try {
-        // Version unchanged → normal completion, delete the job.
         await send(
           new DeleteCommand({
             TableName: table,
@@ -115,7 +117,6 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       } catch (e) {
         if (!(e instanceof ConditionalCheckFailedException)) throw e;
         try {
-          // Re-enqueued mid-lease (a wake raced this ack) → keep the job, release for re-claim.
           await send(
             new UpdateCommand({
               TableName: table,

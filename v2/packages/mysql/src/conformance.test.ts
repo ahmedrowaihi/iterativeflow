@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   cronConformance,
   engineConformance,
@@ -9,13 +10,13 @@ import {
   timerConformance,
   wakeupConformance,
 } from "@iterativeflow/conformance";
-import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
+import { type Backend, builder, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
 import { type Pool, createPool } from "mysql2/promise";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
 import { applySchema, tables } from "#schema";
-import { mysqlPool } from "#sql";
+import { type Sql, mysqlPool } from "#sql";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const t = tables("");
@@ -71,6 +72,84 @@ describe.skipIf(skip)("mysql backend", () => {
   cronConformance("mysql", async () => (await makeBackend()).store);
   engineConformance("mysql", () => makeBackend());
 
+  describe("atomicity + concurrency", () => {
+    it("concurrent first-writer-wins: N parallel checkpoints on one key spawn exactly one child", async () => {
+      const backend = await makeBackend();
+      const { runId } = await backend.store.startRun({ name: "p", version: 1, input: {} });
+      const childIds = Array.from({ length: 8 }, () => randomUUID());
+
+      const results = await Promise.all(
+        childIds.map((cid) =>
+          backend.store
+            .checkpointStep(
+              { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
+              { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
+            )
+            .then((o) => o.result as string),
+        ),
+      );
+
+      expect(new Set(results).size).toBe(1);
+      const created = (await Promise.all(childIds.map((cid) => backend.store.loadRun(cid)))).filter(
+        Boolean,
+      );
+      expect(created).toHaveLength(1);
+      expect(created[0]?.run.id).toBe(results[0]);
+    });
+
+    it("a failing outbox rolls back the step — the write is atomic, not torn", async () => {
+      await makeBackend();
+      const clean = createMysqlBackend(mysqlPool(pool));
+      const { runId } = await clean.store.startRun({ name: "f", version: 1, input: {} });
+
+      const fault = (base: Sql, marker: string): Sql => ({
+        query: (text, params) =>
+          text.includes(marker)
+            ? Promise.reject(new Error("injected fault"))
+            : base.query(text, params),
+        exec: (text, params) =>
+          text.includes(marker)
+            ? Promise.reject(new Error("injected fault"))
+            : base.exec(text, params),
+        tx: (fn) => base.tx((tt) => fn(fault(tt, marker))),
+      });
+      const faulty = createMysqlBackend(fault(mysqlPool(pool), t.job));
+
+      await expect(
+        faulty.store.checkpointStep(
+          { runId, cursorKey: "x", status: "ok", result: 1, attempts: 1 },
+          { enqueue: [{ runId }] },
+        ),
+      ).rejects.toThrow();
+      const snap = await clean.store.loadRun(runId);
+      expect(snap?.steps.has("x")).toBe(false);
+    });
+
+    it("concurrent claims lease each run to exactly one worker (SKIP LOCKED)", async () => {
+      const backend = await makeBackend();
+      const ids: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        const { runId } = await backend.store.startRun({ name: "f", version: 1, input: { i } });
+        ids.push(runId);
+      }
+      for (const runId of ids) await backend.queue.enqueue(runId);
+      const now = new Date("2030-01-01T00:00:00Z");
+      const claimed: string[] = [];
+      // SKIP LOCKED + LIMIT counts skipped rows against the limit, so concurrent limited claims
+      // lease only the head per round — drain across rounds; the invariant is no run leased twice.
+      for (let round = 0; round < 10 && claimed.length < ids.length; round++) {
+        const batches = await Promise.all(
+          Array.from({ length: 4 }, () =>
+            backend.queue.claim({ limit: 10, leaseMs: 600_000, now }),
+          ),
+        );
+        claimed.push(...batches.flat().map((l) => l.runId));
+      }
+      expect(new Set(claimed).size).toBe(claimed.length);
+      expect(new Set(claimed)).toEqual(new Set(ids));
+    });
+  });
+
   describe("engine end-to-end", () => {
     const TERMINAL = new Set(["done", "failed", "canceled"]);
     const drive = async (
@@ -88,6 +167,23 @@ describe.skipIf(skip)("mysql backend", () => {
       }
       throw new Error("run did not settle");
     };
+
+    it("runs a builder flow with a durable sleep to completion", async () => {
+      const backend = await makeBackend();
+      const flow = builder<{ x: number }>("mysql-sleep", 1)
+        .step("doubled", (acc) => acc.input.x * 2)
+        .step("nap", async (_acc, ctx) => {
+          await ctx.sleep(5_000);
+          return "rested";
+        })
+        .output((acc) => ({ doubled: acc.doubled, nap: acc.nap }));
+      const flows = registry([flow]);
+      const runId = await submit(backend, flow, { x: 21 });
+      expect(await drive(backend, flows, runId)).toMatchObject({
+        status: "done",
+        output: { doubled: 42, nap: "rested" },
+      });
+    });
 
     it("invokes a child flow across the outbox and resumes with its output", async () => {
       const backend = await makeBackend();

@@ -8,6 +8,7 @@ import {
   NON_SUCCESS_TERMINAL_STATUSES,
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
+  orphanedRunsSql,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -273,33 +274,16 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
 
     async orphanedRuns(limit) {
       const rows = await sql.query<{ id: string }>(
-        `SELECT id FROM (
-           -- crash-stranded: non-terminal, off the queue, no pending timer to wake it
-           SELECT r.id AS id, r.seq AS rid FROM ${t.run} r
-           WHERE r.status IN ${RECONCILABLE}
-             AND NOT EXISTS (SELECT 1 FROM ${t.job} j WHERE j.run_id = r.id)
-             AND NOT EXISTS (SELECT 1 FROM ${t.timer} tm WHERE tm.run_id = r.id)
-           UNION
-           -- lost parent-wake: awaiting_child parent whose join has RESOLVED (any child failed/canceled
-           -- ⇒ fast-fail, or every child terminal) but whose wake was lost
-           SELECT r.id AS id, r.seq AS rid FROM ${t.run} r
-           WHERE r.status = 'awaiting_child'
-             AND NOT EXISTS (SELECT 1 FROM ${t.job} j WHERE j.run_id = r.id)
-             AND EXISTS (SELECT 1 FROM ${t.run} c WHERE c.parent_run_id = r.id)
-             AND (
-               EXISTS (SELECT 1 FROM ${t.run} c
-                       WHERE c.parent_run_id = r.id AND c.status IN ${NON_SUCCESS_TERMINAL})
-               OR NOT EXISTS (SELECT 1 FROM ${t.run} c
-                              WHERE c.parent_run_id = r.id AND c.status NOT IN ${TERMINAL})
-             )
-           UNION
-           -- orphaned child: non-terminal, but its parent terminally failed/canceled
-           SELECT r.id AS id, r.seq AS rid FROM ${t.run} r
-           JOIN ${t.run} p ON p.id = r.parent_run_id
-           WHERE r.status NOT IN ${TERMINAL} AND p.status IN ${NON_SUCCESS_TERMINAL}
-         ) q
-         ORDER BY q.rid
-         LIMIT ?`,
+        orphanedRunsSql({
+          run: t.run,
+          job: t.job,
+          timer: t.timer,
+          reconcilable: RECONCILABLE,
+          terminal: TERMINAL,
+          nonSuccessTerminal: NON_SUCCESS_TERMINAL,
+          order: "r.seq",
+          limit: "?",
+        }),
         [limit],
       );
       return rows.map((r) => r.id);

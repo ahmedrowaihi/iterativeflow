@@ -404,25 +404,46 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
 
     async listRuns(filter: RunFilter, page: Page) {
       const statuses = statusList(filter.status);
-      const max = page.cursor ? `(${page.cursor}` : "+inf";
-      const ids = await client.zrevrangebyscore(keys.runIndex, max, "-inf");
-      if (ids.length === 0) return { runs: [] };
-      const pipe = client.pipeline();
-      for (const runId of ids) pipe.hgetall(keys.run(runId));
-      const res = await pipe.exec();
-      const rows: { row: RunRow; seq: number }[] = [];
-      for (let i = 0; i < ids.length && rows.length < page.limit; i++) {
-        const h = (res?.[i]?.[1] ?? {}) as Hash;
-        const row = toRunRow(h);
-        if (!row) continue;
-        if (statuses && !statuses.includes(row.status)) continue;
-        if (filter.name && row.name !== filter.name) continue;
-        if (filter.tag && !(row.tags?.includes(filter.tag) ?? false)) continue;
-        rows.push({ row, seq: Number(h[RUN.seq]) });
+      // Scan the index in bounded windows so an interactive page isn't O(total runs); a filtered
+      // page has no secondary index, so widen the window to offset the misses.
+      const filtered = Boolean(statuses || filter.name || filter.tag);
+      const window = filtered ? Math.max(page.limit * 4, 64) : page.limit;
+      let max = page.cursor ? `(${page.cursor}` : "+inf";
+      const rows: RunRow[] = [];
+      let cursor: string | undefined;
+      while (rows.length < page.limit) {
+        const flat = await client.zrevrangebyscore(
+          keys.runIndex,
+          max,
+          "-inf",
+          "WITHSCORES",
+          "LIMIT",
+          0,
+          window,
+        );
+        if (flat.length === 0) break;
+        const ids: string[] = [];
+        const scores: number[] = [];
+        for (let i = 0; i < flat.length; i += 2) {
+          ids.push(flat[i] as string);
+          scores.push(Number(flat[i + 1]));
+        }
+        const pipe = client.pipeline();
+        for (const runId of ids) pipe.hgetall(keys.run(runId));
+        const res = await pipe.exec();
+        for (let i = 0; i < ids.length && rows.length < page.limit; i++) {
+          const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+          if (!row) continue;
+          if (statuses && !statuses.includes(row.status)) continue;
+          if (filter.name && row.name !== filter.name) continue;
+          if (filter.tag && !(row.tags?.includes(filter.tag) ?? false)) continue;
+          rows.push(row);
+          cursor = String(scores[i]);
+        }
+        if (ids.length < window) break; // index exhausted
+        max = `(${scores[scores.length - 1]}`;
       }
-      const last = rows[rows.length - 1];
-      const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
-      return { runs: rows.map((r) => r.row), cursor };
+      return { runs: rows, cursor: rows.length === page.limit ? cursor : undefined };
     },
 
     async childrenOf(runId) {

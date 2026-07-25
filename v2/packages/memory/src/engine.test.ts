@@ -558,6 +558,29 @@ describe("engine — end to end on the memory backend", () => {
     expect((await backend.store.listRuns({ tag: "cron:c" }, { limit: 10 })).runs).toHaveLength(1);
   });
 
+  it("does not advance the schedule when the occurrence's run fails to start (occurrence not lost)", async () => {
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "cron-recover",
+      version: 1,
+      run: async () => 1,
+    });
+    const backend = createMemoryBackend();
+    let clock = new Date("2030-03-15T00:00:00Z");
+    const now = (): Date => clock;
+    await registerCron(backend, { name: "r", schedule: "0 0 * * *", flow, input: {} }, now);
+    clock = new Date("2030-03-16T00:00:00Z");
+
+    // A fault while starting the fire must NOT advance the CAS — otherwise the occurrence is dropped
+    // (the advance-then-start bug). Start-then-advance leaves it due for the next sweep.
+    const realStart = backend.store.startRun.bind(backend.store);
+    backend.store.startRun = () => Promise.reject(new Error("boom"));
+    await expect(runDueCrons(backend, now)).rejects.toThrow();
+    backend.store.startRun = realStart;
+
+    expect(await runDueCrons(backend, now)).toBe(1); // recovered — same occurrence still fires once
+    expect((await backend.store.listRuns({ tag: "cron:r" }, { limit: 10 })).runs).toHaveLength(1);
+  });
+
   it("serverlessTick advances a sleep and fires a cron with no resident loop (cron-Lambda model)", async () => {
     const napper = defineFlow<Record<string, never>, string>({
       name: "napper2",

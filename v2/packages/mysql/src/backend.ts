@@ -1,4 +1,10 @@
-import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
+import {
+  type Backend,
+  type IdGen,
+  assertSqlIdentifier,
+  createLocalWakeup,
+  newId,
+} from "@iterativeflow/core/backend";
 import { createMysqlQueue } from "#queue";
 import { type Tables, tables } from "#schema";
 import type { Sql } from "#sql";
@@ -18,6 +24,7 @@ export interface MysqlBackendOpts {
  * `FOR UPDATE SKIP LOCKED`. Wakeup is in-process. Run {@link applySchema} once before use.
  */
 export const createMysqlBackend = (sql: Sql, opts: MysqlBackendOpts = {}): Backend => {
+  assertSqlIdentifier(opts.prefix ?? "");
   const t: Tables = tables(opts.prefix ?? "");
   const id = opts.id ?? newId;
   return {

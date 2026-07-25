@@ -74,13 +74,11 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
 
     async ack(lease: Lease, opts) {
       const params = [lease.runId, lease.token, ms(opts?.now), lease.version];
-      // Version unchanged → normal completion, delete the job.
       await sql.query(
         `DELETE FROM ${t.job}
          WHERE run_id = ? AND lease_token = ? AND lease_expires > ? AND version = ?`,
         params,
       );
-      // Version bumped by a wake mid-lease → release for re-claim instead of deleting.
       await sql.query(
         `UPDATE ${t.job} SET lease_token = NULL, lease_expires = NULL, run_at = 0
          WHERE run_id = ? AND lease_token = ? AND lease_expires > ? AND version <> ?`,

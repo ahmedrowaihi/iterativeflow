@@ -38,6 +38,9 @@ export const mysqlPool = (pool: Pool): Sql => ({
   async tx(fn) {
     const c = await pool.getConnection();
     try {
+      // READ COMMITTED (not MySQL's REPEATABLE READ default): a first-writer-wins checkpoint's
+      // re-read must see a concurrent winner's just-committed row, as the Postgres-based model assumes.
+      await c.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
       await c.beginTransaction();
       const out = await fn(onConn(c));
       await c.commit();

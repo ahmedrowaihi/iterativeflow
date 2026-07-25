@@ -60,7 +60,6 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
 
     async ack(lease: Lease, opts) {
       const params = [lease.runId, lease.token, at(opts?.now), lease.version];
-      // Version unchanged → normal completion, delete the job.
       await sql.query(
         `DELETE FROM ${t.job}
          WHERE run_id = $1 AND lease_token = $2 AND lease_expires > $3::timestamptz

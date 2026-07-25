@@ -26,7 +26,7 @@ interface OrphanRun {
 }
 /**
  * The lookups the orphan check needs over the current run set. A backend builds this from its own
- * scan (memory/DynamoDB); Postgres expresses the same predicate in SQL instead.
+ * scan (memory/DynamoDB); the SQL backends express the same predicate as {@link orphanedRunsSql}.
  */
 interface OrphanView {
   hasJob(runId: string): boolean;
@@ -41,8 +41,38 @@ interface OrphanView {
  * terminated without success (structured-concurrency cancel that never reached it).
  */
 declare const isOrphaned: (r: OrphanRun, v: OrphanView) => boolean;
+/** Dialect specifics for {@link orphanedRunsSql} — table identifiers and status tuples are already
+ *  rendered (schema/prefix applied, `('done',…)`), so the builder stays dialect-neutral. */
+interface OrphanSqlOpts {
+  run: string;
+  job: string;
+  timer: string;
+  /** Status sets rendered as SQL tuples, e.g. `('done','failed','canceled')`. */
+  reconcilable: string;
+  terminal: string;
+  nonSuccessTerminal: string;
+  /** Insertion-order column to page by, e.g. `r.seq` (Postgres/MySQL) or `r.rowid` (SQLite). */
+  order: string;
+  /** Bind placeholder for the `LIMIT`, e.g. `$1` (Postgres) or `?` (SQLite/MySQL). */
+  limit: string;
+}
+/**
+ * The SQL form of {@link isOrphaned}: the same three-case predicate as one UNION query, for the SQL
+ * backends that detect orphans in the database instead of a scan. Single source so a new orphan case
+ * lands in both the TS predicate and every SQL backend at once. Returns run ids ordered oldest-first.
+ */
+declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, queueDepthOf, statusList, zeroRunStats };
+//#region src/sql-name.d.ts
+/**
+ * The schema/table-prefix is the one value the SQL backends interpolate into SQL rather than bind as
+ * a parameter (an identifier can't be a bind). It is normally a static config constant, but guard it
+ * so that a caller who ever derives it from tenant/request input can't inject: allow only a bare
+ * identifier (letters, digits, underscore; may be empty for "no prefix").
+ */
+declare const assertSqlIdentifier: (name: string, what?: string) => void;
+//#endregion
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, queueDepthOf, statusList, zeroRunStats };
 ```
 
 ## id-<hash>.d.mts
@@ -919,10 +949,10 @@ interface CronDef<I> {
  */
 declare const registerCron: <I>(backend: Backend, def: CronDef<I>, now?: () => Date) => Promise<void>;
 /**
- * Fire every due cron once. Each occurrence is claimed by a single worker via the CAS in
- * `advanceCron`, so a fleet never double-fires; the run is also keyed by an idempotency key
- * (`cron:name:fireTime`) as a second guard. Run this on a slow interval or as an internal cron.
- * Returns how many runs were started.
+ * Fire every due cron once. Each occurrence's run is deduped across a fleet by the occurrence-scoped
+ * idempotency key (`cron:name:fireTime`), and the schedule is advanced by the `advanceCron` CAS so
+ * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
+ * many occurrences this worker advanced.
  */
 declare const runDueCrons: (backend: Backend, now?: () => Date) => Promise<number>;
 //#endregion

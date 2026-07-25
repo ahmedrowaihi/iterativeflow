@@ -86,6 +86,72 @@ describe("github preset verifier", () => {
 });
 
 describe("hmacVerifier (generic building block)", () => {
+  it("refuses to build with an empty secret (fails closed, not open)", () => {
+    expect(() =>
+      hmacVerifier({ secret: "", signatureHeader: "x", idHeader: "y", typeHeader: "z" }),
+    ).toThrow(/non-empty/);
+    expect(() => github("")).toThrow(/non-empty/);
+  });
+
+  it("verifies a SHA-1 provider when configured", async () => {
+    const secret = "sha1-secret";
+    const body = JSON.stringify({ a: 1 });
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"],
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const verify = hmacVerifier({
+      secret,
+      signatureHeader: "x-sig",
+      idHeader: "x-id",
+      typeHeader: "x-type",
+      hash: "SHA-1",
+    });
+    const event = await verify({
+      body,
+      headers: { "x-sig": hex, "x-id": "s1", "x-type": "t" },
+    });
+    expect(event).toMatchObject({ id: "s1", type: "t" });
+    await expect(
+      verify({
+        body: JSON.stringify({ a: 2 }),
+        headers: { "x-sig": hex, "x-id": "s1", "x-type": "t" },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_signature" });
+  });
+
+  it("reads the first value of an array-valued signature header", async () => {
+    const secret = "arr";
+    const body = JSON.stringify({ a: 1 });
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const verify = hmacVerifier({
+      secret,
+      signatureHeader: "x-sig",
+      idHeader: "x-id",
+      typeHeader: "x-type",
+    });
+    const event = await verify({
+      body,
+      headers: { "x-sig": [hex, "other"], "x-id": ["a1"], "x-type": ["t"] },
+    });
+    expect(event).toMatchObject({ id: "a1", type: "t" });
+  });
+
   it("supports a no-scheme, custom-header provider", async () => {
     const secret = "abc";
     const body = JSON.stringify({ hello: "world" });
