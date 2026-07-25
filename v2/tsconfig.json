@@ -21,7 +21,14 @@
       "@iterativeflow/conformance": ["./packages/conformance/src/index.ts"],
       "@iterativeflow/memory": ["./packages/memory/src/index.ts"],
       "@iterativeflow/postgres": ["./packages/postgres/src/index.ts"],
-      "@iterativeflow/dynamodb": ["./packages/dynamodb/src/index.ts"]
+      "@iterativeflow/dynamodb": ["./packages/dynamodb/src/index.ts"],
+      "@iterativeflow/redis": ["./packages/redis/src/index.ts"],
+      "@iterativeflow/sqlite": ["./packages/sqlite/src/index.ts"],
+      "@iterativeflow/mysql": ["./packages/mysql/src/index.ts"],
+      "@iterativeflow/mongodb": ["./packages/mongodb/src/index.ts"],
+      "@iterativeflow/durable-objects": ["./packages/durable-objects/src/index.ts"],
+      "@iterativeflow/dashboard": ["./packages/dashboard/src/index.ts"],
+      "@iterativeflow/webhooks": ["./packages/webhooks/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts"],

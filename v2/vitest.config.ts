@@ -18,6 +18,13 @@ export default defineConfig({
       { find: "@iterativeflow/memory", replacement: pkg("memory") },
       { find: "@iterativeflow/postgres", replacement: pkg("postgres") },
       { find: "@iterativeflow/dynamodb", replacement: pkg("dynamodb") },
+      { find: "@iterativeflow/redis", replacement: pkg("redis") },
+      { find: "@iterativeflow/sqlite", replacement: pkg("sqlite") },
+      { find: "@iterativeflow/mysql", replacement: pkg("mysql") },
+      { find: "@iterativeflow/mongodb", replacement: pkg("mongodb") },
+      { find: "@iterativeflow/durable-objects", replacement: pkg("durable-objects") },
+      { find: "@iterativeflow/dashboard", replacement: pkg("dashboard") },
+      { find: "@iterativeflow/webhooks", replacement: pkg("webhooks") },
     ],
   },
   test: {
