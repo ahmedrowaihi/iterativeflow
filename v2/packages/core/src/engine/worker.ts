@@ -64,7 +64,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
 };
 
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
-export interface SubmitItem<I = unknown> {
+export interface SubmitSpec<I = unknown> {
   flow: Flow<I, any, any>;
   input: I;
   idempotencyKey?: string;
@@ -80,7 +80,7 @@ export interface SubmitItem<I = unknown> {
  */
 export const submitMany = async <I>(
   backend: Backend,
-  items: readonly SubmitItem<I>[],
+  items: readonly SubmitSpec<I>[],
 ): Promise<string[]> => {
   const specs = await Promise.all(
     items.map(async (it) => ({

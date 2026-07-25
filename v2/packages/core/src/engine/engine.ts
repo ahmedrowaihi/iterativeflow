@@ -18,7 +18,7 @@ import { type CronDef, registerCron, runDueCrons } from "#engine/schedule";
 import {
   type RunHandle,
   type RunResult,
-  type SubmitItem,
+  type SubmitSpec,
   type SubmitOpts,
   type SweepResult,
   cancelRun,
@@ -94,7 +94,7 @@ export interface Engine {
     input: I,
     opts?: SubmitOpts,
   ): Promise<RunHandle<O, S>>;
-  submitMany<I>(items: readonly SubmitItem<I>[]): Promise<string[]>;
+  submitMany<I>(items: readonly SubmitSpec<I>[]): Promise<string[]>;
   signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(
     handle: RunHandle<O, S> | string,
     name: K,

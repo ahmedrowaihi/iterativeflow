@@ -8,7 +8,7 @@ import {
   signalRun,
   submit,
   tickOnce,
-  type,
+  signalType,
 } from "@iterativeflow/core";
 import { isTerminal } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
@@ -100,7 +100,7 @@ export const engineConformance = (
       const flow = defineFlow({
         name: "approve",
         version: 1,
-        signals: { go: type<{ ok: boolean }>() },
+        signals: { go: signalType<{ ok: boolean }>() },
         run: async (ctx): Promise<string> => {
           const d = await ctx.signal("go");
           return d.ok ? "shipped" : "held";
