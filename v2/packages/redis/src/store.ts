@@ -22,6 +22,7 @@ import {
 } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
+import { luaRunner } from "#scripts";
 import {
   cronRowFromSpec,
   decodeCron,
@@ -203,8 +204,7 @@ return 1`;
 
 /** The Redis {@link Store}: durable run state + the transactional outbox over one ioredis client. */
 export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): Store => {
-  const evalLua = <T>(script: string, k: string[], args: (string | number)[]): Promise<T> =>
-    client.eval(script, k.length, ...k, ...args) as Promise<T>;
+  const evalLua = luaRunner(client);
 
   const flatFields = (spec: RunSpec, runId: string): string[] => {
     const f = runFields(spec, runId);

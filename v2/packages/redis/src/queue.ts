@@ -2,6 +2,7 @@ import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend
 import { queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys } from "#keys";
+import { luaRunner } from "#scripts";
 import { ms } from "#time";
 
 const CLAIM = `
@@ -73,6 +74,7 @@ return 1
 export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Queue => {
   // CLAIM builds each job key inside Lua (it can't call keys.job), so hand it the affixes around runId.
   const [jobPrefix, jobSuffix] = keys.jobAffix;
+  const run = luaRunner(client);
 
   return {
     async enqueue(runId, opts) {
@@ -89,18 +91,11 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
     async claim({ limit, leaseMs, now }: ClaimOpts) {
       const nowMs = ms(now);
       const tokens = Array.from({ length: limit }, () => id()); // Lua can't call IdGen; hand it fresh tokens
-      const rows = (await client.eval(
+      const rows = await run<[string, string, number][]>(
         CLAIM,
-        1,
-        keys.queue,
-        nowMs,
-        leaseMs,
-        limit,
-        limit * 10,
-        jobPrefix,
-        jobSuffix,
-        ...tokens,
-      )) as [string, string, number][];
+        [keys.queue],
+        [nowMs, leaseMs, limit, limit * 10, jobPrefix, jobSuffix, ...tokens],
+      );
       return rows.map(
         (r): Lease => ({
           runId: r[0],
@@ -113,28 +108,20 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
 
     async heartbeat(lease: Lease, { leaseMs, now }) {
       const nowMs = ms(now);
-      const newExp = (await client.eval(
+      const newExp = await run<number>(
         HEARTBEAT,
-        1,
-        keys.job(lease.runId),
-        nowMs,
-        lease.token,
-        leaseMs,
-      )) as number;
+        [keys.job(lease.runId)],
+        [nowMs, lease.token, leaseMs],
+      );
       if (newExp < 0) throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
       return { ...lease, expiresAt: new Date(newExp) };
     },
 
     async ack(lease: Lease, opts) {
-      await client.eval(
+      await run(
         ACK,
-        2,
-        keys.job(lease.runId),
-        keys.queue,
-        ms(opts?.now),
-        lease.token,
-        lease.version,
-        lease.runId,
+        [keys.job(lease.runId), keys.queue],
+        [ms(opts?.now), lease.token, lease.version, lease.runId],
       );
     },
 
