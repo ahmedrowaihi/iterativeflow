@@ -191,9 +191,6 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     async markRunning(runId) {
       const row = runs.get(runId);
       if (!row) throw new Error(`markRunning: run ${runId} not found`);
-      // A terminal run must never be resurrected to `running` by a late re-dispatch (e.g. a
-      // stale timer firing after a cancel). Hand back attempts unchanged so the caller sees
-      // it is terminal and acks without executing.
       if (isTerminal(row.status)) return row.attempts;
       row.attempts += 1;
       row.status = "running";
@@ -222,7 +219,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (!row) throw new Error(`suspendRun: run ${runId} not found`);
       if (isTerminal(row.status)) return; // already terminal — nothing to park
       row.status = status;
-      if (status !== "retrying") row.attempts = 0; // forward progress resets the poison-pill cap
+      if (status !== "retrying") row.attempts = 0;
       commitOutbox(fx);
     },
 
@@ -308,7 +305,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (row.status !== "failed") return { retried: false };
       row.status = "pending";
       row.error = undefined;
-      enqueueCore(runId); // keep ok step memos; replay skips them
+      enqueueCore(runId);
       return { retried: true };
     },
 
@@ -396,7 +393,6 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         return; // stale or expired lease — not ours to touch
       }
       if (j.version !== lease.version) {
-        // Re-enqueued (woken) since we claimed — keep the job, release it for immediate re-claim.
         j.leaseToken = undefined;
         j.leaseExpiresMs = undefined;
         j.runAtMs = 0;

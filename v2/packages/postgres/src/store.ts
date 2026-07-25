@@ -191,7 +191,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
 
     suspendRun(runId, status: SuspendStatus, fx) {
       return sql.tx(async (tx) => {
-        // Forward progress resets the poison-pill cap in the same write; `retrying` keeps it.
         const reset = status !== "retrying" ? ", attempts = 0" : "";
         const rows = await tx.query(
           `UPDATE ${t.run} SET status = $2${reset} WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
@@ -325,13 +324,12 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           [runId],
         );
         if (!rows[0]) return { retried: false };
-        await enqueueStmt(tx, t, runId); // ok step memos untouched → replay skips them
+        await enqueueStmt(tx, t, runId);
         return { retried: true };
       });
     },
 
     async upsertCron(spec) {
-      // Keep the existing next_run_at on re-register so a redeploy doesn't reset schedule timing.
       await sql.query(
         `INSERT INTO ${t.cron}
            (name, schedule, flow_name, flow_version, input, overlap, next_run_at)
