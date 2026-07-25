@@ -1,0 +1,34 @@
+{
+  "name": "@iterativeflow/durable-objects",
+  "version": "2.0.0-alpha.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git",
+    "directory": "v2/packages/durable-objects"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "@iterativeflow/core": "2.0.0-alpha.1",
+    "@iterativeflow/sqlite": "2.0.0-alpha.1"
+  }
+}
