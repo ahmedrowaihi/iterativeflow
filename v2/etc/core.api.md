@@ -397,10 +397,12 @@ interface Store {
    */
   startRun(spec: RunSpec): Promise<StartResult>;
   /**
-   * Insert many runs as one atomic unit — batch is the primitive; `startRun` is a batch of
-   * one. Either every run in the batch is created or none is (a partial batch never lands).
-   * Per-spec idempotency still applies, so a batch may mix created + already-existing runs;
-   * results align 1:1 with `specs`.
+   * Insert many runs, each created idempotently (per-spec idempotency key), results aligned 1:1
+   * with `specs` — a batch may mix created + already-existing runs. All-or-none atomicity holds
+   * where the backend commits the batch in one transaction (memory, Postgres); on DynamoDB the
+   * batch is created per-run (the `TransactWriteItems` 100-item cap makes whole-batch atomicity
+   * impossible for large batches), so a crash mid-batch can land it partially — the reconciler and
+   * idempotency keys make a re-submit safe.
    */
   startManyRuns(specs: readonly RunSpec[]): Promise<StartResult[]>;
   /** Load the run + its completed-step memo + pending signal inbox. `undefined` if gone. */

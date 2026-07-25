@@ -48,6 +48,17 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(results[1].runId).not.toBe(first.runId);
     });
 
+    it("startManyRuns dedups a key that repeats WITHIN the batch — one run, not a throw", async () => {
+      const s = await makeStore();
+      const results = await s.startManyRuns([
+        { name: "f", version: 1, input: {}, idempotencyKey: "same" },
+        { name: "f", version: 1, input: {}, idempotencyKey: "same" }, // duplicate in the same batch
+      ]);
+      expect(results).toHaveLength(2);
+      expect(results[0].runId).toBe(results[1].runId); // collapsed to one run
+      expect([results[0].created, results[1].created].filter(Boolean)).toHaveLength(1); // created once
+    });
+
     it("startRun is idempotent on the idempotency key — no duplicate run", async () => {
       const s = await makeStore();
       const a = await s.startRun({ name: "f", version: 1, input: {}, idempotencyKey: "k" });
