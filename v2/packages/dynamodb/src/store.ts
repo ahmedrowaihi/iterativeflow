@@ -172,46 +172,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   return {
     startRun: startOne,
 
-    async startManyRuns(specs) {
-      const markers = await Promise.all(
-        specs.map((spec) =>
-          spec.idempotencyKey
-            ? send<{ Item?: { runId: string } }>(
-                consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
-              )
-            : Promise.resolve(undefined),
-        ),
-      );
-      const results: StartResult[] = [];
-      const tx: TxItem[] = [];
-      for (let i = 0; i < specs.length; i++) {
-        const spec = specs[i];
-        const runId = id();
-        if (spec.idempotencyKey) {
-          const marker = markers[i];
-          if (marker?.Item) {
-            results.push(await recover(marker.Item.runId));
-            continue;
-          }
-          tx.push({
-            Put: {
-              TableName: table,
-              Item: {
-                ...key.idem(spec.name, spec.version, spec.idempotencyKey),
-                type: "idem",
-                runId,
-              },
-              ConditionExpression: "attribute_not_exists(pk)",
-            },
-          });
-        }
-        tx.push({ Put: { TableName: table, Item: buildRunItem(spec, runId) } });
-        results.push({ runId, created: true, status: "pending" });
-      }
-      for (let i = 0; i < tx.length; i += MAX_TX_ITEMS) {
-        await send(new TransactWriteCommand({ TransactItems: tx.slice(i, i + MAX_TX_ITEMS) }));
-      }
-      return results;
+    // Per-run rather than one TransactWriteItems: the 100-item cap can't hold a large batch anyway,
+    // and startOne's conditional idem-marker Put + recover already dedups colliding keys (intra-batch
+    // via the concurrent race, and cross-process). Atomicity is relaxed to per-run — see the port doc.
+    startManyRuns(specs) {
+      return Promise.all(specs.map(startOne));
     },
 
     async loadRun(runId) {
