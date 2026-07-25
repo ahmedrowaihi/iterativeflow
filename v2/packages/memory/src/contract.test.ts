@@ -6,7 +6,7 @@ import {
   signalRun,
   submit,
   tickOnce,
-  type,
+  signalType,
 } from "@iterativeflow/core";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
@@ -18,7 +18,7 @@ import { createMemoryBackend } from "#index";
 const approval = defineFlow({
   name: "approval",
   version: 1,
-  signals: { approve: type<{ by: string }>() },
+  signals: { approve: signalType<{ by: string }>() },
   run: async (ctx, input: { orderId: string }) => {
     const decision = await ctx.signal("approve"); // inferred: { by: string }
     return { orderId: input.orderId, approvedBy: decision.by, total: 42 };
@@ -29,7 +29,7 @@ const approval = defineFlow({
 defineFlow({
   name: "recv-strict",
   version: 1,
-  signals: { approve: type<{ by: string }>() },
+  signals: { approve: signalType<{ by: string }>() },
   run: async (ctx) => {
     await ctx.signal("approve");
     // @ts-expect-error unknown signal name on a flow that declares its signals

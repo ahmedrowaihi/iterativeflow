@@ -25,16 +25,16 @@ export type NoSignals = Record<never, never>;
  * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
  * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
  * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
- * it. Use {@link type} when you want the type without runtime validation.
+ * it. Use {@link signalType} when you want the type without runtime validation.
  */
 export type SignalSchema<T> = InputSchema<T>;
 
 /**
- * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: type<{ by: string }>() }`.
+ * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: signalType<{ by: string }>() }`.
  * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
  * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
  */
-export const type = <T>(): SignalSchema<T> => ({
+export const signalType = <T>(): SignalSchema<T> => ({
   "~standard": {
     version: 1,
     vendor: "iterativeflow",
@@ -81,7 +81,7 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
   input?: InputSchema<I>;
   /**
    * Declares the signals this flow awaits (name → payload type). Type-only: it drives typed
-   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link type}.
+   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link signalType}.
    */
   signals?: SignalSchemas<S>;
   /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
