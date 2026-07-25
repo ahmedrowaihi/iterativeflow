@@ -1,6 +1,7 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import type { Keys } from "#keys";
+import { luaRunner } from "#scripts";
 import { ms } from "#time";
 
 const DUE_BATCH = `
@@ -12,16 +13,19 @@ return due
 `;
 
 /** @internal */
-export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => ({
-  async schedule(runId, fireAt) {
-    await client.zadd(keys.timers, fireAt.getTime(), runId);
-  },
+export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
+  const run = luaRunner(client);
+  return {
+    async schedule(runId, fireAt) {
+      await client.zadd(keys.timers, fireAt.getTime(), runId);
+    },
 
-  async dueBatch({ now, limit }: TimerDueOpts) {
-    return (await client.eval(DUE_BATCH, 1, keys.timers, ms(now), limit)) as string[];
-  },
+    async dueBatch({ now, limit }: TimerDueOpts) {
+      return run<string[]>(DUE_BATCH, [keys.timers], [ms(now), limit]);
+    },
 
-  async cancel(runId) {
-    await client.zrem(keys.timers, runId);
-  },
-});
+    async cancel(runId) {
+      await client.zrem(keys.timers, runId);
+    },
+  };
+};
