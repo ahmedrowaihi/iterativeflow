@@ -1,5 +1,5 @@
 import { createEngine, defineFlow } from "@iterativeflow/core";
-import { createDashboard } from "@iterativeflow/dashboard";
+import { createDashboard } from "#index";
 import { createMemoryBackend } from "@iterativeflow/memory";
 import { describe, expect, it } from "vitest";
 
