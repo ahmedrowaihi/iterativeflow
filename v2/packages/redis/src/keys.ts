@@ -10,7 +10,9 @@ export interface Keys {
   run(runId: string): string;
   steps(runId: string): string;
   inbox(runId: string): string;
+  sigIdem(runId: string): string;
   job(runId: string): string;
+  jobAffix: readonly [string, string];
   /** SET of a run's direct child ids — powers `childrenOf` without a full scan. Written on spawn. */
   children(runId: string): string;
   queue: string;
@@ -26,7 +28,9 @@ export const makeKeys = (prefix: string): Keys => ({
   run: (r) => `${prefix}:run:{${r}}`,
   steps: (r) => `${prefix}:steps:{${r}}`,
   inbox: (r) => `${prefix}:inbox:{${r}}`,
+  sigIdem: (r) => `${prefix}:sigidem:{${r}}`,
   job: (r) => `${prefix}:job:{${r}}`,
+  jobAffix: [`${prefix}:job:{`, "}"],
   children: (r) => `${prefix}:children:{${r}}`,
   queue: `${prefix}:queue`,
   timers: `${prefix}:timers`,

@@ -1,8 +1,7 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import type { Keys } from "#keys";
-
-const ms = (now?: Date): number => (now ?? new Date()).getTime();
+import { ms } from "#time";
 
 const DUE_BATCH = `
 local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])

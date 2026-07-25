@@ -14,8 +14,9 @@ const num = (v: string | undefined, d = 0): number => (v === undefined ? d : Num
 const json = <T>(v: string | undefined): T | undefined =>
   v === undefined ? undefined : (JSON.parse(v) as T);
 
-/** Flat `HSET` fields for a fresh run — `status: pending`, `attempts: 0`, `joinRemaining: 0`. */
-export const runFields = (spec: RunSpec, runId: string, seq: number): Record<string, string> => {
+/** Flat `HSET` fields for a fresh run (`status: pending`, `attempts: 0`, `joinRemaining: 0`);
+ *  `seq` is assigned atomically by the creating Lua (`INCR`), not here. */
+export const runFields = (spec: RunSpec, runId: string): Record<string, string> => {
   const f: Record<string, string> = {
     [RUN.id]: runId,
     [RUN.name]: spec.name,
@@ -26,7 +27,6 @@ export const runFields = (spec: RunSpec, runId: string, seq: number): Record<str
     [RUN.depth]: String(spec.depth ?? 0),
     [RUN.createdAt]: String((spec.createdAt ?? new Date()).getTime()),
     [RUN.joinRemaining]: "0",
-    [RUN.seq]: String(seq),
   };
   if (spec.idempotencyKey !== undefined) f[RUN.idempotencyKey] = spec.idempotencyKey;
   if (spec.tags !== undefined) f[RUN.tags] = JSON.stringify(spec.tags);
