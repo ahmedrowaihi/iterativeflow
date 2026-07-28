@@ -264,7 +264,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
 
       const runId = await submit(backend, flow, {});
       const s1 = await serverlessTick(backend, flows, opts);
-      expect(s1.results).toContain("sleeping");
+      expect(s1.results.map((r) => r.status)).toContain("sleeping");
       // A later invocation, past the deadline, drains the timer and resumes — no loop between them.
       clock = new Date(clock.getTime() + 61_000);
       await serverlessTick(backend, flows, opts);

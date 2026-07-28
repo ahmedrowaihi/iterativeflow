@@ -34,8 +34,8 @@ export const defaultRetry: RetryPolicy = {
   maxDelayMs: 60_000,
 };
 
-/** What one tick did with the run — for worker metrics and tests. */
-export type TickResult =
+/** The outcome status of one tick on a run. */
+export type TickStatus =
   | "done"
   | "failed"
   | "sleeping"
@@ -47,6 +47,18 @@ export type TickResult =
   | "unknown_flow"
   | "flow_drift"
   | "canceled";
+
+/**
+ * What one tick did with a run. On a failure or drift it also carries the error and the cursor key it
+ * drifted at, so a driver (e.g. a serverless `SweepResult` consumer) can log or route WHY a run
+ * failed/drifted without reading the store.
+ */
+export interface TickResult {
+  runId: string;
+  status: TickStatus;
+  error?: FlowError;
+  cursorKey?: string;
+}
 
 export type { DriftPolicy } from "#types";
 
@@ -87,13 +99,19 @@ export const runTick = async (
   const snap = await store.loadRun(lease.runId);
   if (!snap) {
     await queue.ack(lease, { now: now() });
-    return "gone";
+    return { runId: lease.runId, status: "gone" };
   }
   if (isTerminal(snap.run.status)) {
     await queue.ack(lease, { now: now() });
-    return "already_terminal";
+    return { runId: snap.run.id, status: "already_terminal" };
   }
   const run = snap.run;
+
+  const res = (status: TickStatus, extra?: Omit<TickResult, "runId" | "status">): TickResult => ({
+    runId: run.id,
+    status,
+    ...extra,
+  });
 
   const finish = async (
     status: "done" | "failed",
@@ -117,28 +135,32 @@ export const runTick = async (
     // NOTIFY-backed wakeup also nudges other processes; poll backstops either way).
     await wakeup.signal(run.id);
     await queue.ack(lease, { now: now() });
-    return status;
+    return res(status, outcome.status === "failed" ? { error: outcome.error } : undefined);
   };
 
   const suspend = async (
     status: SuspendStatus,
-    result: TickResult,
+    tickStatus: TickStatus,
     fx?: Outbox,
+    extra?: Omit<TickResult, "runId" | "status">,
   ): Promise<TickResult> => {
     await store.suspendRun(run.id, status, fx);
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
     await queue.ack(lease, { now: now() });
-    return result;
+    return res(tickStatus, extra);
   };
 
   // The deployed code can't advance this run yet — the flow isn't registered (`unknown_flow`) or its
   // shape drifted under it (`flow_drift`). Park and re-check on a flat delay; a redeploy or version
   // bump recovers it. (The dead-letter cap still bounds a permanently-stuck run.)
-  const parkForRedeploy = (result: TickResult): Promise<TickResult> =>
-    suspend("retrying", result, {
-      timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }],
-    });
+  const parkForRedeploy = (tickStatus: TickStatus, cursorKey?: string): Promise<TickResult> =>
+    suspend(
+      "retrying",
+      tickStatus,
+      { timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }] },
+      cursorKey ? { cursorKey } : undefined,
+    );
 
   const flow = flows.get(flowKey(run.name, run.version));
   if (!flow) return parkForRedeploy("unknown_flow");
@@ -151,7 +173,7 @@ export const runTick = async (
     if (parent?.status === "failed" || parent?.status === "canceled") {
       await cancelRun(backend, run.id);
       await queue.ack(lease, { now: now() });
-      return "canceled";
+      return res("canceled");
     }
   }
 
@@ -210,7 +232,7 @@ export const runTick = async (
 
     if (e instanceof FlowDriftError) {
       if ((flow.policy?.drift ?? opts.driftPolicy ?? "park") === "park") {
-        return parkForRedeploy("flow_drift");
+        return parkForRedeploy("flow_drift", e.cursorKey);
       }
       const err = toFlowError(e);
       return finish("failed", { status: "failed", error: err }, "run.failed", { error: err });

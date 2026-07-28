@@ -41,7 +41,9 @@ const driveToDrift = async (driftPolicy?: "park" | "fail", resume = refactored) 
 describe("flow drift", () => {
   it("parks the run (recoverable) by default when the flow shape changed under it", async () => {
     const { results, run } = await driveToDrift();
-    expect(results).toContain("flow_drift");
+    const drift = results.find((r) => r.status === "flow_drift");
+    expect(drift).toBeDefined();
+    expect(drift?.cursorKey).toBeDefined(); // the tick reports WHERE it drifted, no store read
     expect(run?.status).toBe("retrying");
   });
 
