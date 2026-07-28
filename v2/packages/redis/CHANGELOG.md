@@ -1,5 +1,12 @@
 # @iterativeflow/redis
 
+## 2.0.0-alpha.4
+
+### Patch Changes
+
+- Updated dependencies [3a1d828]
+  - @iterativeflow/core@2.0.0-alpha.4
+
 ## 2.0.0-alpha.3
 
 ### Patch Changes
