@@ -1,5 +1,65 @@
 # @iterativeflow/core
 
+## 2.0.0-alpha.3
+
+### Minor Changes
+
+- 5b07ed6: First-user field-report fixes (v2 on Lambda + DynamoDB):
+
+  - **A `try/catch` around `ctx.*` is now safe.** `ctx.sleep` / `ctx.signal` / `ctx.invoke` suspend the
+    run by _throwing_ a control signal; a `catch` that swallowed it used to commit the next checkpoint
+    at the wrong cursor and drift the run permanently. The engine now re-propagates a swallowed suspend
+    at the next `ctx.*` call (and when the body returns), so the suspend still reaches the engine and
+    the run parks + resumes correctly — you no longer have to special-case control signals in your own
+    error handling.
+  - **`StepPolicy.classify` gains the attempt number** — `(error, attempt) => "transient" | "permanent"`
+    — and is now documented: fail fast on permanent (4xx/validation) errors instead of burning the
+    in-invocation + run-level retry budget.
+
+- acbe2bb: Checkpoint-based lease renewal (first-user field report #4).
+
+  A long or many-step run advanced its whole flow body under the single claim-time lease, so `leaseMs`
+  had to exceed the longest run's wall-clock or a slow run got its lease stolen and double-executed. The
+  executor now renews the lease (`queue.heartbeat`) as the run commits steps — best-effort, and only
+  once the lease is half-consumed so quick steps don't each cost a heartbeat write. Long multi-step runs
+  are safe instead of banned by the "`leaseMs` > longest run" convention. Backend-agnostic — uses the
+  existing `heartbeat` port method; no backend changes.
+
+- 2257a3e: Self-scheduling serverless (`nextWakeAt`) — first-user field-report feature.
+
+  A cron-cadence serverless driver advances a `ctx.sleep(15s)` only at the cron floor (1 minute on
+  AWS). Now `serverlessTick`'s `SweepResult` carries **`nextWakeAt`** — the earliest pending timer
+  (sleep / retry / cron) after the tick drained the due ones — and **`engine.nextWakeAt()`** exposes
+  the horizon standalone, both backed by a new **`Timer.nextDueAt(now)`** port method (one bounded read
+  on each backend's due-ordered index, never a scan). A driver arms a one-shot (EventBridge Scheduler /
+  SQS `DelaySeconds` / Step Functions `Wait`) for exactly `nextWakeAt` and pays nothing while idle, so
+  cost scales with pending work instead of wall-clock. `nextWakeAt` is timer-only; signals and
+  child-joins wake by a push on submit/signal. Additive — fixed-cadence drivers and `engine.run()` are
+  unaffected.
+
+- 12f3baa: Structured `TickResult` (first-user field report #5).
+
+  `serverlessTick` / `tickOnce` / `engine.tick()` reported a bare status string per run, so a driver
+  seeing `["flow_drift", "failed"]` had to query the store to learn WHICH run and WHY. `TickResult` is
+  now `{ runId, status, error?, cursorKey? }` — a failed, retrying, or drifted tick carries the error
+  (and, for a drift, the cursor key it drifted at), so a serverless `SweepResult` consumer can log/route
+  it without touching the store. The status-string union is now exported as `TickStatus`.
+
+  Note: this is a breaking shape change for code that compared a tick result as a string
+  (`result === "done"`) — read `result.status` instead.
+
+### Patch Changes
+
+- 539a1c2: Recovery & operations guide (first-user field report #3).
+
+  The field report asked for a supported heal/repair path for a stuck run, or at least documented
+  recovery. Since a `try/catch` around `ctx.*` is now safe (field report #1), the main way a run drifted
+  permanently is gone — so rather than a risky memo-clearing "heal" primitive, the recovery is composing
+  the existing levers. `docs/v2/RECOVERY.md` is now the lever-by-scenario guide: `retry` for a transient
+  failure, `park` + redeploy or a version bump for drift (keep old versions registered until in-flight
+  runs drain), and `cancel` + a fresh submit (new idempotency key — re-using the key returns the existing
+  run, not a fresh one) for an un-resumable run. Linked from the core README.
+
 ## 2.0.0-alpha.2
 
 ### Minor Changes
