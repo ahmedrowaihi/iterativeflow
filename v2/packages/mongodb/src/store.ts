@@ -37,7 +37,13 @@ const isDup = (e: unknown): boolean =>
  * Mirrors the in-memory reference backend's semantics — idempotent starts, first-writer-wins
  * checkpoints, terminal/cancel stickiness, poison-pill reset on forward progress.
  */
-export const createMongoStore = (client: MongoClient, db: Db, n: Names, id: IdGen): Store => {
+export const createMongoStore = (
+  client: MongoClient,
+  db: Db,
+  n: Names,
+  id: IdGen,
+  boundSession?: ClientSession,
+): Store => {
   const runs = db.collection<RunDoc>(n.runs);
   const steps = db.collection<StepDoc>(n.steps);
   const signals = db.collection<SignalDoc>(n.signals);
@@ -48,6 +54,7 @@ export const createMongoStore = (client: MongoClient, db: Db, n: Names, id: IdGe
   const timers = db.collection<{ _id: string; fire_at: number }>(n.timers);
 
   const inTx = async <T>(fn: (session: ClientSession) => Promise<T>): Promise<T> => {
+    if (boundSession) return fn(boundSession); // already in the caller's transaction — mongo can't nest
     const session = client.startSession();
     try {
       return await session.withTransaction(fn);
@@ -110,15 +117,18 @@ export const createMongoStore = (client: MongoClient, db: Db, n: Names, id: IdGe
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     try {
-      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()));
+      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), { session: boundSession });
       return { runId, created: true, status: "pending" };
     } catch (e) {
       if (!isDup(e)) throw e;
-      const existing = await runs.findOne({
-        name: spec.name,
-        version: spec.version,
-        idempotency_key: spec.idempotencyKey,
-      });
+      const existing = await runs.findOne(
+        {
+          name: spec.name,
+          version: spec.version,
+          idempotency_key: spec.idempotencyKey,
+        },
+        { session: boundSession },
+      );
       if (!existing)
         throw new Error(`startRun: idempotency collision without a matching run`, { cause: e });
       return { runId: existing._id, created: false, status: existing.status };

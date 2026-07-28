@@ -16,6 +16,7 @@ import { GenericContainer, type StartedTestContainer, Wait } from "testcontainer
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMongoBackend } from "#backend";
 import { type Names, ensureIndexes, names } from "#collections";
+import { inTx } from "#tx";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const DB = "iterativeflow";
@@ -66,6 +67,39 @@ describe.skipIf(skip)("mongodb backend", () => {
   reconcileConformance("mongodb", () => makeBackend());
   cronConformance("mongodb", async () => (await makeBackend()).store);
   engineConformance("mongodb", () => makeBackend());
+
+  it("transactional enqueue: caller's write + submit commit atomically (and roll back together)", async () => {
+    const backend = await makeBackend();
+    const orders: Collection<{ _id: string }> = client.db(DB).collection("app_orders");
+    await orders.deleteMany({});
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "fulfil",
+      version: 1,
+      run: async () => 1,
+    });
+    const orderCount = (): Promise<number> => orders.countDocuments();
+    const runCount = async (): Promise<number> =>
+      (await backend.store.listRuns({}, { limit: 10 })).runs.length;
+
+    // Rollback: a throw after submit persists neither the order nor the run/job.
+    await expect(
+      inTx(client, async (b, session) => {
+        await orders.insertOne({ _id: "o1" }, { session });
+        await submit(b, flow, {});
+        throw new Error("boom after submit");
+      }),
+    ).rejects.toThrow();
+    expect(await orderCount()).toBe(0);
+    expect(await runCount()).toBe(0);
+
+    // Commit: the order AND the enqueued run land together.
+    const id = await inTx(client, async (b, session) => {
+      await orders.insertOne({ _id: "o2" }, { session });
+      return submit(b, flow, {});
+    });
+    expect(await orderCount()).toBe(1);
+    expect(await backend.store.loadRunRow(id)).toBeDefined();
+  });
 
   describe("atomicity + concurrency", () => {
     it("concurrent first-writer-wins: N parallel checkpoints on one key spawn exactly one child", async () => {

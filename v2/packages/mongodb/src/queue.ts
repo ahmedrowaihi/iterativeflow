@@ -1,6 +1,6 @@
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { queueDepthOf } from "@iterativeflow/core/backend";
-import type { Db } from "mongodb";
+import type { ClientSession, Db } from "mongodb";
 import type { Names } from "#collections";
 
 interface JobDoc {
@@ -13,7 +13,12 @@ interface JobDoc {
 }
 
 /** @internal */
-export const createMongoQueue = (db: Db, n: Names, id: IdGen): Queue => {
+export const createMongoQueue = (
+  db: Db,
+  n: Names,
+  id: IdGen,
+  boundSession?: ClientSession,
+): Queue => {
   const jobs = db.collection<JobDoc>(n.jobs);
   const ms = (now?: Date): number => (now ?? new Date()).getTime();
 
@@ -25,7 +30,7 @@ export const createMongoQueue = (db: Db, n: Names, id: IdGen): Queue => {
           $set: { run_at: opts?.runAt ? opts.runAt.getTime() : 0, priority: opts?.priority ?? 0 },
           $inc: { version: 1 },
         },
-        { upsert: true },
+        { upsert: true, session: boundSession },
       );
     },
 
