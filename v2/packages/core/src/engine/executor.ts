@@ -68,6 +68,7 @@ export interface TickOpts {
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
+  leaseMs?: number;
 }
 
 const toFlowError = (e: unknown): FlowError => {
@@ -113,6 +114,20 @@ export const runTick = async (
     ...extra,
   });
 
+  // Renew the lease as the run commits steps, but only once it's half-consumed — a long or many-step
+  // run keeps its lease without a heartbeat write on every quick step. Best-effort: a lost lease is
+  // caught by the first-writer-wins memo + reconcile, so a failed renewal just lets the step's
+  // at-least-once contract stand. `held` is the current lease used to ack when the tick ends.
+  let held = lease;
+  const leaseMs = opts.leaseMs;
+  const renewLease =
+    leaseMs === undefined
+      ? undefined
+      : async (): Promise<void> => {
+          if (now().getTime() < held.expiresAt.getTime() - leaseMs / 2) return;
+          held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
+        };
+
   const finish = async (
     status: "done" | "failed",
     outcome: TerminalOutcome,
@@ -134,7 +149,7 @@ export const runTick = async (
     // Wake any result(run.id) waiter now the run is terminal — the local push fast path (a
     // NOTIFY-backed wakeup also nudges other processes; poll backstops either way).
     await wakeup.signal(run.id);
-    await queue.ack(lease, { now: now() });
+    await queue.ack(held, { now: now() });
     return res(status, outcome.status === "failed" ? { error: outcome.error } : undefined);
   };
 
@@ -147,7 +162,7 @@ export const runTick = async (
     await store.suspendRun(run.id, status, fx);
     await obs.event("run.suspended", run.id, now(), { status });
     obs.metrics.runSuspended?.(run.id, status);
-    await queue.ack(lease, { now: now() });
+    await queue.ack(held, { now: now() });
     return res(tickStatus, extra);
   };
 
@@ -175,7 +190,7 @@ export const runTick = async (
     const parent = await store.loadRunRow(run.parentRunId);
     if (parent?.status === "failed" || parent?.status === "canceled") {
       await cancelRun(backend, run.id);
-      await queue.ack(lease, { now: now() });
+      await queue.ack(held, { now: now() });
       return res("canceled");
     }
   }
@@ -217,6 +232,7 @@ export const runTick = async (
     maxFanOut: flow.policy?.maxFanOut,
     maxDepth: flow.policy?.maxDepth,
     suspend: suspendState,
+    renewLease,
   });
 
   try {

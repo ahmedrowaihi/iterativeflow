@@ -205,6 +205,7 @@ export interface CtxDeps {
   maxFanOut?: number;
   maxDepth?: number;
   suspend: SuspendHolder;
+  renewLease?: () => Promise<void>;
 }
 
 /** @internal */
@@ -219,6 +220,7 @@ export const makeCtx = ({
   maxFanOut,
   maxDepth,
   suspend,
+  renewLease,
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   const depth = snap.run.depth ?? 0;
@@ -281,6 +283,7 @@ export const makeCtx = ({
       attempts: attempt,
       shape,
     });
+    await renewLease?.();
     obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
     obs.metrics.stepFinished?.(runId, key);
