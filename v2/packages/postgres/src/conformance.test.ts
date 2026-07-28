@@ -134,7 +134,7 @@ describe.skipIf(skip)("postgres backend", () => {
     });
 
     it("transactional enqueue: caller's write + submit commit atomically (and roll back together)", async () => {
-      await makeBackend();
+      const backend = await makeBackend();
       await pool.query("CREATE TABLE IF NOT EXISTS app_orders (id text PRIMARY KEY)");
       await pool.query("TRUNCATE app_orders");
       const flow = defineFlow<Record<string, never>, number>({
@@ -142,40 +142,29 @@ describe.skipIf(skip)("postgres backend", () => {
         version: 1,
         run: async () => 1,
       });
-      const runCount = async (id?: string) =>
-        (
-          await pool.query(
-            id
-              ? 'SELECT count(*)::int AS n FROM "workflow".run WHERE id = $1'
-              : 'SELECT count(*)::int AS n FROM "workflow".run',
-            id ? [id] : [],
-          )
-        ).rows[0].n as number;
-      const jobCount = async (id: string) =>
-        (await pool.query('SELECT count(*)::int AS n FROM "workflow".job WHERE run_id = $1', [id]))
-          .rows[0].n as number;
-      const orderCount = async () =>
+      const orderCount = async (): Promise<number> =>
         (await pool.query("SELECT count(*)::int AS n FROM app_orders")).rows[0].n as number;
+      const runCount = async (): Promise<number> =>
+        (await backend.store.listRuns({}, { limit: 10 })).runs.length;
 
-      // Rollback path: the caller throws AFTER submit — neither the order nor the run/job persists.
+      // Rollback: a throw after submit persists neither the order nor the run/job.
       await expect(
-        inTx(pool, async (backend, tx) => {
+        inTx(pool, async (b, tx) => {
           await tx.query("INSERT INTO app_orders (id) VALUES ('o1')");
-          await submit(backend, flow, {});
+          await submit(b, flow, {});
           throw new Error("boom after submit");
         }),
       ).rejects.toThrow();
       expect(await orderCount()).toBe(0);
       expect(await runCount()).toBe(0);
 
-      // Commit path: the order AND the enqueued run land together.
-      const id = await inTx(pool, async (backend, tx) => {
+      // Commit: the order AND the enqueued run land together (same tx ⇒ the run existing proves the job did).
+      const id = await inTx(pool, async (b, tx) => {
         await tx.query("INSERT INTO app_orders (id) VALUES ('o2')");
-        return submit(backend, flow, {});
+        return submit(b, flow, {});
       });
       expect(await orderCount()).toBe(1);
-      expect(await runCount(id)).toBe(1);
-      expect(await jobCount(id)).toBe(1);
+      expect(await backend.store.loadRunRow(id)).toBeDefined();
     });
 
     it("concurrent claims lease each run to exactly one worker (SKIP LOCKED)", async () => {

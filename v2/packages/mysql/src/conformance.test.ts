@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
 import { applySchema, tables } from "#schema";
 import { type Sql, mysqlPool } from "#sql";
+import { inTx } from "#tx";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const t = tables("");
@@ -71,6 +72,42 @@ describe.skipIf(skip)("mysql backend", () => {
   reconcileConformance("mysql", () => makeBackend());
   cronConformance("mysql", async () => (await makeBackend()).store);
   engineConformance("mysql", () => makeBackend());
+
+  it("transactional enqueue: caller's write + submit commit atomically (and roll back together)", async () => {
+    const backend = await makeBackend();
+    await pool.query("CREATE TABLE IF NOT EXISTS app_orders (id VARCHAR(64) PRIMARY KEY)");
+    await pool.query("TRUNCATE app_orders");
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "fulfil",
+      version: 1,
+      run: async () => 1,
+    });
+    const orderCount = async (): Promise<number> => {
+      const [rows] = await pool.query("SELECT count(*) AS n FROM app_orders");
+      return Number((rows as { n: number }[])[0].n);
+    };
+    const runCount = async (): Promise<number> =>
+      (await backend.store.listRuns({}, { limit: 10 })).runs.length;
+
+    // Rollback: a throw after submit persists neither the order nor the run/job.
+    await expect(
+      inTx(pool, async (b, tx) => {
+        await tx.query("INSERT INTO app_orders (id) VALUES ('o1')");
+        await submit(b, flow, {});
+        throw new Error("boom after submit");
+      }),
+    ).rejects.toThrow();
+    expect(await orderCount()).toBe(0);
+    expect(await runCount()).toBe(0);
+
+    // Commit: the order AND the enqueued run land together.
+    const id = await inTx(pool, async (b, tx) => {
+      await tx.query("INSERT INTO app_orders (id) VALUES ('o2')");
+      return submit(b, flow, {});
+    });
+    expect(await orderCount()).toBe(1);
+    expect(await backend.store.loadRunRow(id)).toBeDefined();
+  });
 
   describe("atomicity + concurrency", () => {
     it("concurrent first-writer-wins: N parallel checkpoints on one key spawn exactly one child", async () => {
