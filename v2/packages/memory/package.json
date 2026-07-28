@@ -1,6 +1,6 @@
 {
   "name": "@iterativeflow/memory",
-  "version": "2.0.0-alpha.4",
+  "version": "2.0.0-alpha.5",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -28,6 +28,6 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@iterativeflow/core": "2.0.0-alpha.4"
+    "@iterativeflow/core": "2.0.0-alpha.5"
   }
 }
