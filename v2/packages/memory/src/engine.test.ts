@@ -167,6 +167,37 @@ describe("engine — end to end on the memory backend", () => {
     expect(tick?.error?.message).toContain("upstream 503");
   });
 
+  it("renews the lease as a multi-step run commits steps (long-run safety)", async () => {
+    const backend = createMemoryBackend();
+    let heartbeats = 0;
+    const realHeartbeat = backend.queue.heartbeat.bind(backend.queue);
+    backend.queue.heartbeat = (lease, o) => {
+      heartbeats += 1;
+      return realHeartbeat(lease, o);
+    };
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const now = (): Date => clock;
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "many-steps",
+      version: 1,
+      run: async (ctx) => {
+        let total = 0;
+        for (let i = 0; i < 5; i++) {
+          total += await ctx.step(`s${i}`, () => {
+            clock = new Date(clock.getTime() + 600); // past half the 1s lease → triggers a renewal
+            return i;
+          });
+        }
+        return total;
+      },
+    });
+    const runId = await submit(backend, flow, {});
+    await tickOnce(backend, registry([flow]), { batchMax: 16, leaseMs: 1_000, now });
+    const run = (await backend.store.loadRun(runId))?.run;
+    expect(run).toMatchObject({ status: "done", output: 10 });
+    expect(heartbeats).toBeGreaterThanOrEqual(4); // renewed as it progressed, not one lease for all
+  });
+
   it("suspends on sleep and resumes after the deadline", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "napper",

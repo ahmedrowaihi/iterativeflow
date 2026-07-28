@@ -244,6 +244,7 @@ export const tickOnce = async (
         id: opts.id,
         observe: opts.observe,
         driftPolicy: opts.driftPolicy,
+        leaseMs: opts.leaseMs,
       }),
     );
   }

@@ -1001,6 +1001,7 @@ interface TickOpts {
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
+  leaseMs?: number;
 }
 /**
  * Execute one claimed run to its next durable boundary (completion, suspend, or retry) and
