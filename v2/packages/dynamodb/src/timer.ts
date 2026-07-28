@@ -72,7 +72,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
           KeyConditionExpression: "gsi1pk = :tp AND gsi1sk > :now",
           ExpressionAttributeValues: {
             ":tp": TIMER_GSI_PK,
-            ":now": pad((now ?? new Date()).getTime()),
+            ":now": pad(now.getTime()),
           },
           ProjectionExpression: "fireAt",
           ScanIndexForward: true,

@@ -985,9 +985,9 @@ declare const defaultRetry: RetryPolicy;
 /** The outcome status of one tick on a run. */
 type TickStatus = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled";
 /**
- * What one tick did with a run. On a failure or drift it also carries the error and the cursor key it
- * drifted at, so a driver (e.g. a serverless `SweepResult` consumer) can log or route WHY a run
- * failed/drifted without reading the store.
+ * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
+ * (and, for a drift, the cursor key it drifted at), so a driver (e.g. a serverless `SweepResult`
+ * consumer) can log or route WHY a run failed / is retrying / drifted without reading the store.
  */
 interface TickResult {
   runId: string;

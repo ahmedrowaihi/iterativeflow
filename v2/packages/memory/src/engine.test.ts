@@ -146,6 +146,27 @@ describe("engine — end to end on the memory backend", () => {
     expect(run?.error?.message).toContain("nope");
   });
 
+  it("a retrying tick's result carries the error — why it's backing off, no store read", async () => {
+    const flow = defineFlow<Record<string, never>, never>({
+      name: "transient-boom",
+      version: 1,
+      run: async () => {
+        throw new Error("upstream 503");
+      },
+    });
+    const backend = createMemoryBackend();
+    const now = (): Date => new Date("2030-01-01T00:00:00Z");
+    const runId = await submit(backend, flow, {});
+    const [tick] = await tickOnce(backend, registry([flow]), {
+      batchMax: 16,
+      leaseMs: 600_000,
+      now,
+      retry: { maxAttempts: 3, baseDelayMs: 1_000, maxDelayMs: 1_000 },
+    });
+    expect(tick).toMatchObject({ runId, status: "retrying" });
+    expect(tick?.error?.message).toContain("upstream 503");
+  });
+
   it("suspends on sleep and resumes after the deadline", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "napper",
