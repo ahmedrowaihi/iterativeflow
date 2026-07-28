@@ -49,9 +49,9 @@ export type TickStatus =
   | "canceled";
 
 /**
- * What one tick did with a run. On a failure or drift it also carries the error and the cursor key it
- * drifted at, so a driver (e.g. a serverless `SweepResult` consumer) can log or route WHY a run
- * failed/drifted without reading the store.
+ * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
+ * (and, for a drift, the cursor key it drifted at), so a driver (e.g. a serverless `SweepResult`
+ * consumer) can log or route WHY a run failed / is retrying / drifted without reading the store.
  */
 export interface TickResult {
   runId: string;
@@ -154,12 +154,15 @@ export const runTick = async (
   // The deployed code can't advance this run yet — the flow isn't registered (`unknown_flow`) or its
   // shape drifted under it (`flow_drift`). Park and re-check on a flat delay; a redeploy or version
   // bump recovers it. (The dead-letter cap still bounds a permanently-stuck run.)
-  const parkForRedeploy = (tickStatus: TickStatus, cursorKey?: string): Promise<TickResult> =>
+  const parkForRedeploy = (
+    tickStatus: TickStatus,
+    extra?: Omit<TickResult, "runId" | "status">,
+  ): Promise<TickResult> =>
     suspend(
       "retrying",
       tickStatus,
       { timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }] },
-      cursorKey ? { cursorKey } : undefined,
+      extra,
     );
 
   const flow = flows.get(flowKey(run.name, run.version));
@@ -232,16 +235,19 @@ export const runTick = async (
 
     if (e instanceof FlowDriftError) {
       if ((flow.policy?.drift ?? opts.driftPolicy ?? "park") === "park") {
-        return parkForRedeploy("flow_drift", e.cursorKey);
+        return parkForRedeploy("flow_drift", { cursorKey: e.cursorKey });
       }
       const err = toFlowError(e);
       return finish("failed", { status: "failed", error: err }, "run.failed", { error: err });
     }
 
     if (attempt < retry.maxAttempts && !(e instanceof StepFailedError)) {
-      return suspend("retrying", "retrying", {
-        timers: [{ runId: run.id, fireAt: backoff(attempt, retry, now()) }],
-      });
+      return suspend(
+        "retrying",
+        "retrying",
+        { timers: [{ runId: run.id, fireAt: backoff(attempt, retry, now()) }] },
+        { error: toFlowError(e) },
+      );
     }
 
     const error = toFlowError(e);
