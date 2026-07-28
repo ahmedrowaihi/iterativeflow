@@ -1,5 +1,12 @@
 # @iterativeflow/durable-objects
 
+## 2.0.0-alpha.7
+
+### Patch Changes
+
+- @iterativeflow/core@2.0.0-alpha.7
+- @iterativeflow/sqlite@2.0.0-alpha.7
+
 ## 2.0.0-alpha.6
 
 ### Patch Changes
