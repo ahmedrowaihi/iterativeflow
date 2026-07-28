@@ -4,7 +4,7 @@ import type { Lease } from "#ports/queue";
 import { isTerminal } from "#status";
 import type { DriftPolicy, FlowError, SuspendStatus, TerminalOutcome } from "#types";
 import { cancelDescendants, cancelRun } from "#engine/cancel";
-import { type Clock, makeCtx, systemClock } from "#engine/context";
+import { type Clock, type SuspendHolder, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
 import { type EventType, type ObserveOpts, makeObserver } from "#engine/observe";
 import {
@@ -180,6 +180,7 @@ export const runTick = async (
 
   // `snap` was loaded after the claim, so it already holds every durable step + signal; the
   // exclusive lease means nothing else writes them mid-tick. No second load needed.
+  const suspendState: SuspendHolder = {};
   const ctx = makeCtx({
     backend,
     snap,
@@ -190,10 +191,14 @@ export const runTick = async (
     signals: flow.signals,
     maxFanOut: flow.policy?.maxFanOut,
     maxDepth: flow.policy?.maxDepth,
+    suspend: suspendState,
   });
 
   try {
     const output = await flow.run(ctx, run.input);
+    // The body returned — but if it caught and swallowed a suspend without issuing another ctx call,
+    // honour the suspend instead of completing at the wrong point.
+    if (suspendState.signal) throw suspendState.signal;
     return finish("done", { status: "done", output }, "run.completed");
   } catch (e) {
     if (e instanceof SleepSignal) {

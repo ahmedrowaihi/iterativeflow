@@ -30,7 +30,22 @@ const engine = createEngine(createDynamoBackend(docClient(low), { table: "iterat
 | Provision in CDK / CFN / TF    | `tableSpec(table?)` (the single-table + GSI shape) |
 | The exact permissions to grant | `REQUIRED_IAM_ACTIONS`                             |
 
-`TransactWriteItems` and `ConditionCheckItem` are **not** granted by a CDK
-`grantReadWriteData` — grant them explicitly on the table and `index/*`, or every
-atomic write fails once the role is locked down. See
-[docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md).
+> [!WARNING]
+> **`table.grantReadWriteData(fn)` is not enough.** CDK's grant omits
+> `TransactWriteItems` and `ConditionCheckItem` — the actions the durable
+> checkpoint uses — so every atomic write fails with an opaque `AccessDenied`
+> once the role is locked down. Grant the exported `REQUIRED_IAM_ACTIONS`
+> explicitly on the table **and** its `index/*`:
+>
+> ```ts
+> import { REQUIRED_IAM_ACTIONS } from "@iterativeflow/dynamodb";
+>
+> fn.addToRolePolicy(
+>   new iam.PolicyStatement({
+>     actions: [...REQUIRED_IAM_ACTIONS],
+>     resources: [table.tableArn, `${table.tableArn}/index/*`],
+>   }),
+> );
+> ```
+
+See [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md).

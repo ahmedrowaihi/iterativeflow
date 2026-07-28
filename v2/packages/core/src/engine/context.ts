@@ -18,6 +18,7 @@ import { type Observer, spanIdOf, traceIdOf } from "#engine/observe";
 import {
   AwaitChildSignal,
   AwaitSignalSignal,
+  type ControlSignal,
   FlowDriftError,
   SleepSignal,
   StepFailedError,
@@ -44,9 +45,10 @@ export interface StepPolicy {
   /**
    * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
    * run) immediately — no in-invocation retries, no run-level retry. `transient` (the default)
-   * retries as configured. Use it to fail fast on 4xx/validation errors and retry 5xx/timeouts.
+   * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
+   * 4xx/validation errors and retry 5xx/timeouts.
    */
-  classify?: (error: unknown) => "transient" | "permanent";
+  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
 }
 
 /**
@@ -173,12 +175,23 @@ const runWithPolicy = async <T>(
       controller.abort();
       // A permanent error fails the step (and the run) immediately — a StepFailedError is
       // non-retryable, so neither the in-invocation loop nor the run-level retry re-runs it.
-      if (policy?.classify?.(e) === "permanent") throw new StepFailedError(errCode(e), errMsg(e));
+      if (policy?.classify?.(e, attempt) === "permanent")
+        throw new StepFailedError(errCode(e), errMsg(e));
       if (attempt > retries) throw e; // transient budget spent → let run-level retry take over
       if (policy?.retryDelayMs) await pause(policy.retryDelayMs);
     }
   }
 };
+
+/**
+ * Records the control signal a suspend threw, so a swallowed suspend re-propagates. The executor
+ * owns the holder and re-throws `signal` if the flow body returns with one still pending (a `catch`
+ * that ate the suspend and never issued another `ctx.*` call).
+ * @internal
+ */
+export interface SuspendHolder {
+  signal?: ControlSignal;
+}
 
 /** @internal */
 export interface CtxDeps {
@@ -191,6 +204,7 @@ export interface CtxDeps {
   signals?: SignalSchemas<SignalMap>;
   maxFanOut?: number;
   maxDepth?: number;
+  suspend: SuspendHolder;
 }
 
 /** @internal */
@@ -204,15 +218,25 @@ export const makeCtx = ({
   signals,
   maxFanOut,
   maxDepth,
+  suspend,
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   const depth = snap.run.depth ?? 0;
   const traceId = obs.tracer ? traceIdOf(runId) : "";
   let cursor = 0;
 
+  // Record a suspend's control signal in the shared holder and hand it back to `throw`, so every
+  // suspend path records-then-throws through one idiom — the executor re-throws a recorded-but-
+  // swallowed signal, and record + throw can never diverge.
+  const arm = (sig: ControlSignal): ControlSignal => (suspend.signal = sig);
+
   // Advance the cursor and fetch the memo at it. `shape` is the `kind:label` of the call being made
   // now; if a memo recorded a different shape here, the flow body drifted under this run.
   const memoAt = (shape: string): { key: string; memo: StepOutcome | undefined } => {
+    // A prior sleep/signal/invoke suspended by throwing a control signal that the flow body caught
+    // and swallowed. Re-throw it (before advancing the cursor) so the suspend still reaches the
+    // engine and the run parks — a `try/catch` around `ctx.*` can't strand a run.
+    if (suspend.signal) throw suspend.signal;
     const key = `s${cursor++}`;
     const memo = snap.steps.get(key);
     if (memo?.shape !== undefined && memo.shape !== shape) {
@@ -277,7 +301,7 @@ export const makeCtx = ({
       });
     }
     if (now().getTime() >= at.getTime()) return;
-    throw new SleepSignal(at);
+    throw arm(new SleepSignal(at));
   };
 
   const spawnSpec = (flow: Flow<unknown, unknown, any>, input: unknown, key: string) => ({
@@ -331,7 +355,7 @@ export const makeCtx = ({
       childId = stored.result as string;
     }
     const outcome = childOutcome(await backend.store.loadRunRow(childId));
-    if (!outcome.done) throw new AwaitChildSignal(childId);
+    if (!outcome.done) throw arm(new AwaitChildSignal(childId));
     return outcome.output;
   };
 
@@ -365,7 +389,7 @@ export const makeCtx = ({
     const { key: joinKey, memo: joinMemo } = memoAt(joinShape);
     if (joinMemo) return joinMemo.result as unknown[];
     const outcomes = (await backend.store.loadRunRows(childIds)).map(childOutcome);
-    if (outcomes.some((o) => !o.done)) throw new AwaitChildSignal(childIds[0] ?? runId);
+    if (outcomes.some((o) => !o.done)) throw arm(new AwaitChildSignal(childIds[0] ?? runId));
     const stored = await backend.store.checkpointStep({
       runId,
       cursorKey: joinKey,
@@ -394,7 +418,7 @@ export const makeCtx = ({
       const { key, memo } = memoAt(shape);
       if (memo) return memo.result as T;
       const pending = snap.signals.find((s) => s.name === name && !consumed.has(s.id));
-      if (!pending) throw new AwaitSignalSignal(name);
+      if (!pending) throw arm(new AwaitSignalSignal(name));
       consumed.add(pending.id); // don't let a later wait in this invocation drain the same one
       const schema = signals?.[name];
       let payload = pending.payload;

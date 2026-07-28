@@ -58,6 +58,29 @@ Inside `run`, `ctx` is the durable surface. Every call is a checkpoint:
 Child flows form a tree: when a run terminates without success, cancellation
 cascades to its descendants (structured concurrency).
 
+### Step policy — retries, timeout, fail-fast
+
+`ctx.step(label, fn, policy)` takes an optional `StepPolicy`:
+
+```ts
+await ctx.step("charge", chargeCard, {
+  retries: 3, // in-invocation retries before the durable run-level retry
+  retryDelayMs: 200,
+  timeoutMs: 30_000, // abort fn (via its AbortSignal) if it runs longer
+  // Fail fast on permanent errors instead of burning the retry budget: a `permanent`
+  // verdict fails the step (and run) immediately; `transient` retries as configured.
+  classify: (err, attempt) => (isHttp4xx(err) ? "permanent" : "transient"),
+});
+```
+
+`classify` is how you make a 4xx/validation error stop retrying while a 5xx/timeout keeps retrying —
+no need to hand-roll a wrapper that re-throws as a terminal error.
+
+> **A `try/catch` around `ctx.*` is safe.** `ctx.sleep`/`signal`/`invoke` suspend the run by
+> _throwing_ a control signal; even if your `catch` swallows it, the engine re-propagates the suspend
+> at the next `ctx.*` call (or when the body returns), so the run parks and resumes correctly. Wrap
+> your real error handling however you like — you don't have to special-case control signals.
+
 ## Typed contracts
 
 `submit` returns a `RunHandle<Output, Signals>`; `result` recovers the output

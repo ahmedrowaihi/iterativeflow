@@ -667,6 +667,65 @@ export { EnqueueOpts as A, Page as B, Outbox as C, Timer as D, Wakeup as E, Cron
 
 ```ts
 import { A as EnqueueOpts, B as Page, G as RunSnapshot, H as RunFilter, L as DeliveredSignal, N as QueueDepth, R as DriftPolicy, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, _ as Span, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as Lease, m as FlowEvent, n as newId, p as EventType, q as RunStatus, s as isRunStatus, t as IdGen, v as Tracer, x as Backend, z as FlowError } from "./id-<hash>.mjs";
+//#region src/engine/signals.d.ts
+/**
+ * Control-flow signals thrown by the context to unwind a flow invocation without it being
+ * a failure. They are NOT errors — the executor catches them and turns them into a durable
+ * suspend. A user flow must never catch-and-swallow them (see {@link isControlSignal}).
+ */
+/** Thrown by `ctx.sleep` / `ctx.sleepUntil` to park the run until a deadline. */
+declare class SleepSignal {
+  readonly wakeAt: Date;
+  readonly kind: "sleep";
+  constructor(wakeAt: Date);
+}
+/** Thrown by `ctx.invoke` when a spawned child hasn't completed yet — park until it does. */
+declare class AwaitChildSignal {
+  readonly childRunId: string;
+  readonly kind: "await_child";
+  constructor(childRunId: string);
+}
+/** Thrown by `ctx.signal` when no matching signal is in the inbox — park until one arrives. */
+declare class AwaitSignalSignal {
+  readonly name: string;
+  readonly kind: "await_signal";
+  constructor(name: string);
+}
+type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
+declare const isControlSignal: (e: unknown) => e is ControlSignal;
+/** An error carrying a stable machine-readable `code`, distinct from the class name. */
+declare abstract class CodedError extends Error {
+  abstract readonly code: string;
+}
+/** A step's `fn` failed permanently, or an awaited child run failed/was canceled — fails the run. */
+declare class StepFailedError extends CodedError {
+  readonly code: string;
+  constructor(code: string, message: string);
+}
+/**
+ * Thrown on replay when the `ctx` call at a cursor no longer matches the memo recorded there — the
+ * flow body was reordered or refactored while this run was in flight. NOT a control signal: the
+ * executor applies the engine's `driftPolicy` (park-recoverable or hard-fail). Fix by restoring the
+ * flow's original call shape, or bump the flow `version` so new runs use the new shape.
+ */
+declare class FlowDriftError extends CodedError {
+  readonly cursorKey: string;
+  readonly expected: string;
+  readonly actual: string;
+  readonly code: "FLOW_DRIFT";
+  constructor(cursorKey: string, expected: string, actual: string);
+}
+/** Thrown by `submit`/`engine.submit` with `onDuplicate: "error"` when the idempotency key exists. */
+declare class DuplicateRunError extends CodedError {
+  readonly runId: string;
+  readonly code: "RUN_DUPLICATE";
+  constructor(runId: string, idempotencyKey: string);
+}
+/** Thrown when a step's `fn` exceeds its `timeoutMs`. Counts against the step's retry budget. */
+declare class StepTimeoutError extends Error {
+  constructor(ms: number);
+}
+//#endregion
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -687,9 +746,10 @@ interface StepPolicy {
   /**
    * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
    * run) immediately — no in-invocation retries, no run-level retry. `transient` (the default)
-   * retries as configured. Use it to fail fast on 4xx/validation errors and retry 5xx/timeouts.
+   * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
+   * 4xx/validation errors and retry 5xx/timeouts.
    */
-  classify?: (error: unknown) => "transient" | "permanent";
+  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
 }
 /**
  * The durable context handed to a flow body. Every method is a memoized checkpoint: on the
@@ -1207,65 +1267,6 @@ declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?:
 /** Validate a cron expression, throwing on a malformed one. Call once at registration. */
 declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
-//#endregion
-//#region src/engine/signals.d.ts
-/**
- * Control-flow signals thrown by the context to unwind a flow invocation without it being
- * a failure. They are NOT errors — the executor catches them and turns them into a durable
- * suspend. A user flow must never catch-and-swallow them (see {@link isControlSignal}).
- */
-/** Thrown by `ctx.sleep` / `ctx.sleepUntil` to park the run until a deadline. */
-declare class SleepSignal {
-  readonly wakeAt: Date;
-  readonly kind: "sleep";
-  constructor(wakeAt: Date);
-}
-/** Thrown by `ctx.invoke` when a spawned child hasn't completed yet — park until it does. */
-declare class AwaitChildSignal {
-  readonly childRunId: string;
-  readonly kind: "await_child";
-  constructor(childRunId: string);
-}
-/** Thrown by `ctx.signal` when no matching signal is in the inbox — park until one arrives. */
-declare class AwaitSignalSignal {
-  readonly name: string;
-  readonly kind: "await_signal";
-  constructor(name: string);
-}
-type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
-declare const isControlSignal: (e: unknown) => e is ControlSignal;
-/** An error carrying a stable machine-readable `code`, distinct from the class name. */
-declare abstract class CodedError extends Error {
-  abstract readonly code: string;
-}
-/** A step's `fn` failed permanently, or an awaited child run failed/was canceled — fails the run. */
-declare class StepFailedError extends CodedError {
-  readonly code: string;
-  constructor(code: string, message: string);
-}
-/**
- * Thrown on replay when the `ctx` call at a cursor no longer matches the memo recorded there — the
- * flow body was reordered or refactored while this run was in flight. NOT a control signal: the
- * executor applies the engine's `driftPolicy` (park-recoverable or hard-fail). Fix by restoring the
- * flow's original call shape, or bump the flow `version` so new runs use the new shape.
- */
-declare class FlowDriftError extends CodedError {
-  readonly cursorKey: string;
-  readonly expected: string;
-  readonly actual: string;
-  readonly code: "FLOW_DRIFT";
-  constructor(cursorKey: string, expected: string, actual: string);
-}
-/** Thrown by `submit`/`engine.submit` with `onDuplicate: "error"` when the idempotency key exists. */
-declare class DuplicateRunError extends CodedError {
-  readonly runId: string;
-  readonly code: "RUN_DUPLICATE";
-  constructor(runId: string, idempotencyKey: string);
-}
-/** Thrown when a step's `fn` exceeds its `timeoutMs`. Counts against the step's retry budget. */
-declare class StepTimeoutError extends Error {
-  constructor(ms: number);
-}
 //#endregion
 export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

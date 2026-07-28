@@ -64,6 +64,33 @@ describe("engine — end to end on the memory backend", () => {
     expect(aCalls).toBe(1);
   });
 
+  it("a try/catch around ctx.* is safe — a swallowed suspend still parks and resumes", async () => {
+    const order: string[] = [];
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "swallow-suspend",
+      version: 1,
+      run: async (ctx) => {
+        try {
+          await ctx.step("before", () => {
+            order.push("before");
+            return 1;
+          });
+          await ctx.sleep(10_000); // throws SleepSignal; the catch below swallows it
+        } catch {
+          // a user try/catch that does NOT re-throw isControlSignal — must not strand the run
+        }
+        return ctx.step("after", () => {
+          order.push("after");
+          return "done-after-sleep";
+        });
+      },
+    });
+    const backend = createMemoryBackend();
+    const settled = await driveToSettle(backend, registry([flow]), await submit(backend, flow, {}));
+    expect(settled).toMatchObject({ status: "done", output: "done-after-sleep" });
+    expect(order).toEqual(["before", "after"]); // "after" ran once, after the sleep resumed
+  });
+
   it("memoizes a completed step across a crash-retry — the step fn does NOT re-run", async () => {
     let stepCalls = 0;
     let invocations = 0;
