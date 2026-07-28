@@ -44,8 +44,9 @@ export const JOB_GSI_PK = "JOB";
 /** @internal */
 export const CRON_DUE_GSI_PK = "CRON_DUE";
 
-// gsi2 lists/counts all runs by seq without a full-table Scan. One constant partition, written once
-// at run creation (status changes never touch it, so the hot claim path pays nothing).
+// gsi2 lists/counts all runs newest-first by createdAt without a full-table Scan. One constant
+// partition, written once at run creation (status changes never touch it, so the hot claim path
+// pays nothing).
 /** @internal */
 export const RUN_GSI2_PK = "RUN";
 
@@ -58,7 +59,7 @@ export const childGsiPk = (parentRunId: string): string => `CHILD#${parentRunId}
  * The table's key + GSI shape, as data — provision it yourself in CDK / CloudFormation /
  * Terraform (the production path; `ensureTable` needs `CreateTable` IAM and sits outside your
  * IaC's drift/backup control). `pk`/`sk` are the single-table primary key; `gsi1` orders due
- * timers, claimable jobs, due crons and a run's children; `gsi2` lists/counts all runs by seq.
+ * timers, claimable jobs, due crons and a run's children; `gsi2` lists/counts all runs by createdAt.
  * `PAY_PER_REQUEST` and any PITR/tags are your choice at provision time — the engine only requires
  * these keys and these two indexes.
  */
