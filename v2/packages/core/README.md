@@ -94,6 +94,10 @@ fingerprint; if a redeploy reorders or refactors the body, replay detects the
 drift and applies the flow's `driftPolicy` (park or fail) instead of running the
 wrong step. Keep step order and labels stable across deploys.
 
+When a run does get stuck — a transient failure, a drift, or an un-resumable run
+— [docs/v2/RECOVERY.md](../../../docs/v2/RECOVERY.md) is the lever-by-scenario
+guide: `retry`, `cancel` + fresh submit, and the version-migration pattern.
+
 ## Serverless
 
 Beyond the resident `engine.run()` loop, `serverlessTick` drives one bounded
