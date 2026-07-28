@@ -146,6 +146,38 @@ describe("engine — end to end on the memory backend", () => {
     expect(run?.error?.message).toContain("nope");
   });
 
+  it("captures the .cause chain on a failed run (a wrapper hides the real error)", async () => {
+    const flow = defineFlow<Record<string, never>, never>({
+      name: "cause-chain",
+      version: 1,
+      run: async () => {
+        const pg = new Error('duplicate key value violates unique constraint "runs_pkey"');
+        pg.name = "PostgresError";
+        throw new Error("Failed query: rollback", { cause: pg }); // the DrizzleQueryError shape
+      },
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([flow]);
+    const runId = await submit(backend, flow, {});
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const now = (): Date => clock;
+    for (let i = 0; i < 20; i++) {
+      await tickOnce(backend, flows, {
+        batchMax: 16,
+        leaseMs: 600_000,
+        now,
+        retry: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 1_000 },
+      });
+      const run = (await backend.store.loadRun(runId))?.run;
+      if (run && TERMINAL.has(run.status)) break;
+      clock = new Date(clock.getTime() + 2_000);
+    }
+    const run = (await backend.store.loadRun(runId))?.run;
+    expect(run?.status).toBe("failed");
+    expect(run?.error?.message).toContain("Failed query"); // the wrapper's own message
+    expect(run?.error?.cause).toContain("duplicate key value"); // the real error, previously lost
+  });
+
   it("a retrying tick's result carries the error — why it's backing off, no store read", async () => {
     const flow = defineFlow<Record<string, never>, never>({
       name: "transient-boom",

@@ -91,6 +91,7 @@ interface FlowError {
   code: string;
   message: string;
   stack?: string;
+  cause?: string;
 }
 /** Everything needed to start (or idempotently re-find) a run. */
 interface RunSpec {

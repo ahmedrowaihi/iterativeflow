@@ -37,6 +37,19 @@ declare const ddl: (schema: string) => string;
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */
 declare const applySchema: (sql: Sql, schema?: string) => Promise<void>;
 //#endregion
+//#region src/classify.d.ts
+/**
+ * A `StepPolicy.classify` preset for Postgres. Data, syntax/access, and the deterministic constraint
+ * violations (not-null, check) are permanent — the step fails fast instead of retrying to
+ * `maxAttempts`. Connection drops, statement timeouts, deadlocks, serialization failures,
+ * foreign-key/unique violations (which can be a concurrency race), and anything unrecognized stay
+ * transient and retry. Walks the `.cause` chain for the SQLSTATE, since drivers wrap the pg error.
+ *
+ * @example
+ * await ctx.step("write", writeRow, { classify: pgClassify });
+ */
+declare const pgClassify: (error: unknown) => "transient" | "permanent";
+//#endregion
 //#region src/drizzle.d.ts
 /**
  * Emit a standalone drizzle-orm schema file that mirrors the durable tables {@link ddl} creates.
@@ -168,5 +181,5 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgPool, progressDdl };
+export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgClassify, pgPool, progressDdl };
 ```
