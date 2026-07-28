@@ -6,7 +6,7 @@
 
 ```ts
 import { Backend, IdGen } from "@iterativeflow/core/backend";
-import { Db, MongoClient } from "mongodb";
+import { ClientSession, Db, MongoClient } from "mongodb";
 //#region src/backend.d.ts
 interface MongoBackendOpts {
   /** Database name. Default `iterativeflow`. */
@@ -22,7 +22,7 @@ interface MongoBackendOpts {
  * single-node one) — MongoDB requires that for transactions. Wakeup is in-process. Run
  * {@link ensureIndexes} once before use.
  */
-declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts) => Backend;
+declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts, boundSession?: ClientSession) => Backend;
 //#endregion
 //#region src/collections.d.ts
 /**
@@ -34,5 +34,25 @@ declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts)
  */
 declare const ensureIndexes: (db: Db, prefix?: string) => Promise<void>;
 //#endregion
-export { type MongoBackendOpts, createMongoBackend, ensureIndexes };
+//#region src/tx.d.ts
+/**
+ * Run `fn` inside one MongoDB transaction, handing it a {@link Backend} bound to that transaction
+ * plus the raw {@link ClientSession} for the caller's own writes. `submit` / `startRun` / `enqueue`
+ * on that backend commit ATOMICALLY with the caller's writes in `session` — the transactional-enqueue
+ * guarantee: business work and workflow dispatch land together or not at all. A throw rolls back both,
+ * so a failed request never leaves an orphan run or a dangling job. Requires a replica set (MongoDB
+ * transactions do).
+ *
+ * Only the write path joins the transaction: reads via the bound backend (e.g. `store.loadRun`) do
+ * NOT observe the transaction's own uncommitted writes — unlike a SQL read-your-own-write.
+ *
+ * @example
+ * await inTx(client, async (backend, session) => {
+ *   await client.db().collection("orders").insertOne({ _id: orderId }, { session });
+ *   await submit(backend, fulfilOrder, { orderId }); // enqueued iff the order commits
+ * });
+ */
+declare const inTx: <T>(client: MongoClient, fn: (backend: Backend, session: ClientSession) => Promise<T>, opts?: MongoBackendOpts) => Promise<T>;
+//#endregion
+export { type MongoBackendOpts, createMongoBackend, ensureIndexes, inTx };
 ```

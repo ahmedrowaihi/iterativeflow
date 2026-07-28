@@ -1,5 +1,5 @@
 import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
-import type { MongoClient } from "mongodb";
+import type { ClientSession, MongoClient } from "mongodb";
 import { type Names, names } from "#collections";
 import { createMongoQueue } from "#queue";
 import { createMongoStore } from "#store";
@@ -20,13 +20,18 @@ export interface MongoBackendOpts {
  * single-node one) — MongoDB requires that for transactions. Wakeup is in-process. Run
  * {@link ensureIndexes} once before use.
  */
-export const createMongoBackend = (client: MongoClient, opts: MongoBackendOpts = {}): Backend => {
+export const createMongoBackend = (
+  client: MongoClient,
+  opts: MongoBackendOpts = {},
+  // @internal — set by `inTx` to bind this backend's writes to a caller transaction. Not for direct use.
+  boundSession?: ClientSession,
+): Backend => {
   const db = client.db(opts.db ?? "iterativeflow");
   const n: Names = names(opts.prefix ?? "");
   const id = opts.id ?? newId;
   return {
-    store: createMongoStore(client, db, n, id),
-    queue: createMongoQueue(db, n, id),
+    store: createMongoStore(client, db, n, id, boundSession),
+    queue: createMongoQueue(db, n, id, boundSession),
     timer: createMongoTimer(db, n),
     wakeup: createLocalWakeup(),
   };
