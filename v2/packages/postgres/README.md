@@ -39,6 +39,33 @@ npx iterativeflow-pg-drizzle src/db/iterativeflow.schema.ts --schema workflow
 See [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md) for the drizzle route
 and serverless notes.
 
+## Transactional enqueue
+
+A producer often needs to write a domain row **and** enqueue its flow atomically — the flow must run
+iff the row commits. `inTx` runs your work and the dispatch in one transaction, handing you a `Backend`
+bound to that transaction plus the raw `tx`:
+
+```ts
+import { submit } from "@iterativeflow/core";
+import { inTx } from "@iterativeflow/postgres";
+
+await inTx(pool, async (backend, tx) => {
+  await tx.query("INSERT INTO schedules (id, state) VALUES ($1, 'waiting')", [id]); // your write
+  await submit(backend, scheduleFlow, { id }); // startRun + enqueue on the SAME tx
+});
+// both commit, or neither — a throw rolls back the row AND the run/job together.
+```
+
+This closes the drop window a plain `submit` leaves open (it enqueues after its own commit), with no
+producer-side idempotency-key dance for the write+enqueue path. It stays poll-first: the enqueue is a
+short bounded transaction on one checked-out client — exactly what PgBouncer transaction mode / RDS
+Proxy want — not a pinned `LISTEN`.
+
+It closes the _enqueue_ window only: a worker dying mid-flow is still recovered by `engine.reconcile`,
+so keep running that on its usual cadence. `inTx` is a backend export, not part of core `submit`,
+because it needs a real caller transaction — `@iterativeflow/mysql` and `@iterativeflow/sqlite` expose
+the same helper; DynamoDB and Redis can't (no caller-joinable transaction).
+
 ## Low-latency push (opt-in `LISTEN/NOTIFY`)
 
 By default dispatch and `result()` are **poll-first** — connection-safe behind RDS

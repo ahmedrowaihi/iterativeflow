@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteBackend } from "#backend";
 import { applySchema } from "#schema";
 import { libsqlDb } from "#sql";
+import { inTx } from "#tx";
 
 describe("sqlite backend", () => {
   const cleanups: (() => void)[] = [];
@@ -49,6 +50,49 @@ describe("sqlite backend", () => {
   reconcileConformance("sqlite", () => makeBackend());
   cronConformance("sqlite", async () => (await makeBackend()).store);
   engineConformance("sqlite", () => makeBackend());
+
+  it("transactional enqueue: caller's write + submit commit atomically (and roll back together)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "iflow-sqlite-tx-"));
+    const client = createClient({ url: `file:${join(dir, "tx.db")}` });
+    cleanups.push(() => {
+      client.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const sql = libsqlDb(client);
+    await applySchema(sql);
+    await sql.query("CREATE TABLE app_orders (id TEXT PRIMARY KEY)");
+    const backend = createSqliteBackend(sql);
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "fulfil",
+      version: 1,
+      run: async () => 1,
+    });
+    const orderCount = async (): Promise<number> => {
+      const rows = await sql.query<{ n: number }>("SELECT count(*) AS n FROM app_orders");
+      return Number(rows[0].n);
+    };
+    const runCount = async (): Promise<number> =>
+      (await backend.store.listRuns({}, { limit: 10 })).runs.length;
+
+    // Rollback: a throw after submit persists neither the order nor the run/job.
+    await expect(
+      inTx(client, async (b, tx) => {
+        await tx.query("INSERT INTO app_orders (id) VALUES ('o1')");
+        await submit(b, flow, {});
+        throw new Error("boom after submit");
+      }),
+    ).rejects.toThrow();
+    expect(await orderCount()).toBe(0);
+    expect(await runCount()).toBe(0);
+
+    // Commit: the order AND the enqueued run land together.
+    const id = await inTx(client, async (b, tx) => {
+      await tx.query("INSERT INTO app_orders (id) VALUES ('o2')");
+      return submit(b, flow, {});
+    });
+    expect(await orderCount()).toBe(1);
+    expect(await backend.store.loadRunRow(id)).toBeDefined();
+  });
 
   describe("engine end-to-end", () => {
     const TERMINAL = new Set(["done", "failed", "canceled"]);

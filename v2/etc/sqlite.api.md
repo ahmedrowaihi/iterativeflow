@@ -48,5 +48,22 @@ declare const ddl: (prefix?: string) => string;
 /** Apply the schema DDL (idempotent). Splits on `;` because libsql executes one statement per call. */
 declare const applySchema: (sql: Sql, prefix?: string) => Promise<void>;
 //#endregion
-export { type Sql, type SqliteBackendOpts, applySchema, createSqliteBackend, ddl, libsqlDb };
+//#region src/tx.d.ts
+/**
+ * Run `fn` inside one SQLite transaction, handing it a {@link Backend} bound to that
+ * transaction plus the raw {@link Sql} for the caller's own writes. Every `submit` /
+ * `startRun` / `enqueue` on that backend commits ATOMICALLY with the caller's writes on
+ * `tx` — the transactional-enqueue guarantee: business work and workflow dispatch land
+ * together or not at all. A throw rolls back both, so a failed request never leaves an
+ * orphan run or a dangling job.
+ *
+ * @example
+ * await inTx(client, async (backend, tx) => {
+ *   await tx.query("INSERT INTO orders (id) VALUES (?)", [orderId]);
+ *   await submit(backend, fulfilOrder, { orderId }); // enqueued iff the order commits
+ * });
+ */
+declare const inTx: <T>(client: Client, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: SqliteBackendOpts) => Promise<T>;
+//#endregion
+export { type Sql, type SqliteBackendOpts, applySchema, createSqliteBackend, ddl, inTx, libsqlDb };
 ```
