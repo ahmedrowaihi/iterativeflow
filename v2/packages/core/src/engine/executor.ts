@@ -34,6 +34,10 @@ export const defaultRetry: RetryPolicy = {
   maxDelayMs: 60_000,
 };
 
+/** Renew a run's lease once less than this fraction of it remains: frequent enough that a long
+ *  multi-step run never loses the lease, rare enough that quick steps don't each cost a heartbeat. */
+const LEASE_RENEW_BELOW = 0.5;
+
 /** The outcome status of one tick on a run. */
 export type TickStatus =
   | "done"
@@ -114,17 +118,16 @@ export const runTick = async (
     ...extra,
   });
 
-  // Renew the lease as the run commits steps, but only once it's half-consumed — a long or many-step
-  // run keeps its lease without a heartbeat write on every quick step. Best-effort: a lost lease is
-  // caught by the first-writer-wins memo + reconcile, so a failed renewal just lets the step's
-  // at-least-once contract stand. `held` is the current lease used to ack when the tick ends.
+  // Best-effort lease renewal as the run commits durable progress. A lost lease is caught by the
+  // first-writer-wins memo + reconcile, so a failed renewal just lets the step's at-least-once
+  // contract stand. `held` is the current lease, used to ack when the tick ends.
   let held = lease;
   const leaseMs = opts.leaseMs;
   const renewLease =
     leaseMs === undefined
       ? undefined
       : async (): Promise<void> => {
-          if (now().getTime() < held.expiresAt.getTime() - leaseMs / 2) return;
+          if (now().getTime() < held.expiresAt.getTime() - leaseMs * LEASE_RENEW_BELOW) return;
           held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
         };
 
@@ -232,7 +235,7 @@ export const runTick = async (
     maxFanOut: flow.policy?.maxFanOut,
     maxDepth: flow.policy?.maxDepth,
     suspend: suspendState,
-    renewLease,
+    onStepCommit: renewLease,
   });
 
   try {
