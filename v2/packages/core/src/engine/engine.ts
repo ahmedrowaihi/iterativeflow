@@ -128,6 +128,13 @@ export interface Engine {
    */
   liveness(): Promise<Liveness>;
 
+  /**
+   * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
+   * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
+   * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
+   */
+  nextWakeAt(): Promise<Date | null>;
+
   registerCron<I>(def: CronDef<I>): Promise<void>;
 
   /** One worker cycle: drain due timers, then claim + execute a batch. */
@@ -197,6 +204,7 @@ export const createEngine = (
     status: (runId) => backend.store.loadRun(runId),
     listRuns: (filter, page) => backend.store.listRuns(filter, page),
     health: () => backend.store.runStats(),
+    nextWakeAt: () => backend.timer.nextDueAt(clock()),
     liveness: async () => {
       const [queue, runs] = await Promise.all([
         backend.queue.depth(clock()),

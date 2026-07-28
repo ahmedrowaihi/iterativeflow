@@ -429,6 +429,15 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     async cancel(runId) {
       deadlines.delete(runId);
     },
+
+    async nextDueAt(now) {
+      const t = ms(now);
+      let min: number | undefined;
+      for (const fireAtMs of deadlines.values()) {
+        if (fireAtMs > t && (min === undefined || fireAtMs < min)) min = fireAtMs;
+      }
+      return min === undefined ? null : new Date(min);
+    },
   };
 
   return { store, queue, timer, wakeup: createLocalWakeup() };

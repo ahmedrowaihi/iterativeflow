@@ -35,5 +35,13 @@ export const createMongoTimer = (db: Db, n: Names): Timer => {
     async cancel(runId) {
       await timers.deleteOne({ _id: runId });
     },
+
+    async nextDueAt(now) {
+      const next = await timers.findOne(
+        { fire_at: { $gt: now.getTime() } },
+        { sort: { fire_at: 1 } },
+      );
+      return next ? new Date(next.fire_at) : null;
+    },
   };
 };

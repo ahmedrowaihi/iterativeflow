@@ -27,5 +27,19 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
     async cancel(runId) {
       await client.zrem(keys.timers, runId);
     },
+
+    async nextDueAt(now) {
+      // `(` makes the lower bound exclusive: a timer exactly at `now` is drained by the tick, not a horizon.
+      const [, score] = await client.zrangebyscore(
+        keys.timers,
+        `(${ms(now)}`,
+        "+inf",
+        "WITHSCORES",
+        "LIMIT",
+        0,
+        1,
+      );
+      return score === undefined ? null : new Date(Number(score));
+    },
   };
 };

@@ -258,6 +258,13 @@ export interface SweepResult {
   reconciled: number;
   /** Runs claimed and advanced this cycle, by outcome. */
   results: TickResult[];
+  /**
+   * The earliest pending timer due (sleep / retry / cron) after this cycle drained the due ones, or
+   * `null` when nothing is pending. A self-scheduling driver arms a one-shot for exactly this instant
+   * (EventBridge Scheduler / SQS delay / Step Functions wait) instead of polling on a fixed cadence.
+   * Signals and child-joins are NOT here — they wake by a push on submit/signal.
+   */
+  nextWakeAt: Date | null;
 }
 
 /**
@@ -287,5 +294,7 @@ export const serverlessTick = async (
     reconcile(backend, { limit: opts.batchMax }),
   ]);
   const results = await tickOnce(backend, flows, opts);
-  return { fired, reconciled, results };
+  // After the tick drained the due timers, the earliest remaining is the next wake horizon.
+  const nextWakeAt = await backend.timer.nextDueAt(now());
+  return { fired, reconciled, results, nextWakeAt };
 };
