@@ -1,5 +1,11 @@
 # @iterativeflow/dashboard
 
+## 2.0.0-alpha.6
+
+### Patch Changes
+
+- @iterativeflow/core@2.0.0-alpha.6
+
 ## 2.0.0-alpha.5
 
 ### Patch Changes
