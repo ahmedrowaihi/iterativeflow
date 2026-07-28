@@ -1,5 +1,16 @@
 # @iterativeflow/postgres
 
+## 2.0.0-alpha.3
+
+### Patch Changes
+
+- Updated dependencies [5b07ed6]
+- Updated dependencies [acbe2bb]
+- Updated dependencies [2257a3e]
+- Updated dependencies [539a1c2]
+- Updated dependencies [12f3baa]
+  - @iterativeflow/core@2.0.0-alpha.3
+
 ## 2.0.0-alpha.2
 
 ### Minor Changes
