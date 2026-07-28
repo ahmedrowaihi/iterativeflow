@@ -218,6 +218,18 @@ export const createMongoStore = (client: MongoClient, db: Db, n: Names, id: IdGe
         return await inTx(async (session) => {
           const run = await runs.findOne({ _id: c.runId }, { session });
           if (!run) throw new Error(`checkpointStep: run ${c.runId} not found`);
+          if (fx?.requireVersion !== undefined) {
+            const existing = await steps.findOne({ _id: stepDoc._id }, { session });
+            if (existing) return mapStep(existing);
+            const touched = await jobs.updateOne(
+              { _id: c.runId, version: fx.requireVersion },
+              { $set: { version: fx.requireVersion } },
+              { session },
+            );
+            if (touched.matchedCount === 0) {
+              return { status: c.status, attempts: c.attempts, committed: false };
+            }
+          }
           await steps.insertOne(stepDoc, { session });
           await commitOutbox(fx, session); // atomic with the checkpoint, only on the first write
           return mapStep(stepDoc);

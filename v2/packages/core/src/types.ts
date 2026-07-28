@@ -70,6 +70,12 @@ export interface StepCheckpoint extends StepOutcome {
   cursorKey: string;
 }
 
+/** What `checkpointStep` returns: the effective memo, plus `committed: false` only when a
+ *  `requireVersion` guard refused the write. Return-only — never persisted. */
+export interface CheckpointResult extends StepOutcome {
+  committed?: boolean;
+}
+
 /** Row shape of a run. */
 export interface RunRow {
   id: string;

@@ -160,3 +160,44 @@ describe("typed contract", () => {
     await signalRun(backend, handle, "approve", { approvedBy: "wrong-key" });
   });
 });
+
+describe("ctx.signal timeout", () => {
+  const waitWithTimeout = defineFlow({
+    name: "wait-timeout",
+    version: 1,
+    run: async (ctx) => ctx.signal("go", { timeoutMs: 30_000 }),
+  });
+
+  it("resolves { received: false } when no signal arrives before the deadline", async () => {
+    const backend = createMemoryBackend();
+    const flows = registry([waitWithTimeout]);
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const now = (): Date => clock;
+    const opts = { batchMax: 8, leaseMs: 60_000, now };
+
+    const handle = await submit(backend, waitWithTimeout, {});
+    await tickOnce(backend, flows, opts); // parks awaiting_signal with a deadline timer
+    clock = new Date(clock.getTime() + 31_000); // past the deadline
+    await tickOnce(backend, flows, opts); // timer due → resolves the timeout
+
+    const r = await result(backend, handle, { timeoutMs: 1000, now });
+    expect(r.status).toBe("done");
+    expect(r.output).toEqual({ received: false });
+  });
+
+  it("resolves { received: true, payload } when the signal arrives in time (signal wins)", async () => {
+    const backend = createMemoryBackend();
+    const flows = registry([waitWithTimeout]);
+    const now = (): Date => new Date("2030-01-01T00:00:00Z");
+    const opts = { batchMax: 8, leaseMs: 60_000, now };
+
+    const handle = await submit(backend, waitWithTimeout, {});
+    await tickOnce(backend, flows, opts); // parks
+    await signalRun(backend, handle, "go", { hi: 1 });
+    await tickOnce(backend, flows, opts); // resumes, consumes the signal
+
+    const r = await result(backend, handle, { timeoutMs: 1000, now });
+    expect(r.status).toBe("done");
+    expect(r.output).toEqual({ received: true, payload: { hi: 1 } });
+  });
+});

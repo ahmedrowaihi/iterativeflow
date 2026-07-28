@@ -133,9 +133,15 @@ return redis.call('HINCRBY', KEYS[1], '${RUN.joinRemaining}', -1)`;
 
 const CHECKPOINT_LUA = `${OUTBOX_LIB}
 if redis.call('EXISTS', KEYS[1]) == 0 then return {'noRun'} end
-if redis.call('HSETNX', KEYS[2], ARGV[1], ARGV[2]) == 0 then
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then
   return {'hit', redis.call('HGET', KEYS[2], ARGV[1])}
 end
+if ARGV[4] ~= '' then
+  if tonumber(redis.call('HGET', KEYS[9], '${JOB.version}')) ~= tonumber(ARGV[4]) then
+    return {'skip'}
+  end
+end
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 if ARGV[3] ~= '' then
   iflow_apply(cjson.decode(ARGV[3]), KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[3])
 end
@@ -351,11 +357,18 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           keys.timers,
           keys.seq,
           keys.idem,
+          keys.job(c.runId),
         ],
-        [c.cursorKey, encoded, serializeOutbox(fx)],
+        [
+          c.cursorKey,
+          encoded,
+          serializeOutbox(fx),
+          fx?.requireVersion !== undefined ? String(fx.requireVersion) : "",
+        ],
       );
       if (res[0] === "noRun") throw new Error(`checkpointStep: run ${c.runId} not found`);
       if (res[0] === "hit") return decodeStep(res[1] as string);
+      if (res[0] === "skip") return { status: c.status, attempts: c.attempts, committed: false };
       return decodeStep(encoded);
     },
 

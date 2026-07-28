@@ -132,6 +132,11 @@ interface StepCheckpoint extends StepOutcome {
   runId: string;
   cursorKey: string;
 }
+/** What `checkpointStep` returns: the effective memo, plus `committed: false` only when a
+ *  `requireVersion` guard refused the write. Return-only — never persisted. */
+interface CheckpointResult extends StepOutcome {
+  committed?: boolean;
+}
 /** Row shape of a run. */
 interface RunRow {
   id: string;
@@ -389,9 +394,9 @@ interface TimerRequest {
   fireAt: Date;
 }
 /**
- * The transactional-outbox payload — side-effects that a durable Store write commits in
- * the SAME transaction as the state change, so there is no window where the state moved
- * but the follow-on work was lost (or fired twice) after a crash.
+ * The transactional-outbox payload — side-effects (and one precondition, `requireVersion`) that a
+ * durable Store write commits in the SAME transaction as the state change, so there is no window
+ * where the state moved but the follow-on work was lost (or fired twice) after a crash.
  *
  * This is the single seam that makes the engine crash-safe on any backend: memory commits
  * it single-threaded, Postgres in one `BEGIN…COMMIT`, DynamoDB in one `TransactWriteItems`.
@@ -418,6 +423,16 @@ interface Outbox {
    * so a replay can't consume it twice.
    */
   consumeSignals?: readonly string[];
+  /**
+   * Precondition: commit the checkpoint ONLY if the run's dispatch (job) version still equals this;
+   * if it has moved, skip the write and return `committed: false`. A `ctx.signal` timeout resolution
+   * passes its claim-time version so the decision is linearizable with the inbox: `postSignal` bumps
+   * the version as it delivers, so a signal that raced the deadline blocks the timeout and the run
+   * re-ticks and consumes it instead of dropping it. Backends MUST make the check a write-conflict on
+   * the job row (a locked read or a conditional write), never a bare read — a bare read misses a
+   * concurrent `postSignal` under snapshot/MVCC isolation (write skew).
+   */
+  requireVersion?: number;
   /**
    * Arm `runId`'s fan-out join countdown to `count` children: it must see that many child arrivals
    * (see {@link Store.arriveAtJoin}) before it is re-woken. Set atomically with the spawn that
@@ -525,7 +540,7 @@ interface Store {
    * skipped (the original write already committed the original outbox), so a replayed
    * `ctx.invoke` never double-spawns.
    */
-  checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<StepOutcome>;
+  checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<CheckpointResult>;
   /**
    * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on
    * an external signal), or `retrying` (backing off before re-dispatch). `fx` commits the
@@ -696,8 +711,9 @@ declare class AwaitChildSignal {
 /** Thrown by `ctx.signal` when no matching signal is in the inbox — park until one arrives. */
 declare class AwaitSignalSignal {
   readonly name: string;
+  readonly deadline?: Date | undefined;
   readonly kind: "await_signal";
-  constructor(name: string);
+  constructor(name: string, deadline?: Date | undefined);
 }
 type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
 declare const isControlSignal: (e: unknown) => e is ControlSignal;
@@ -759,6 +775,13 @@ interface StepPolicy {
    */
   classify?: (error: unknown, attempt: number) => "transient" | "permanent";
 }
+/** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
+type SignalOutcome<T> = {
+  received: true;
+  payload: T;
+} | {
+  received: false;
+};
 /**
  * The durable context handed to a flow body. Every method is a memoized checkpoint: on the
  * first invocation it runs and persists; on every replay it returns the persisted result
@@ -804,6 +827,12 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
+  /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
+   *  `timeoutMs`, else `{ received: false }`. A signal delivered before the timeout commits always
+   *  wins — the deadline decision is consistent with the durable inbox. */
+  signal<K extends SignalName<S>>(name: K, opts: {
+    timeoutMs: number;
+  }): Promise<SignalOutcome<SignalPayload<S, K>>>;
   /**
    * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
    * run. Fire-and-forget and NOT memoized: it is suppressed while the flow replays its already-durable

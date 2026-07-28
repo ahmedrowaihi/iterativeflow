@@ -177,7 +177,21 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
 
     checkpointStep(c, fx) {
       return sql.tx(async (tx) => {
-        // First-writer-wins in one statement; the FK makes an unknown run reject here.
+        if (fx?.requireVersion !== undefined) {
+          const existing = await tx.query(
+            `SELECT 1 FROM ${t.step} WHERE run_id = $1 AND cursor_key = $2`,
+            [c.runId, c.cursorKey],
+          );
+          if (existing.length === 0) {
+            const job = await tx.query<{ version: number | string }>(
+              `SELECT version FROM ${t.job} WHERE run_id = $1 FOR UPDATE`,
+              [c.runId],
+            );
+            if (!job[0] || Number(job[0].version) !== fx.requireVersion) {
+              return { status: c.status, attempts: c.attempts, committed: false };
+            }
+          }
+        }
         const ins = await tx.query(
           `INSERT INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
@@ -185,7 +199,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
         );
-        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
+        // Outbox rides ONLY the first write; a concurrent writer that won the insert already ran it.
+        if (ins.length > 0 && fx) await applyOutbox(tx, t, fx);
         return loadStep(tx, c.runId, c.cursorKey);
       });
     },
