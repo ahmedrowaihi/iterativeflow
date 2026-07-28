@@ -34,5 +34,13 @@ export const createPgTimer = (sql: Sql, schema: string): Timer => {
     async cancel(runId) {
       await sql.query(`DELETE FROM ${t.timer} WHERE run_id = $1`, [runId]);
     },
+
+    async nextDueAt(now) {
+      const rows = await sql.query<{ fire_at: Date | null }>(
+        `SELECT min(fire_at) AS fire_at FROM ${t.timer} WHERE fire_at > $1::timestamptz`,
+        [now],
+      );
+      return rows[0]?.fire_at ?? null;
+    },
   };
 };

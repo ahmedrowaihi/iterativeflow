@@ -31,5 +31,14 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
     async cancel(runId) {
       await sql.query(`DELETE FROM ${t.timer} WHERE run_id = ?`, [runId]);
     },
+
+    async nextDueAt(now) {
+      const rows = await sql.query<{ fire_at: number | null }>(
+        `SELECT min(fire_at) AS fire_at FROM ${t.timer} WHERE fire_at > ?`,
+        [now.getTime()],
+      );
+      const at = rows[0]?.fire_at;
+      return at == null ? null : new Date(at);
+    },
   };
 };

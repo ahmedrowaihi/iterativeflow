@@ -334,6 +334,13 @@ interface Timer {
   dueBatch(opts: TimerDueOpts): Promise<string[]>;
   /** Remove a run's pending timer (e.g. the wake landed another way, or the run ended). */
   cancel(runId: string): Promise<void>;
+  /**
+   * The earliest pending timer due strictly AFTER `now` (sleep / retry backoff / cron), or `null`
+   * when none is pending — the serverless wake horizon. Timers due at/before `now` are drained by
+   * the tick, not reported here. Must be one bounded read on the due-ordered index (min/limit-1),
+   * never a scan; signals and child-joins wake by enqueue, so they are NOT covered by this.
+   */
+  nextDueAt(now: Date): Promise<Date | null>;
 }
 //#endregion
 //#region src/ports/wakeup.d.ts
@@ -1138,6 +1145,13 @@ interface SweepResult {
   reconciled: number;
   /** Runs claimed and advanced this cycle, by outcome. */
   results: TickResult[];
+  /**
+   * The earliest pending timer due (sleep / retry / cron) after this cycle drained the due ones, or
+   * `null` when nothing is pending. A self-scheduling driver arms a one-shot for exactly this instant
+   * (EventBridge Scheduler / SQS delay / Step Functions wait) instead of polling on a fixed cadence.
+   * Signals and child-joins are NOT here — they wake by a push on submit/signal.
+   */
+  nextWakeAt: Date | null;
 }
 /**
  * One full engine cycle for a scheduled (serverless) invocation: fire due crons, re-drive
@@ -1234,6 +1248,12 @@ interface Engine {
    * workers can't keep up or are down) alongside the per-status run counts. Read-only.
    */
   liveness(): Promise<Liveness>;
+  /**
+   * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
+   * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
+   * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
+   */
+  nextWakeAt(): Promise<Date | null>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;

@@ -97,7 +97,22 @@ wrong step. Keep step order and labels stable across deploys.
 ## Serverless
 
 Beyond the resident `engine.run()` loop, `serverlessTick` drives one bounded
-claim+reconcile cycle per invocation for Lambda/Vercel/Cron. See
+claim+reconcile cycle per invocation for Lambda/Vercel/Cron.
+
+Rather than a fixed cron cadence, **self-schedule**: each tick returns
+`nextWakeAt` — the earliest pending timer (sleep / retry / cron) — so the driver
+arms a one-shot for exactly then (EventBridge Scheduler / SQS `DelaySeconds` /
+Step Functions `Wait`) and pays nothing while idle, resuming on time at any
+granularity instead of at the cron floor:
+
+```ts
+const { nextWakeAt } = await engine.serverlessTick();
+if (nextWakeAt) await scheduleOneShot(nextWakeAt);
+// else: nothing pending — exit; a push on submit/signal starts the next cycle.
+```
+
+`engine.nextWakeAt()` exposes the horizon standalone. `nextWakeAt` covers timers
+only; signal- and child-waits resume via a push when the event arrives. See
 [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md).
 
 ## Backend authoring

@@ -52,5 +52,31 @@ export const timerConformance = (label: string, makeTimer: () => Timer | Promise
       const due = await tm.dueBatch({ now: at(1000), limit: 2 });
       expect(due).toEqual(["early", "mid"]);
     });
+
+    it("nextDueAt is null when nothing is pending", async () => {
+      const tm = await makeTimer();
+      expect(await tm.nextDueAt(at(0))).toBeNull();
+    });
+
+    it("nextDueAt returns the earliest timer due strictly after now", async () => {
+      const tm = await makeTimer();
+      await tm.schedule("late", at(3000));
+      await tm.schedule("early", at(1000));
+      await tm.schedule("mid", at(2000));
+      expect(await tm.nextDueAt(at(500))).toEqual(at(1000));
+      // a timer at/before now is due (drained by the tick), not a future horizon
+      expect(await tm.nextDueAt(at(1000))).toEqual(at(2000));
+      expect(await tm.nextDueAt(at(3000))).toBeNull();
+    });
+
+    it("nextDueAt reflects reschedule and cancel", async () => {
+      const tm = await makeTimer();
+      await tm.schedule("r1", at(5000));
+      expect(await tm.nextDueAt(at(0))).toEqual(at(5000));
+      await tm.schedule("r1", at(1000)); // pulled earlier
+      expect(await tm.nextDueAt(at(0))).toEqual(at(1000));
+      await tm.cancel("r1");
+      expect(await tm.nextDueAt(at(0))).toBeNull();
+    });
   });
 };

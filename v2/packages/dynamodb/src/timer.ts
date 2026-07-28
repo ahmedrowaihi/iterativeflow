@@ -63,5 +63,24 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
     async cancel(runId) {
       await send(new DeleteCommand({ TableName: table, Key: key.timer(runId) }));
     },
+
+    async nextDueAt(now) {
+      const res = await send<{ Items?: TimerItem[] }>(
+        new QueryCommand({
+          TableName: table,
+          IndexName: "gsi1",
+          KeyConditionExpression: "gsi1pk = :tp AND gsi1sk > :now",
+          ExpressionAttributeValues: {
+            ":tp": TIMER_GSI_PK,
+            ":now": pad((now ?? new Date()).getTime()),
+          },
+          ProjectionExpression: "fireAt",
+          ScanIndexForward: true,
+          Limit: 1,
+        }),
+      );
+      const next = res.Items?.[0];
+      return next ? new Date(next.fireAt) : null;
+    },
   };
 };
