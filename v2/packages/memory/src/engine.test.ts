@@ -636,7 +636,7 @@ describe("engine — end to end on the memory backend", () => {
     const runId = await submit(backend, napper, {});
 
     const s1 = await serverlessTick(backend, flows, tickOpts);
-    expect(s1.results).toContain("sleeping");
+    expect(s1.results.map((r) => r.status)).toContain("sleeping");
     expect((await backend.store.loadRun(runId))?.run.status).toBe("sleeping");
 
     // One invocation a day later fires the cron and resumes the sleep — no loop between them.

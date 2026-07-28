@@ -74,7 +74,7 @@ export type {
   TickOnceOpts,
 } from "#engine/worker";
 export { runTick, defaultRetry } from "#engine/executor";
-export type { DriftPolicy, RetryPolicy, TickResult, TickOpts } from "#engine/executor";
+export type { DriftPolicy, RetryPolicy, TickResult, TickStatus, TickOpts } from "#engine/executor";
 
 export { parseCron, nextCronAfter } from "#engine/cron";
 export { cronTag, registerCron, runDueCrons } from "#engine/schedule";
