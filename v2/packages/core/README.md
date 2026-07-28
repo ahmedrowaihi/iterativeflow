@@ -74,7 +74,15 @@ await ctx.step("charge", chargeCard, {
 ```
 
 `classify` is how you make a 4xx/validation error stop retrying while a 5xx/timeout keeps retrying —
-no need to hand-roll a wrapper that re-throws as a terminal error.
+no need to hand-roll a wrapper that re-throws as a terminal error. For Postgres,
+`@iterativeflow/postgres` ships a ready preset: `classify: pgClassify` fails fast on the deterministic
+errors (bad data, bad SQL, not-null/check violations) and keeps retrying connection drops, statement
+timeouts, deadlocks, serialization failures, and foreign-key/unique races.
+
+When a step throws, the persisted `FlowError` captures `{ code, message, stack, cause }` — and `cause`
+is the flattened `.cause` chain, so a driver that wraps the real error (e.g. a `DrizzleQueryError`
+whose message is a generic `Failed query: rollback` with the pg detail on `.cause`) no longer loses
+the actual failure.
 
 > **A `try/catch` around `ctx.*` is safe.** `ctx.sleep`/`signal`/`invoke` suspend the run by
 > _throwing_ a control signal; even if your `catch` swallows it, the engine re-propagates the suspend

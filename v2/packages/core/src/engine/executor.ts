@@ -75,9 +75,29 @@ export interface TickOpts {
   leaseMs?: number;
 }
 
+// Flatten an Error's `.cause` chain to a string: a wrapper (e.g. DrizzleQueryError) carries the
+// real error — the pg SQLSTATE and detail — on `.cause`, which is otherwise dropped. Bounded depth
+// guards a self-referential chain.
+const causeChain = (e: Error): string | undefined => {
+  const parts: string[] = [];
+  let c: unknown = e.cause;
+  for (let depth = 0; c && depth < 8; depth++) {
+    if (c instanceof Error) {
+      parts.push(c.message ? `${c.name}: ${c.message}` : c.name);
+      c = c.cause;
+    } else {
+      parts.push(String(c));
+      break;
+    }
+  }
+  return parts.length ? parts.join(" ← ") : undefined;
+};
+
 const toFlowError = (e: unknown): FlowError => {
-  if (e instanceof CodedError) return { code: e.code, message: e.message, stack: e.stack };
-  if (e instanceof Error) return { code: e.name || "ERROR", message: e.message, stack: e.stack };
+  if (e instanceof CodedError)
+    return { code: e.code, message: e.message, stack: e.stack, cause: causeChain(e) };
+  if (e instanceof Error)
+    return { code: e.name || "ERROR", message: e.message, stack: e.stack, cause: causeChain(e) };
   return { code: "ERROR", message: String(e) };
 };
 

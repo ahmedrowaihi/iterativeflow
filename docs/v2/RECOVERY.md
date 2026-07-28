@@ -53,14 +53,48 @@ Note the idempotency subtlety: **re-submitting with the _same_ `idempotencyKey` 
 submit with a new key (or none). Prefer this over forcing a re-run of a run whose memos are the
 problem: a fresh run has a clean cursor and its steps re-run under the normal at-least-once contract.
 
-### A poison-pill run (crash loop)
+### A poison-pill run, or a step that stalls past its lease
 
-A run that crashes the worker uncatchably (not a caught error) is bounded by the retry policy's
-`maxAttempts` (default 10): once a run's attempts exceed the cap it dead-letters as
-`RUN_ATTEMPTS_EXHAUSTED` instead of re-claiming forever. Fix the cause, then `engine.retry(runId)`.
+Both are bounded by the retry policy's `maxAttempts` (default 10). A claim bumps the run's attempt
+counter, so a run that crashes the worker uncatchably — **or a step that outlives its lease and gets
+re-claimed** (an unbounded parse, a wedged external call) — dead-letters as `RUN_ATTEMPTS_EXHAUSTED`
+once attempts pass the cap, instead of re-claiming and re-running the expensive work forever. Attempts
+reset to `0` on a clean suspend, so a long sleep/signal loop is unaffected. To kill an expensive stall
+sooner, lower `maxAttempts`; fix the cause, then `engine.retry(runId)`.
+
+Because a re-claimed step re-runs (at-least-once), keep a step that mutates external state idempotent —
+an `already-done → cheap no-op` guard (a stored `processedAt`, a conditional write). A step that
+already **committed** is free: replay short-circuits it from the memo; the guard is only for the
+in-flight step whose lease expired mid-run.
 
 ## Observability
 
 A serverless driver doesn't need to query the store to learn _why_ a run stalled: each
 `SweepResult.results` entry is `{ runId, status, error?, cursorKey? }` — a failed, retrying, or
 drifted tick carries its error (and, for a drift, the cursor key it drifted at). Log/route on that.
+
+For the full failure detail, an `ObserveOpts.sink` captures every failed run centrally — so the real
+cause never depends on app logs reaching your pipeline:
+
+```ts
+const engine = createEngine(backend, flows, {
+  observe: {
+    sink: {
+      record: (e) => {
+        if (e.type !== "run.failed") return;
+        const { error } = e.data as { error: FlowError };
+        log.error("run failed", {
+          runId: e.runId,
+          message: error.message,
+          cause: error.cause, // the flattened .cause chain — the real pg SQLSTATE/detail
+        });
+      },
+    },
+  },
+});
+```
+
+`FlowError.cause` is populated by walking a thrown error's `.cause` chain, so a wrapper
+(`DrizzleQueryError` → the pg error) can't reduce a record to `[object Object]`. The event log doesn't
+carry raw step inputs by design — redact and attach anything you need (e.g. onto the thrown error's
+message) inside your own step.

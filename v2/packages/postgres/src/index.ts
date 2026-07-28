@@ -1,6 +1,7 @@
 export { pgPool } from "#sql";
 export type { Sql } from "#sql";
 export { applySchema, ddl } from "#schema";
+export { pgClassify } from "#classify";
 export { drizzleSchema } from "#drizzle";
 export { createPgBackend } from "#backend";
 export type { PgBackendOpts } from "#backend";
