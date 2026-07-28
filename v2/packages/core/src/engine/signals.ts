@@ -19,7 +19,10 @@ export class AwaitChildSignal {
 /** Thrown by `ctx.signal` when no matching signal is in the inbox — park until one arrives. */
 export class AwaitSignalSignal {
   readonly kind = "await_signal" as const;
-  constructor(readonly name: string) {}
+  constructor(
+    readonly name: string,
+    readonly deadline?: Date,
+  ) {}
 }
 
 export type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;

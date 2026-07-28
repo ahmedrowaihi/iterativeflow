@@ -51,6 +51,28 @@ export const signalConformance = (
       expect(after?.steps.get("wait")?.result).toBe("first"); // and the memo committed with it
     });
 
+    it("requireVersion commits while the job version is unchanged, refuses once a racing signal moves it", async () => {
+      const { store, queue } = await makeBackend();
+      const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
+      await queue.enqueue(runId);
+      const [lease] = await queue.claim({ limit: 1, leaseMs: 1000, now: at(0) });
+      // version unchanged since claim → the guarded signal-timeout resolution commits
+      const committed = await store.checkpointStep(
+        { runId, cursorKey: "res", status: "ok", result: { received: false }, attempts: 1 },
+        { requireVersion: lease!.version },
+      );
+      expect(committed.committed).not.toBe(false);
+      expect((await store.loadRun(runId))?.steps.get("res")?.result).toEqual({ received: false });
+      // a racing signal delivery bumps the dispatch version → a stale-version guard is refused
+      await store.postSignal(runId, "go", "payload");
+      const blocked = await store.checkpointStep(
+        { runId, cursorKey: "res2", status: "ok", result: { received: false }, attempts: 1 },
+        { requireVersion: lease!.version },
+      );
+      expect(blocked.committed).toBe(false);
+      expect((await store.loadRun(runId))?.steps.get("res2")).toBeUndefined(); // nothing written
+    });
+
     it("distinct signals to a run preserve delivery order in the inbox", async () => {
       const { store } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });

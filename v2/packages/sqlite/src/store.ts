@@ -189,6 +189,21 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         // libsql may run with foreign_keys off, so guard the unknown-run reject explicitly.
         const known = await tx.query(`SELECT 1 FROM ${t.run} WHERE id = ?`, [c.runId]);
         if (!known[0]) throw new Error(`checkpointStep: run ${c.runId} not found`);
+        if (fx?.requireVersion !== undefined) {
+          const existing = await tx.query(
+            `SELECT 1 FROM ${t.step} WHERE run_id = ? AND cursor_key = ?`,
+            [c.runId, c.cursorKey],
+          );
+          if (existing.length === 0) {
+            const job = await tx.query<{ version: number | string }>(
+              `SELECT version FROM ${t.job} WHERE run_id = ?`,
+              [c.runId],
+            );
+            if (!job[0] || Number(job[0].version) !== fx.requireVersion) {
+              return { status: c.status, attempts: c.attempts, committed: false };
+            }
+          }
+        }
         const ins = await tx.query(
           `INSERT INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
            VALUES (?, ?, ?, ?, ?, ?, ?)

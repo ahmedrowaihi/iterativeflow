@@ -51,6 +51,9 @@ export interface StepPolicy {
   classify?: (error: unknown, attempt: number) => "transient" | "permanent";
 }
 
+/** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
+export type SignalOutcome<T> = { received: true; payload: T } | { received: false };
+
 /**
  * The durable context handed to a flow body. Every method is a memoized checkpoint: on the
  * first invocation it runs and persists; on every replay it returns the persisted result
@@ -104,6 +107,13 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
+  /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
+   *  `timeoutMs`, else `{ received: false }`. A signal delivered before the timeout commits always
+   *  wins — the deadline decision is consistent with the durable inbox. */
+  signal<K extends SignalName<S>>(
+    name: K,
+    opts: { timeoutMs: number },
+  ): Promise<SignalOutcome<SignalPayload<S, K>>>;
 
   /**
    * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
@@ -206,6 +216,7 @@ export interface CtxDeps {
   maxDepth?: number;
   suspend: SuspendHolder;
   onStepCommit?: () => Promise<void>;
+  claimVersion: number;
 }
 
 /** @internal */
@@ -221,6 +232,7 @@ export const makeCtx = ({
   maxDepth,
   suspend,
   onStepCommit,
+  claimVersion,
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
   const depth = snap.run.depth ?? 0;
@@ -290,19 +302,24 @@ export const makeCtx = ({
     return stored.result as T;
   };
 
+  // Pin a deadline into a memo once (as an ISO string) so replay/re-park reuse the same instant
+  // instead of recomputing it and sliding it forward. Shared by ctx.sleep and a timed ctx.signal.
+  const pinDeadline = async (shape: string, wakeAt: Date): Promise<Date> => {
+    const { key, memo } = memoAt(shape);
+    if (memo) return new Date(memo.result as string);
+    await backend.store.checkpointStep({
+      runId,
+      cursorKey: key,
+      status: "ok",
+      result: wakeAt.toISOString(),
+      attempts: attempt,
+      shape,
+    });
+    return wakeAt;
+  };
+
   const parkUntil = async (wakeAt: Date): Promise<void> => {
-    const { key, memo } = memoAt("sleep");
-    const at = memo ? new Date(memo.result as string) : wakeAt; // stored as an ISO string
-    if (!memo) {
-      await backend.store.checkpointStep({
-        runId,
-        cursorKey: key,
-        status: "ok",
-        result: at.toISOString(),
-        attempts: attempt,
-        shape: "sleep",
-      });
-    }
+    const at = await pinDeadline("sleep", wakeAt);
     if (now().getTime() >= at.getTime()) return;
     throw arm(new SleepSignal(at));
   };
@@ -417,29 +434,84 @@ export const makeCtx = ({
         ? invokeMany(flowOrSpecs)
         : invokeOne(flowOrSpecs as Flow<unknown, unknown, any>, input)) as Ctx["invoke"],
 
-    async signal<T>(name: string): Promise<T> {
+    signal: (async (name: string, opts?: { timeoutMs?: number }) => {
       const shape = `signal:${name}`;
-      const { key, memo } = memoAt(shape);
-      if (memo) return memo.result as T;
-      const pending = snap.signals.find((s) => s.name === name && !consumed.has(s.id));
-      if (!pending) throw arm(new AwaitSignalSignal(name));
-      consumed.add(pending.id); // don't let a later wait in this invocation drain the same one
-      const schema = signals?.[name];
-      let payload = pending.payload;
-      if (schema) {
+      const pendingFor = (): { id: string; payload: unknown } | undefined =>
+        snap.signals.find((s) => s.name === name && !consumed.has(s.id));
+      const consumePayload = async (pending: {
+        id: string;
+        payload: unknown;
+      }): Promise<unknown> => {
+        consumed.add(pending.id); // don't let a later wait in this invocation drain the same one
+        const schema = signals?.[name];
+        if (!schema) return pending.payload;
         try {
-          payload = await validateSignal(schema, name, pending.payload);
+          return await validateSignal(schema, name, pending.payload);
         } catch (e) {
           // Permanent — the inbox payload won't change on retry, so fail the run.
           throw new StepFailedError("SIGNAL_INVALID", e instanceof Error ? e.message : String(e));
         }
+      };
+
+      // Unbounded wait: park until the signal arrives, then return its raw payload.
+      if (opts?.timeoutMs === undefined) {
+        const { key, memo } = memoAt(shape);
+        if (memo) return memo.result;
+        const pending = pendingFor();
+        if (!pending) throw arm(new AwaitSignalSignal(name));
+        const stored = await backend.store.checkpointStep(
+          {
+            runId,
+            cursorKey: key,
+            status: "ok",
+            result: await consumePayload(pending),
+            attempts: attempt,
+            shape,
+          },
+          { consumeSignals: [pending.id] },
+        );
+        return stored.result;
       }
-      const stored = await backend.store.checkpointStep(
-        { runId, cursorKey: key, status: "ok", result: payload, attempts: attempt, shape },
-        { consumeSignals: [pending.id] },
+
+      // Bounded wait: pin the deadline once, then resolve to the payload or a timeout.
+      const deadline = await pinDeadline(
+        `signalWait:${name}`,
+        new Date(now().getTime() + opts.timeoutMs),
       );
-      return stored.result as T;
-    },
+      const { key: resKey, memo: resMemo } = memoAt(shape);
+      if (resMemo) return resMemo.result as SignalOutcome<unknown>;
+      const pending = pendingFor();
+      if (pending) {
+        const stored = await backend.store.checkpointStep(
+          {
+            runId,
+            cursorKey: resKey,
+            status: "ok",
+            result: { received: true, payload: await consumePayload(pending) },
+            attempts: attempt,
+            shape,
+          },
+          { consumeSignals: [pending.id], cancelTimers: [runId] },
+        );
+        return stored.result as SignalOutcome<unknown>;
+      }
+      if (now().getTime() < deadline.getTime()) throw arm(new AwaitSignalSignal(name, deadline));
+      // Deadline passed with an empty snapshot inbox — commit the timeout, but only if no signal
+      // raced in since the snapshot; if one did, re-park so the next tick consumes it, not drops it.
+      const stored = await backend.store.checkpointStep(
+        {
+          runId,
+          cursorKey: resKey,
+          status: "ok",
+          result: { received: false },
+          attempts: attempt,
+          shape,
+        },
+        { requireVersion: claimVersion },
+      );
+      if (stored.committed === false) throw arm(new AwaitSignalSignal(name, deadline));
+      return stored.result as SignalOutcome<unknown>;
+    }) as Ctx["signal"],
 
     log(message, data) {
       // Skip entirely when nothing records it, and while replaying the already-logged durable prefix.

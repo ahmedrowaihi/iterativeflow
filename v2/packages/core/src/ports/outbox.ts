@@ -29,9 +29,9 @@ export interface TimerRequest {
 }
 
 /**
- * The transactional-outbox payload — side-effects that a durable Store write commits in
- * the SAME transaction as the state change, so there is no window where the state moved
- * but the follow-on work was lost (or fired twice) after a crash.
+ * The transactional-outbox payload — side-effects (and one precondition, `requireVersion`) that a
+ * durable Store write commits in the SAME transaction as the state change, so there is no window
+ * where the state moved but the follow-on work was lost (or fired twice) after a crash.
  *
  * This is the single seam that makes the engine crash-safe on any backend: memory commits
  * it single-threaded, Postgres in one `BEGIN…COMMIT`, DynamoDB in one `TransactWriteItems`.
@@ -58,6 +58,16 @@ export interface Outbox {
    * so a replay can't consume it twice.
    */
   consumeSignals?: readonly string[];
+  /**
+   * Precondition: commit the checkpoint ONLY if the run's dispatch (job) version still equals this;
+   * if it has moved, skip the write and return `committed: false`. A `ctx.signal` timeout resolution
+   * passes its claim-time version so the decision is linearizable with the inbox: `postSignal` bumps
+   * the version as it delivers, so a signal that raced the deadline blocks the timeout and the run
+   * re-ticks and consumes it instead of dropping it. Backends MUST make the check a write-conflict on
+   * the job row (a locked read or a conditional write), never a bare read — a bare read misses a
+   * concurrent `postSignal` under snapshot/MVCC isolation (write skew).
+   */
+  requireVersion?: number;
   /**
    * Arm `runId`'s fan-out join countdown to `count` children: it must see that many child arrivals
    * (see {@link Store.arriveAtJoin}) before it is re-woken. Set atomically with the spawn that

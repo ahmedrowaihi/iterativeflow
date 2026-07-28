@@ -191,6 +191,21 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         // No FK on step.run_id, so guard the unknown-run reject explicitly before the memo write.
         const known = await tx.query(`SELECT 1 AS ok FROM ${t.run} WHERE id = ?`, [c.runId]);
         if (!known[0]) throw new Error(`checkpointStep: run ${c.runId} not found`);
+        if (fx?.requireVersion !== undefined) {
+          const existing = await tx.query(
+            `SELECT 1 AS ok FROM ${t.step} WHERE run_id = ? AND cursor_key = ?`,
+            [c.runId, c.cursorKey],
+          );
+          if (existing.length === 0) {
+            const job = await tx.query<{ version: number | string }>(
+              `SELECT version FROM ${t.job} WHERE run_id = ? FOR UPDATE`,
+              [c.runId],
+            );
+            if (!job[0] || Number(job[0].version) !== fx.requireVersion) {
+              return { status: c.status, attempts: c.attempts, committed: false };
+            }
+          }
+        }
         const ins = await tx.exec(
           `INSERT IGNORE INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,

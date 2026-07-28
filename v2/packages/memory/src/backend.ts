@@ -202,6 +202,9 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (!stepMap) throw new Error(`checkpointStep: run ${c.runId} not found`);
       const existing = stepMap.get(c.cursorKey);
       if (existing) return structuredClone(existing); // first-writer-wins; skip the outbox
+      if (fx?.requireVersion !== undefined && jobs.get(c.runId)?.version !== fx.requireVersion) {
+        return { status: c.status, attempts: c.attempts, committed: false };
+      }
       const outcome: StepOutcome = {
         status: c.status,
         result: structuredClone(c.result),

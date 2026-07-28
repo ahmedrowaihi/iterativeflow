@@ -256,6 +256,7 @@ export const runTick = async (
     maxDepth: flow.policy?.maxDepth,
     suspend: suspendState,
     onStepCommit: renewLease,
+    claimVersion: lease.version,
   });
 
   try {
@@ -269,7 +270,12 @@ export const runTick = async (
       return suspend("sleeping", "sleeping", { timers: [{ runId: run.id, fireAt: e.wakeAt }] });
     }
     if (e instanceof AwaitChildSignal) return suspend("awaiting_child", "awaiting_child");
-    if (e instanceof AwaitSignalSignal) return suspend("awaiting_signal", "awaiting_signal");
+    if (e instanceof AwaitSignalSignal)
+      return suspend(
+        "awaiting_signal",
+        "awaiting_signal",
+        e.deadline ? { timers: [{ runId: run.id, fireAt: e.deadline }] } : undefined,
+      );
     if (isControlSignal(e)) throw e; // future signals must be handled explicitly
 
     if (e instanceof FlowDriftError) {

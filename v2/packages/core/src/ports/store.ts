@@ -8,8 +8,8 @@ import type {
   RunSnapshot,
   RunSpec,
   RunStatus,
+  CheckpointResult,
   StepCheckpoint,
-  StepOutcome,
   SuspendStatus,
   TerminalOutcome,
 } from "#types";
@@ -107,7 +107,7 @@ export interface Store {
    * skipped (the original write already committed the original outbox), so a replayed
    * `ctx.invoke` never double-spawns.
    */
-  checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<StepOutcome>;
+  checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<CheckpointResult>;
 
   /**
    * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on

@@ -50,6 +50,10 @@ Inside `run`, `ctx` is the durable surface. Every call is a checkpoint:
   every subsequent attempt. The unit of at-least-once execution.
 - `ctx.sleep(ms)` — suspend and resume after a durable timer.
 - `ctx.signal(name)` — park until an external `signalRun` delivers a typed payload.
+- `ctx.signal(name, { timeoutMs })` — the same wait with a deadline; resolves
+  `{ received: true, payload }` if it arrives in time, else `{ received: false }`.
+  A signal delivered before the timeout commits always wins (linearizable with the
+  durable inbox), so a late-arriving signal is never silently dropped.
 - `ctx.invoke(flow, input)` — run a child flow and await its output.
 - `ctx.invoke([{ flow, input }, …])` — fan out to many children in parallel and
   join their outputs in order. A child failure fast-fails the parent and cancels
