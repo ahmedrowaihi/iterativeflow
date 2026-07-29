@@ -82,3 +82,12 @@ export class StepTimeoutError extends Error {
     this.name = "StepTimeoutError";
   }
 }
+
+/** A DB poll (drain + claim) that outran its `pollTimeoutMs` deadline — practically always a
+ *  black-holed connection. Thrown so the resident loop re-polls instead of awaiting a dead socket. */
+export class PollTimeoutError extends Error {
+  constructor(readonly ms: number) {
+    super(`poll exceeded ${ms}ms`);
+    this.name = "PollTimeoutError";
+  }
+}

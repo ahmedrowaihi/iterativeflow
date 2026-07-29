@@ -64,6 +64,13 @@ export interface EngineOpts {
   maxPayloadBytes?: number;
   /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
+  /**
+   * Wall-clock bound (ms) on each cycle's DB poll (drain + claim), so a black-holed connection
+   * can't silently freeze the resident loop on a dead socket — it rejects, gets logged, and
+   * re-polls on a fresh pooled connection. Bounds the poll only, never step execution. Default
+   * 30000; set `0` to disable (e.g. an in-memory backend that never hangs).
+   */
+  pollTimeoutMs?: number;
 }
 
 const byteSize = (value: unknown): number =>
@@ -175,6 +182,7 @@ export const createEngine = (
     id: opts.id,
     now,
     driftPolicy: opts.driftPolicy,
+    pollTimeoutMs: opts.pollTimeoutMs ?? 30_000,
   };
   const clock: Clock = now ?? systemClock;
   const cap = opts.maxPayloadBytes;

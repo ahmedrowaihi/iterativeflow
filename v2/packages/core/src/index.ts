@@ -88,6 +88,7 @@ export {
   FlowDriftError,
   StepFailedError,
   StepTimeoutError,
+  PollTimeoutError,
   isControlSignal,
 } from "#engine/signals";
 export type { ControlSignal } from "#engine/signals";

@@ -749,6 +749,12 @@ declare class DuplicateRunError extends CodedError {
 declare class StepTimeoutError extends Error {
   constructor(ms: number);
 }
+/** A DB poll (drain + claim) that outran its `pollTimeoutMs` deadline — practically always a
+ *  black-holed connection. Thrown so the resident loop re-polls instead of awaiting a dead socket. */
+declare class PollTimeoutError extends Error {
+  readonly ms: number;
+  constructor(ms: number);
+}
 //#endregion
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
@@ -1172,6 +1178,14 @@ interface TickOnceOpts {
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
+  /**
+   * Wall-clock bound on the DB poll (drain + claim) — NOT on step execution. A dropped
+   * connection can leave a query awaiting a dead socket forever; without this the resident
+   * loop's single `await` freezes silently (alive process, no work, no error). On timeout the
+   * poll rejects so the caller logs it and re-polls on a fresh pooled connection. Omit to
+   * disable (an in-memory backend never hangs).
+   */
+  pollTimeoutMs?: number;
 }
 /**
  * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
@@ -1241,6 +1255,13 @@ interface EngineOpts {
   maxPayloadBytes?: number;
   /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
+  /**
+   * Wall-clock bound (ms) on each cycle's DB poll (drain + claim), so a black-holed connection
+   * can't silently freeze the resident loop on a dead socket — it rejects, gets logged, and
+   * re-polls on a fresh pooled connection. Bounds the poll only, never step execution. Default
+   * 30000; set `0` to disable (e.g. an in-memory backend that never hangs).
+   */
+  pollTimeoutMs?: number;
 }
 /** Options for the resident worker loop. */
 interface RunLoopOpts {
@@ -1330,5 +1351,5 @@ declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?:
 declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, PollTimeoutError, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```
