@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -65,6 +66,7 @@ describe.skipIf(skip)("mysql backend", () => {
 
   storeConformance("mysql", async () => (await makeBackend()).store);
   queueConformance("mysql", async () => (await makeBackend()).queue);
+  claimFilterConformance("mysql", () => makeBackend());
   timerConformance("mysql", async () => (await makeBackend()).timer);
   wakeupConformance("mysql", async () => (await makeBackend()).wakeup);
   outboxConformance("mysql", () => makeBackend());

@@ -82,5 +82,12 @@ declare const cronConformance: (label: string, makeStore: () => Store | Promise<
  */
 declare const engineConformance: (label: string, makeBackend: () => Backend | Promise<Backend>) => void;
 //#endregion
-export { cronConformance, engineConformance, outboxConformance, queueConformance, reconcileConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
+//#region src/claim-filter.d.ts
+/**
+ * `ClaimOpts.names` as executable invariants: a sharded worker leases only runs whose flow `name`
+ * it registered. Needs the store (to create named runs), so it takes the whole backend.
+ */
+declare const claimFilterConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
+//#endregion
+export { claimFilterConformance, cronConformance, engineConformance, outboxConformance, queueConformance, reconcileConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
 ```

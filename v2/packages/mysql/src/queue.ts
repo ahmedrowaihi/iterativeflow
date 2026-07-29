@@ -27,17 +27,19 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       );
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now, names }: ClaimOpts) {
+      if (names && names.length === 0) return []; // empty set leases nothing
       const at = ms(now);
       const expiresAt = new Date(at + leaseMs);
-      // MySQL has no RETURNING, so select the batch under SKIP LOCKED then stamp each row in the same
-      // transaction. Each row gets its own token (a per-claim nonce made per-row-unique via run_id).
       return sql.tx(async (tx) => {
+        const namePredicate = names ? ` AND r.name IN (${names.map(() => "?").join(",")})` : "";
+        const params = names ? [at, at, ...names, limit] : [at, at, limit];
         const due = await tx.query<ClaimRow>(
-          `SELECT run_id, version FROM ${t.job}
-             WHERE run_at <= ? AND (lease_expires IS NULL OR lease_expires <= ?)
-             ORDER BY priority, run_at LIMIT ? FOR UPDATE SKIP LOCKED`,
-          [at, at, limit],
+          `SELECT j.run_id AS run_id, j.version AS version
+             FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+             WHERE j.run_at <= ? AND (j.lease_expires IS NULL OR j.lease_expires <= ?)${namePredicate}
+             ORDER BY j.priority, j.run_at LIMIT ? FOR UPDATE OF j SKIP LOCKED`,
+          params,
         );
         const leases: Lease[] = [];
         for (const row of due) {

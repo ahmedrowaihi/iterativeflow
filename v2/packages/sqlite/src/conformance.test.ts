@@ -1,4 +1,5 @@
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -43,6 +44,7 @@ describe("sqlite backend", () => {
 
   storeConformance("sqlite", async () => (await makeBackend()).store);
   queueConformance("sqlite", async () => (await makeBackend()).queue);
+  claimFilterConformance("sqlite", () => makeBackend());
   timerConformance("sqlite", async () => (await makeBackend()).timer);
   wakeupConformance("sqlite", async () => (await makeBackend()).wakeup);
   outboxConformance("sqlite", () => makeBackend());

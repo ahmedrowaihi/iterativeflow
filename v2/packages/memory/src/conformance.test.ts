@@ -1,4 +1,5 @@
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -28,3 +29,4 @@ signalConformance("memory", () => createMemoryBackend());
 reconcileConformance("memory", () => createMemoryBackend());
 cronConformance("memory", () => createMemoryStore());
 engineConformance("memory", () => createMemoryBackend());
+claimFilterConformance("memory", () => createMemoryBackend());

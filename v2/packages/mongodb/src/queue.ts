@@ -20,6 +20,7 @@ export const createMongoQueue = (
   boundSession?: ClientSession,
 ): Queue => {
   const jobs = db.collection<JobDoc>(n.jobs);
+  const runs = db.collection<{ _id: string; name: string }>(n.runs);
   const ms = (now?: Date): number => (now ?? new Date()).getTime();
 
   return {
@@ -34,14 +35,22 @@ export const createMongoQueue = (
       );
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const t = ms(now);
       const unleased = [{ lease_expires: { $exists: false } }, { lease_expires: { $lte: t } }];
-      const candidates = await jobs
+      let candidates = await jobs
         .find({ run_at: { $lte: t }, $or: unleased })
         .sort({ priority: 1, run_at: 1 })
         .limit(limit)
         .toArray();
+      if (names) {
+        const allowed = await runs
+          .find({ _id: { $in: candidates.map((c) => c._id) }, name: { $in: [...names] } })
+          .project({ _id: 1 })
+          .toArray();
+        const allowedIds = new Set(allowed.map((r) => r._id));
+        candidates = candidates.filter((c) => allowedIds.has(c._id));
+      }
       const leases: Lease[] = [];
       for (const cand of candidates) {
         const token = `${id()}:${cand._id}`;

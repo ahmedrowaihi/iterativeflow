@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { BatchWriteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -88,6 +89,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
   // The exact same suites the memory + postgres backends pass — one spec, every implementation.
   storeConformance("dynamodb", async () => (await makeBackend()).store);
   queueConformance("dynamodb", async () => (await makeBackend()).queue);
+  claimFilterConformance("dynamodb", () => makeBackend());
   timerConformance("dynamodb", async () => (await makeBackend()).timer);
   wakeupConformance("dynamodb", async () => (await makeBackend()).wakeup);
   outboxConformance("dynamodb", () => makeBackend());

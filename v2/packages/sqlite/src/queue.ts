@@ -30,16 +30,16 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       );
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, names, now }: ClaimOpts) {
       const at = ms(now);
-      // No SKIP LOCKED on SQLite; the write transaction serializes claimers so select-then-update
-      // is exclusive. The token is a per-claim nonce made per-row-unique by appending run_id.
+      if (names && names.length === 0) return [];
+      const nameFilter = names ? ` AND r.name IN (${names.map(() => "?").join(", ")})` : "";
       return sql.tx(async (tx) => {
         const due = await tx.query<{ run_id: string }>(
-          `SELECT run_id FROM ${t.job}
-             WHERE run_at <= ? AND (lease_expires IS NULL OR lease_expires <= ?)
-             ORDER BY priority, run_at LIMIT ?`,
-          [at, at, limit],
+          `SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+             WHERE j.run_at <= ? AND (j.lease_expires IS NULL OR j.lease_expires <= ?)${nameFilter}
+             ORDER BY j.priority, j.run_at LIMIT ?`,
+          [at, at, ...(names ?? []), limit],
         );
         if (!due.length) return [];
         const ids = due.map((r) => r.run_id);

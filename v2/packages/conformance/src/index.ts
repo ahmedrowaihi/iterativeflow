@@ -7,3 +7,4 @@ export { signalConformance } from "#signal";
 export { reconcileConformance } from "#reconcile";
 export { cronConformance } from "#cron";
 export { engineConformance } from "#engine";
+export { claimFilterConformance } from "#claim-filter";

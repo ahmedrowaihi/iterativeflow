@@ -1,7 +1,7 @@
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
-import { JOB, type Keys } from "#keys";
+import { JOB, type Keys, RUN } from "#keys";
 import { luaRunner } from "#scripts";
 import { ms } from "#time";
 
@@ -12,6 +12,15 @@ local limit = tonumber(ARGV[3])
 local window = tonumber(ARGV[4])
 local jobPre = ARGV[5]
 local jobSuf = ARGV[6]
+local runPre = ARGV[7]
+local runSuf = ARGV[8]
+local nameCount = tonumber(ARGV[9])
+local wanted = nil
+if nameCount >= 0 then
+  wanted = {}
+  for i = 1, nameCount do wanted[ARGV[9 + i]] = true end
+end
+local tokenBase = 9 + math.max(nameCount, 0)
 
 local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', nowMs, 'LIMIT', 0, window)
 local due = {}
@@ -21,7 +30,14 @@ for _, runId in ipairs(ids) do
   local runAt = tonumber(f[1])
   local leaseExpires = tonumber(f[4])
   if runAt ~= nil and runAt <= nowMs and (leaseExpires == nil or leaseExpires <= nowMs) then
-    due[#due + 1] = { runId = runId, priority = tonumber(f[2]) or 0, runAt = runAt, version = tonumber(f[3]) or 0, key = jobKey }
+    local keep = true
+    if wanted ~= nil then
+      local name = redis.call('HGET', runPre .. runId .. runSuf, '${RUN.name}')
+      keep = name ~= false and wanted[name] == true
+    end
+    if keep then
+      due[#due + 1] = { runId = runId, priority = tonumber(f[2]) or 0, runAt = runAt, version = tonumber(f[3]) or 0, key = jobKey }
+    end
   end
 end
 table.sort(due, function(a, b)
@@ -31,7 +47,7 @@ end)
 local out = {}
 for i = 1, math.min(limit, #due) do
   local c = due[i]
-  local token = ARGV[6 + i] .. ':' .. c.runId
+  local token = ARGV[tokenBase + i] .. ':' .. c.runId
   redis.call('HSET', c.key, '${JOB.leaseToken}', token, '${JOB.leaseExpires}', nowMs + leaseMs)
   out[i] = { c.runId, token, c.version }
 end
@@ -72,8 +88,8 @@ return 1
 
 /** @internal */
 export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Queue => {
-  // CLAIM builds each job key inside Lua (it can't call keys.job), so hand it the affixes around runId.
   const [jobPrefix, jobSuffix] = keys.jobAffix;
+  const [runPrefix, runSuffix] = keys.runAffix;
   const run = luaRunner(client);
 
   return {
@@ -88,13 +104,26 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
         .exec();
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const nowMs = ms(now);
       const tokens = Array.from({ length: limit }, () => id()); // Lua can't call IdGen; hand it fresh tokens
+      const nameCount = names === undefined ? -1 : names.length;
       const rows = await run<[string, string, number][]>(
         CLAIM,
         [keys.queue],
-        [nowMs, leaseMs, limit, limit * 10, jobPrefix, jobSuffix, ...tokens],
+        [
+          nowMs,
+          leaseMs,
+          limit,
+          limit * 10,
+          jobPrefix,
+          jobSuffix,
+          runPrefix,
+          runSuffix,
+          nameCount,
+          ...(names ?? []),
+          ...tokens,
+        ],
       );
       return rows.map(
         (r): Lease => ({
