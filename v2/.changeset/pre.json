@@ -27,6 +27,7 @@
     "field-report-nextwakeat",
     "field-report-recovery-docs",
     "field-report-tickresult",
+    "flow-aware-claim",
     "intx-mongodb",
     "intx-mysql-sqlite",
     "keen-webhooks-signal",
