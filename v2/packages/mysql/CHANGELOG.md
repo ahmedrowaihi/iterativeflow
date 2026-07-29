@@ -1,5 +1,12 @@
 # @iterativeflow/mysql
 
+## 2.0.0-alpha.8
+
+### Patch Changes
+
+- Updated dependencies [33d361c]
+  - @iterativeflow/core@2.0.0-alpha.8
+
 ## 2.0.0-alpha.7
 
 ### Patch Changes
