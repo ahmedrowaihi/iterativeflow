@@ -16,7 +16,7 @@ import {
   validateInput,
 } from "#engine/flow";
 import { runDueCrons } from "#engine/schedule";
-import { DuplicateRunError } from "#engine/signals";
+import { DuplicateRunError, PollTimeoutError } from "#engine/signals";
 import type { ObserveOpts } from "#engine/observe";
 
 /**
@@ -216,7 +216,28 @@ export interface TickOnceOpts {
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
+  /**
+   * Wall-clock bound on the DB poll (drain + claim) — NOT on step execution. A dropped
+   * connection can leave a query awaiting a dead socket forever; without this the resident
+   * loop's single `await` freezes silently (alive process, no work, no error). On timeout the
+   * poll rejects so the caller logs it and re-polls on a fresh pooled connection. Omit to
+   * disable (an in-memory backend never hangs).
+   */
+  pollTimeoutMs?: number;
 }
+
+const withPollDeadline = async <T>(work: Promise<T>, ms?: number): Promise<T> => {
+  if (!ms) return await work;
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => reject(new PollTimeoutError(ms)), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(handle);
+  }
+};
 
 /**
  * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
@@ -229,12 +250,13 @@ export const tickOnce = async (
   opts: TickOnceOpts,
 ): Promise<TickResult[]> => {
   const now = opts.now ?? systemClock;
-  await drainTimers(backend, { limit: opts.batchMax, now: now() });
-  const leases = await backend.queue.claim({
-    limit: opts.batchMax,
-    leaseMs: opts.leaseMs,
-    now: now(),
-  });
+  const leases = await withPollDeadline(
+    (async () => {
+      await drainTimers(backend, { limit: opts.batchMax, now: now() });
+      return backend.queue.claim({ limit: opts.batchMax, leaseMs: opts.leaseMs, now: now() });
+    })(),
+    opts.pollTimeoutMs,
+  );
   const results: TickResult[] = [];
   for (const lease of leases) {
     results.push(
