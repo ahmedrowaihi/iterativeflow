@@ -216,13 +216,7 @@ export interface TickOnceOpts {
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
-  /**
-   * Wall-clock bound on the DB poll (drain + claim) — NOT on step execution. A dropped
-   * connection can leave a query awaiting a dead socket forever; without this the resident
-   * loop's single `await` freezes silently (alive process, no work, no error). On timeout the
-   * poll rejects so the caller logs it and re-polls on a fresh pooled connection. Omit to
-   * disable (an in-memory backend never hangs).
-   */
+  names?: readonly string[];
   pollTimeoutMs?: number;
 }
 
@@ -239,6 +233,15 @@ const withPollDeadline = async <T>(work: Promise<T>, ms?: number): Promise<T> =>
   }
 };
 
+const namesByRegistry = new WeakMap<FlowRegistry, string[]>();
+const flowNames = (reg: FlowRegistry): string[] => {
+  const cached = namesByRegistry.get(reg);
+  if (cached) return cached;
+  const names = [...new Set([...reg.values()].map((f) => f.name))];
+  namesByRegistry.set(reg, names);
+  return names;
+};
+
 /**
  * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
  * A resident worker calls this on an interval; a serverless worker calls it per invocation.
@@ -250,10 +253,16 @@ export const tickOnce = async (
   opts: TickOnceOpts,
 ): Promise<TickResult[]> => {
   const now = opts.now ?? systemClock;
+  const names = opts.names ?? flowNames(flows);
   const leases = await withPollDeadline(
     (async () => {
       await drainTimers(backend, { limit: opts.batchMax, now: now() });
-      return backend.queue.claim({ limit: opts.batchMax, leaseMs: opts.leaseMs, now: now() });
+      return backend.queue.claim({
+        limit: opts.batchMax,
+        leaseMs: opts.leaseMs,
+        now: now(),
+        names,
+      });
     })(),
     opts.pollTimeoutMs,
   );

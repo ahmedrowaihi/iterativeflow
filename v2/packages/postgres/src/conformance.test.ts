@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -48,6 +49,7 @@ describe.skipIf(skip)("postgres backend", () => {
   // The exact same suites the memory backend passes — one spec, every implementation.
   storeConformance("postgres", async () => (await makeBackend()).store);
   queueConformance("postgres", async () => (await makeBackend()).queue);
+  claimFilterConformance("postgres", () => makeBackend());
   timerConformance("postgres", async () => (await makeBackend()).timer);
   wakeupConformance("postgres", async () => (await makeBackend()).wakeup);
   outboxConformance("postgres", () => makeBackend());

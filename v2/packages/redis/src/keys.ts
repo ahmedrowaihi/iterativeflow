@@ -13,6 +13,7 @@ export interface Keys {
   sigIdem(runId: string): string;
   job(runId: string): string;
   jobAffix: readonly [string, string];
+  runAffix: readonly [string, string];
   /** SET of a run's direct child ids — powers `childrenOf` without a full scan. Written on spawn. */
   children(runId: string): string;
   queue: string;
@@ -31,6 +32,7 @@ export const makeKeys = (prefix: string): Keys => ({
   sigIdem: (r) => `${prefix}:sigidem:{${r}}`,
   job: (r) => `${prefix}:job:{${r}}`,
   jobAffix: [`${prefix}:job:{`, "}"],
+  runAffix: [`${prefix}:run:{`, "}"],
   children: (r) => `${prefix}:children:{${r}}`,
   queue: `${prefix}:queue`,
   timers: `${prefix}:timers`,

@@ -14,6 +14,12 @@ export interface ClaimOpts {
   leaseMs: number;
   /** Injectable clock (tests / deterministic conformance). Defaults to now. */
   now?: Date;
+  /** Restrict the claim to runs whose flow `name` is in this set — a sharded worker passes the flow
+   *  names it registered so it never blind-claims a run for a `name` it can't execute (which would
+   *  park `unknown_flow` and churn the queue). Matches on `name` only: a registered name at an
+   *  unregistered *version* still leases, then parks for redeploy — the intended handoff, not a shard miss.
+   *  Omitted ⇒ no filter (claim any run — a monolith); a set filters, and an empty set leases nothing. */
+  names?: readonly string[];
 }
 
 /** A liveness snapshot of the dispatch queue — a rising backlog or age means workers can't keep up. */

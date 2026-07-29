@@ -1,5 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
@@ -24,7 +24,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       await send(new UpdateCommand(enqueueParams(table, runId, opts)));
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
+    async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const t = at(now);
       // Query only the JOB partition on GSI1 (ordered priority#runAt) — never a full-table Scan.
       // The lease/runAt predicate is a post-read filter, so a backlog of leased/future jobs can
@@ -49,8 +49,37 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         // GSI is priority#runAt-ordered, so once we hold `limit`, later pages can't rank higher.
         if (!ExclusiveStartKey || candidates.length >= limit) break;
       }
+      let allowed = candidates;
+      if (names !== undefined) {
+        const wanted = new Set(names);
+        if (wanted.size === 0) return [];
+        const nameById = new Map<string, string>();
+        for (let i = 0; i < candidates.length; i += 100) {
+          let keys = candidates.slice(i, i + 100).map((j) => key.run(j.runId));
+          while (keys.length > 0) {
+            const res = await send<{
+              Responses?: Record<string, { id: string; name: string }[]>;
+              UnprocessedKeys?: Record<string, { Keys?: { pk: string; sk: string }[] }>;
+            }>(
+              new BatchGetCommand({
+                RequestItems: {
+                  [table]: {
+                    Keys: keys,
+                    ProjectionExpression: "id, #name",
+                    ExpressionAttributeNames: { "#name": "name" },
+                    ConsistentRead: true,
+                  },
+                },
+              }),
+            );
+            for (const r of res.Responses?.[table] ?? []) nameById.set(r.id, r.name);
+            keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
+          }
+        }
+        allowed = candidates.filter((j) => wanted.has(nameById.get(j.runId) ?? ""));
+      }
       const leases: Lease[] = [];
-      for (const j of candidates) {
+      for (const j of allowed) {
         if (leases.length >= limit) break;
         const token = `${id()}:${j.runId}`;
         const expires = t + leaseMs;

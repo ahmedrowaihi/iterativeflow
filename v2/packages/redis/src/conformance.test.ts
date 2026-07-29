@@ -1,4 +1,5 @@
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -40,6 +41,7 @@ describe.skipIf(skip)("redis backend", () => {
 
   storeConformance("redis", async () => (await makeBackend()).store);
   queueConformance("redis", async () => (await makeBackend()).queue);
+  claimFilterConformance("redis", () => makeBackend());
   timerConformance("redis", async () => (await makeBackend()).timer);
   wakeupConformance("redis", async () => (await makeBackend()).wakeup);
   outboxConformance("redis", () => makeBackend());

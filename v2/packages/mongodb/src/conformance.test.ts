@@ -1,4 +1,5 @@
 import {
+  claimFilterConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -60,6 +61,7 @@ describe.skipIf(skip)("mongodb backend", () => {
 
   storeConformance("mongodb", async () => (await makeBackend()).store);
   queueConformance("mongodb", async () => (await makeBackend()).queue);
+  claimFilterConformance("mongodb", () => makeBackend());
   timerConformance("mongodb", async () => (await makeBackend()).timer);
   wakeupConformance("mongodb", async () => (await makeBackend()).wakeup);
   outboxConformance("mongodb", () => makeBackend());

@@ -20,24 +20,22 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
       await enqueueStmt(sql, t, runId, opts);
     },
 
-    async claim({ limit, leaseMs, now }: ClaimOpts) {
-      // SKIP LOCKED: many workers claim disjoint batches with no contention. The lease token is
-      // a per-claim nonce from the runtime's IdGen, made per-row-unique by appending run_id —
-      // no DB-side id generation, so the token shape is the caller's choice, not the schema's.
+    async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const rows = await sql.query<LeaseRow>(
         `UPDATE ${t.job}
            SET lease_token = $4 || ':' || run_id,
                lease_expires = $1::timestamptz + ($2 * interval '1 millisecond')
          WHERE run_id IN (
-           SELECT run_id FROM ${t.job}
-           WHERE run_at <= $1::timestamptz
-             AND (lease_expires IS NULL OR lease_expires <= $1::timestamptz)
-           ORDER BY priority, run_at
-           FOR UPDATE SKIP LOCKED
+           SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+           WHERE j.run_at <= $1::timestamptz
+             AND (j.lease_expires IS NULL OR j.lease_expires <= $1::timestamptz)
+             AND ($5::text[] IS NULL OR r.name = ANY($5))
+           ORDER BY j.priority, j.run_at
+           FOR UPDATE OF j SKIP LOCKED
            LIMIT $3
          )
          RETURNING run_id, lease_token, lease_expires, version`,
-        [at(now), leaseMs, limit, id()],
+        [at(now), leaseMs, limit, id(), names ?? null],
       );
       return rows.map((r) => ({
         runId: r.run_id,
