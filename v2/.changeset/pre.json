@@ -33,6 +33,7 @@
     "intx-mysql-sqlite",
     "keen-webhooks-signal",
     "loud-schemas-travel",
+    "op-sqlite-busy-retry",
     "poll-timeout",
     "quick-parrots-jog",
     "red-foxes-relax",
