@@ -31,6 +31,15 @@
     "@iterativeflow/core": "2.0.0-alpha.9"
   },
   "peerDependencies": {
-    "@libsql/client": ">=0.14.0"
+    "@libsql/client": ">=0.14.0",
+    "@op-engineering/op-sqlite": ">=9"
+  },
+  "peerDependenciesMeta": {
+    "@libsql/client": {
+      "optional": true
+    },
+    "@op-engineering/op-sqlite": {
+      "optional": true
+    }
   }
 }

@@ -48,6 +48,32 @@ declare const ddl: (prefix?: string) => string;
 /** Apply the schema DDL (idempotent). Splits on `;` because libsql executes one statement per call. */
 declare const applySchema: (sql: Sql, prefix?: string) => Promise<void>;
 //#endregion
+//#region src/op-sqlite.d.ts
+interface OpSqliteResult {
+  rows: Record<string, unknown>[];
+}
+/**
+ * The minimal op-sqlite database surface this adapter uses — declared structurally so the package
+ * needs no dependency on `@op-engineering/op-sqlite` (or its types). `execute` is sync on native
+ * (JSI) and async on web, so it may return the result or a promise of it; the adapter awaits either.
+ */
+interface OpSqliteDB {
+  execute(sql: string, params?: unknown[]): OpSqliteResult | Promise<OpSqliteResult>;
+}
+/**
+ * Adapt an [op-sqlite](https://op-engineering.github.io/op-sqlite) database to the sqlite backend's
+ * {@link Sql}. One code path runs on React Native (native SQLite over JSI) AND the browser (op-sqlite
+ * web, wasm + OPFS), since it only uses op-sqlite's async-safe `execute`.
+ *
+ * `tx` drives `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` itself rather than op-sqlite's `transaction()`
+ * wrapper, so commit-on-resolve and rollback-on-throw are deterministic. A nested `tx` reuses the
+ * open transaction (SQLite has no nested `BEGIN`), matching {@link libsqlDb}.
+ */
+declare const opSqliteDb: (db: OpSqliteDB) => Sql;
+/** Build the SQLite {@link Backend} directly on an op-sqlite database. Run {@link applySchema} once
+ *  (against `opSqliteDb(db)`) before first use. */
+declare const createOpSqliteBackend: (db: OpSqliteDB, opts?: SqliteBackendOpts) => Backend;
+//#endregion
 //#region src/tx.d.ts
 /**
  * Run `fn` inside one SQLite transaction, handing it a {@link Backend} bound to that
@@ -65,5 +91,5 @@ declare const applySchema: (sql: Sql, prefix?: string) => Promise<void>;
  */
 declare const inTx: <T>(client: Client, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: SqliteBackendOpts) => Promise<T>;
 //#endregion
-export { type Sql, type SqliteBackendOpts, applySchema, createSqliteBackend, ddl, inTx, libsqlDb };
+export { type OpSqliteDB, type Sql, type SqliteBackendOpts, applySchema, createOpSqliteBackend, createSqliteBackend, ddl, inTx, libsqlDb, opSqliteDb };
 ```

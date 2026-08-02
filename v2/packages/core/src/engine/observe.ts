@@ -1,11 +1,7 @@
-import { createHash } from "node:crypto";
+import { sha256hex } from "#engine/sha256";
 import type { SuspendStatus } from "#types";
 
-const hashHex = (seed: string, bytes: number): string =>
-  createHash("sha256")
-    .update(seed)
-    .digest("hex")
-    .slice(0, bytes * 2);
+const hashHex = (seed: string, bytes: number): string => sha256hex(seed).slice(0, bytes * 2);
 
 /** @internal */
 export const traceIdOf = (runId: string): string => hashHex(runId, 16);

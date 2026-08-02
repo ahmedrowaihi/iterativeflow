@@ -1,4 +1,3 @@
-import { setTimeout as delay } from "node:timers/promises";
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { QueueDepth } from "#ports/queue";
@@ -40,6 +39,23 @@ export interface Liveness {
   queue: QueueDepth;
   runs: Record<RunStatus, number>;
 }
+
+/** Signal-aware sleep on the Web-standard `setTimeout` — resolves after `ms`, rejects if `signal`
+ *  aborts. Removes its abort listener on resolve so a sustained drain doesn't leak one per tick. */
+const delay = (ms: number, opts?: { signal?: AbortSignal }): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const signal = opts?.signal;
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 export interface EngineOpts {
@@ -244,8 +260,7 @@ export const createEngine = (
       // Self-tuning claim loop across the whole duty cycle: a FULL batch means more work is almost
       // certainly waiting, so re-claim immediately (saturated → max throughput); a PARTIAL batch
       // waits the floor `tickMs`; an EMPTY batch backs off geometrically toward `maxIdleMs` (idle →
-      // stop hammering the DB). A push notify or the current timeout interrupts the wait. The
-      // signal-aware delay cleans up its own abort listener (a hand-rolled one leaks per tick).
+      // stop hammering the DB). A push notify or the current timeout interrupts the wait.
       const tickLoop = (async () => {
         let idleMs = tickMs;
         while (!signal.aborted) {
@@ -258,12 +273,12 @@ export const createEngine = (
           if (results.length >= batchMax) {
             // Saturated — re-claim without an idle wait, but yield one macrotask so a synchronous
             // backend (memory) can't starve the maintenance sweep during a sustained drain.
-            await delay(0, undefined, { signal }).catch(() => undefined);
+            await delay(0, { signal }).catch(() => undefined);
             continue;
           }
           await (waitForWork
             ? waitForWork(idleMs).catch(onTickError)
-            : delay(idleMs, undefined, { signal }).catch(() => undefined));
+            : delay(idleMs, { signal }).catch(() => undefined));
         }
       })();
       const maintenance = setInterval(() => {

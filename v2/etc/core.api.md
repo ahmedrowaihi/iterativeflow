@@ -686,7 +686,8 @@ declare const statusList: (status?: RunStatus | readonly RunStatus[]) => RunStat
 //#region src/id.d.ts
 /** Generates a fresh run/child id. Injectable so the runtime can supply ULIDs, KSUIDs, etc. */
 type IdGen = () => string;
-/** Default id generator — RFC-4122 v4. Override by passing your own {@link IdGen}. */
+/** Default id generator — RFC-4122 v4 via the Web Crypto global (Node 20+ and browsers, secure
+ *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
 export { EnqueueOpts as A, Page as B, Outbox as C, Timer as D, Wakeup as E, CronRow as F, RunSnapshot as G, RunFilter as H, CronSpec as I, StepCheckpoint as J, RunSpec as K, DeliveredSignal as L, Queue as M, QueueDepth as N, TimerDueOpts as O, queueDepthOf as P, TerminalOutcome as Q, DriftPolicy as R, EnqueueRequest as S, TimerRequest as T, RunPage as U, RUN_STATUSES as V, RunRow as W, StepStatus as X, StepOutcome as Y, SuspendStatus as Z, Span as _, RECONCILABLE_STATUSES as a, Store as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, Lease as j, ClaimOpts as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, RunStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Tracer as v, SpawnRequest as w, Backend as x, StartResult as y, FlowError as z };
