@@ -1,5 +1,12 @@
 # @iterativeflow/dynamodb
 
+## 2.0.0-alpha.10
+
+### Patch Changes
+
+- Updated dependencies [f84d352]
+  - @iterativeflow/core@2.0.0-alpha.10
+
 ## 2.0.0-alpha.9
 
 ### Patch Changes

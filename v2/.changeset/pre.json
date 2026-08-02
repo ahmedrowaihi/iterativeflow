@@ -18,6 +18,7 @@
   "changesets": [
     "audit-pass-fixes",
     "brave-owls-fan-out",
+    "browser-isomorphic-op-sqlite",
     "calm-doors-shine",
     "dynamo-nul-dedup-key",
     "edge-objects-durable",
