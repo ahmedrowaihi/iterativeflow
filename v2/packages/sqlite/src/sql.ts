@@ -11,8 +11,11 @@ export interface Sql {
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
 
-const args = (params?: readonly unknown[]): InArgs =>
-  (params ?? []).map((p) => (p === undefined ? null : p)) as InArgs;
+/** SQLite bindings reject `undefined`; map it to NULL. Shared by every {@link Sql} driver adapter. */
+export const mapParams = (params?: readonly unknown[]): unknown[] =>
+  (params ?? []).map((p) => (p === undefined ? null : p));
+
+const args = (params?: readonly unknown[]): InArgs => mapParams(params) as InArgs;
 
 const onTx = (t: Transaction): Sql => ({
   query: (text, params) =>
