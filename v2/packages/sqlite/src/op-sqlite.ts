@@ -15,14 +15,26 @@ export interface OpSqliteDB {
   execute(sql: string, params?: unknown[]): OpSqliteResult | Promise<OpSqliteResult>;
 }
 
+const BUSY_RETRIES = 5;
+const BUSY_BASE_MS = 10;
+const BUSY_CAP_MS = 200;
+
+const isBusy = (e: unknown): boolean =>
+  /\bSQLITE_BUSY\b|database (?:is|table is) locked/i.test(
+    e instanceof Error ? e.message : String(e),
+  );
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Adapt an [op-sqlite](https://op-engineering.github.io/op-sqlite) database to the sqlite backend's
  * {@link Sql}. One code path runs on React Native (native SQLite over JSI) AND the browser (op-sqlite
  * web, wasm + OPFS), since it only uses op-sqlite's async-safe `execute`.
  *
  * `tx` drives `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` itself rather than op-sqlite's `transaction()`
- * wrapper, so commit-on-resolve and rollback-on-throw are deterministic. A nested `tx` reuses the
- * open transaction (SQLite has no nested `BEGIN`), matching {@link libsqlDb}.
+ * wrapper, so commit-on-resolve and rollback-on-throw are deterministic, and it retries the BEGIN on
+ * `SQLITE_BUSY` before surfacing it. A nested `tx` reuses the open transaction (SQLite has no nested
+ * `BEGIN`), matching {@link libsqlDb}.
  */
 export const opSqliteDb = (db: OpSqliteDB): Sql => {
   const query = async <R = Record<string, unknown>>(
@@ -33,7 +45,15 @@ export const opSqliteDb = (db: OpSqliteDB): Sql => {
   return {
     query,
     async tx(fn) {
-      await db.execute("BEGIN IMMEDIATE");
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await db.execute("BEGIN IMMEDIATE");
+          break;
+        } catch (e) {
+          if (!isBusy(e) || attempt >= BUSY_RETRIES) throw e;
+          await sleep(Math.min(BUSY_BASE_MS * 2 ** attempt, BUSY_CAP_MS));
+        }
+      }
       try {
         const out = await fn(inFlight);
         await db.execute("COMMIT");

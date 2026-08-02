@@ -66,8 +66,9 @@ interface OpSqliteDB {
  * web, wasm + OPFS), since it only uses op-sqlite's async-safe `execute`.
  *
  * `tx` drives `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` itself rather than op-sqlite's `transaction()`
- * wrapper, so commit-on-resolve and rollback-on-throw are deterministic. A nested `tx` reuses the
- * open transaction (SQLite has no nested `BEGIN`), matching {@link libsqlDb}.
+ * wrapper, so commit-on-resolve and rollback-on-throw are deterministic, and it retries the BEGIN on
+ * `SQLITE_BUSY` before surfacing it. A nested `tx` reuses the open transaction (SQLite has no nested
+ * `BEGIN`), matching {@link libsqlDb}.
  */
 declare const opSqliteDb: (db: OpSqliteDB) => Sql;
 /** Build the SQLite {@link Backend} directly on an op-sqlite database. Run {@link applySchema} once
