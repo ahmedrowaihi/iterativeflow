@@ -1,5 +1,13 @@
 # @iterativeflow/durable-objects
 
+## 2.0.0-alpha.11
+
+### Patch Changes
+
+- Updated dependencies [0101884]
+  - @iterativeflow/core@2.0.0-alpha.11
+  - @iterativeflow/sqlite@2.0.0-alpha.11
+
 ## 2.0.0-alpha.10
 
 ### Patch Changes
