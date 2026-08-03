@@ -16,7 +16,6 @@ pre-commit:
         - "node_modules/**"
         - "etc/**"
         - "**/etc/**"
-        - "migrations/**"
       run: npx oxfmt {staged_files}
       stage_fixed: true
 
@@ -27,21 +26,7 @@ pre-push:
       run: npm run typecheck
     - name: test
       run: SKIP_TESTCONTAINERS=1 npm test
-    - name: migrations-drift
-      run: |
-        npx tsx scripts/generate-migrations.ts
-        if [ -n "$(git status --porcelain -- migrations/)" ]; then
-          echo "migrations/ drifted from src/storage/schema.ts — commit the regenerated SQL"
-          git status --porcelain -- migrations/
-          exit 1
-        fi
     - name: build
       run: npm run build
     - name: api-check
       run: npm run api:check
-    - name: size-check
-      run: npm run size:check
-    - name: smoke-dist
-      run: npm run smoke:dist
-    - name: docs-check
-      run: npm run docs:check

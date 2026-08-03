@@ -1,265 +1,157 @@
-# iterativeflow
+# iterativeflow v2
 
-[![npm version](https://img.shields.io/npm/v/iterativeflow?labelColor=171717&color=FF570A)](https://www.npmjs.com/package/iterativeflow)
-[![license](https://img.shields.io/npm/l/iterativeflow?labelColor=171717&color=FF570A)](./LICENSE)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/ahmedrowaihi/iterativeflow?utm_source=oss&utm_medium=github&utm_campaign=ahmedrowaihi%2Fiterativeflow&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![core](https://img.shields.io/npm/v/@iterativeflow/core?label=%40iterativeflow%2Fcore&labelColor=171717&color=FF570A)](https://www.npmjs.com/package/@iterativeflow/core)
+[![license](https://img.shields.io/npm/l/@iterativeflow/core?labelColor=171717&color=FF570A)](../LICENSE)
 
-Durable, iterative flows on your own Postgres.
+Durable, backend-agnostic workflows for TypeScript.
 
-Inspired by [Trigger.dev](https://trigger.dev) and [Temporal](https://temporal.io) — same idea (write a flow as code, suspend for hours or days, survive crashes), but it runs **inside your Node app** on [graphile-worker](https://worker.graphile.org) + [drizzle-orm](https://orm.drizzle.team) — or **serverless** on Vercel / Lambda / Cloudflare against your own Postgres ([guide](docs/serverless.md)). No separate service to host; state never leaves your database.
+Write a flow as an ordinary async function; it survives process crashes, retries failed steps, sleeps
+for days, and resumes deterministically by replaying memoized steps. The same engine runs behind a
+four-port `Backend` interface — **Postgres, SQLite, MySQL, MongoDB, Redis, DynamoDB, Cloudflare
+Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*` scope
+(latest `2.0.0-alpha.2`).
 
-Schemas use [Standard Schema](https://standardschema.dev) — any compliant validator works (zod, valibot, arktype, …).
-
-<!-- doc-check: skip — teaser showing the full flow without setup; full setup below in "Hello flow" -->
-
-```ts
-const onboard = flow("onboard")
-  .input(z.object({ userId: z.string() }))
-  .step("create-account", async ({ input, signal }) => createAccount(input.userId, { signal }))
-  .sleep("3d")
-  .signal("survey", { schema: z.object({ score: z.number() }) })
-  .output(({ input }) => ({ score: input.score }))
-  .build();
-
-const handle = engine.register(onboard);
-const { runId } = await handle.start({ userId: "u_1" });
-
-// 3 days later, from a webhook:
-const result = await engine.signal(runId, "survey", { score: 9 });
-switch (result.kind) {
-  case "delivered": // the run was awaiting; now resumes
-  case "buffered": // signal arrived first; consumed on arm
-  case "duplicate": // already accepted; idempotent
-  case "expired": // signal's timeout fired; reject the webhook
-}
-
-const out = await handle.result(runId); // resolves when terminal
-```
-
-That run lives in Postgres for three days. Workers can crash, deploys can roll, the process can be killed and restarted — when the timer fires, the flow resumes from where it left off.
-
-- **Steps** with retries, backoff, per-step timeouts, and **`AbortSignal`** in the step args
-- **Sleeps** and external **signals** lasting days or weeks (`ctx.signal(name)`)
-- **`ctx.invoke(child, input)`** for child flows / fan-out
-- **`handle.result(runId)`** blocks until terminal (via Postgres LISTEN/NOTIFY)
-- **`engine.listRuns({ tag, status, since })`** for ops dashboards
-- **Versioned flows** — edit a flow's shape and you get a loud error, not silent breakage. Loop bodies are checked for rename/kind drift too.
-- **At-least-once** via a transactional outbox; a reconciler picks up anything stranded
-
-> ### v2 (alpha) — backend-agnostic rewrite
->
-> A ground-up rewrite is published under the `@iterativeflow/*` scope (latest `2.0.0-alpha.2`). It keeps the
-> durable model (memoized steps, crash-safe replay, signals, sleeps) but runs behind a four-port
-> `Backend` interface, so the same engine runs on **Postgres, SQLite, MySQL, MongoDB, Redis,
-> DynamoDB, Cloudflare Durable Objects, or in-memory** — resident or serverless (`serverlessTick`).
-> Flows are plain async functions (`defineFlow` / `ctx.step` / `ctx.invoke`).
->
-> **→ [v2 README](v2/README.md)** — quick start, the package table, and "which backend?" guidance.
-> Also: [`@iterativeflow/webhooks`](v2/packages/webhooks) (inbound webhook → durable signal) and
-> design docs in [docs/v2/](docs/v2/) ([ARCHITECTURE](docs/v2/ARCHITECTURE.md) ·
-> [CONTRACTS](docs/v2/CONTRACTS.md) · [MIGRATION](docs/v2/MIGRATION.md) · [PARITY](docs/v2/PARITY.md)).
->
-> The v1 API below (`flow().step()` on graphile-worker) is unchanged and still shipped as `iterativeflow`.
-
-## Install
-
-```bash
-npm install iterativeflow drizzle-orm graphile-worker pg
-```
-
-Peers: `drizzle-orm`, `graphile-worker`, `pg`.
-
-## Setup
-
-### 1. Generate the schema file in your project
-
-```bash
-npx iterativeflow generate-schema
-# wrote ./iterativeflow-schema.ts
-```
-
-This emits a drizzle schema file at the project root (override with `--out`). The file is typed against **your** `drizzle-orm` — so `db.select().from(flowTables.runs)` and drizzle-kit migration generation work regardless of which drizzle version iterativeflow itself was built against. Re-run the command after upgrading iterativeflow.
-
-### 2. Add it to your `drizzle.config.ts`
-
-<!-- doc-check: skip — drizzle-kit's `defineConfig` is implicit in its CLI context -->
+> This is the v2 rewrite. The v1 API (`flow().step()` on graphile-worker) is unchanged and still
+> shipped as [`iterativeflow`](../README.md).
 
 ```ts
-// drizzle.config.ts
-import { defineConfig } from "drizzle-kit";
-
-export default defineConfig({
-  dialect: "postgresql",
-  schema: ["./db/your-schema.ts", "./iterativeflow-schema.ts"],
-  out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_URL! },
-});
-```
-
-### 3. Customize (optional)
-
-You own the generated file. Rename tables, switch `pgSchema` names, add columns, add indexes. When you customize, pass your `flowTables` to `createEngine({ tables: flowTables })` so the engine knows about the renames — otherwise the engine queries the default `workflow.*` schema and your customizations break it. The default `createEngine({ db, pool })` works with the unmodified generated file.
-
-### 4. Install both schemas
-
-```bash
-# install graphile-worker's schema
-node -e "import('graphile-worker').then(m => m.migrate({ pgPool: pool }))"
-
-# install iterativeflow's workflow.* schema
-npx drizzle-kit generate && npx drizzle-kit migrate
-```
-
-Or apply iterativeflow's bundled SQL directly: `psql -f node_modules/iterativeflow/migrations/0000_init.sql`.
-
-## Hello flow
-
-<!-- doc-check: skip — uses external `createAccount`; runnable shape only -->
-
-```ts
+import { createEngine, defineFlow, signalType } from "@iterativeflow/core";
+import { createPgBackend, pgPool } from "@iterativeflow/postgres";
 import { Pool } from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { createEngine, flow } from "iterativeflow";
-import { z } from "zod";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const db = drizzle(pool);
-const engine = createEngine({ db, pool });
-
-const onboard = flow("onboard")
-  .version(1)
-  .input(z.object({ userId: z.string() }))
-  .step("account", ({ input }) => createAccount(input.userId))
-  .sleep("3d")
-  .signal("survey", { schema: z.object({ score: z.number() }) })
-  .output(({ input }) => ({ score: input.score }))
-  .build();
-
-const handle = engine.register(onboard);
-await engine.listen();
-
-const { runId } = await handle.start({ userId: "u_1" });
-await engine.signal(runId, "survey", { score: 9 }); // from a webhook later
-const out = await handle.result(runId); // resolves when terminal
-```
-
-## Defaults you should know
-
-A few load-bearing semantics that surprise people. Read once.
-
-1. **Steps are memoized forever.** Once a step result is stored, the body never re-runs for that `runId`. A code change to a step body between deploys → resumed runs use the OLD result. Bump the flow `.version(N)` to get the new code.
-2. **The top of the flow body re-runs on every resume.** Memoized steps short-circuit; signals/sleeps short-circuit. Don't put side effects at the top level — wrap them in `ctx.step`.
-3. **`Date.now()` / `Math.random()` at the top level is non-deterministic.** Wrap in `ctx.step("now", () => Date.now())` to memoize.
-4. **`AbortSignal` must be honored.** A step that ignores `signal` keeps running after a timeout/cancel — the engine throws on time but the work continues. Pass `signal` to `fetch`, `pg`, `undici`, OpenAI SDKs.
-5. **Error codes are stable across patches; error messages are not.** Alert on `code`, log the message.
-6. **`engine.signal(runId, name, payload)` is single-consumer.** Not pub/sub. Each call delivers to one armed `ctx.signal` (or buffers for the first arm).
-7. **Idempotency keys are scoped to `(name, version, key)`.** Cross-version dedup is intentionally NOT happening. Bumping `.version(N)` lets the same key start a fresh run.
-8. **No defaults you might assume exist:**
-   - `StepOpts.retries` default `0` — a step runs once; opt in with `retries: N` (steps re-run on crash or retry, so keep side effects idempotent)
-   - `worker.concurrency` default `5` — bump for high throughput
-   - `limits.defaultStepTimeoutMs` default `undefined` — a step can hang forever unless you set it
-   - `limits.*Bytes` default `undefined` — no payload size cap unless you set it
-   - `retention` default off — `events` and `runs` tables grow forever unless configured
-   - cron `timezone` default `UTC` — set `timezone: "America/Los_Angeles"` etc. if you need local time
-9. **The pool is yours.** `engine.stop()` does NOT call `pool.end()`. Call it yourself in your shutdown sequence.
-10. **`limits.maxRunAttempts` default `100`.** Poison-pill runs die after that with `RUN_ATTEMPTS_EXHAUSTED`.
-11. **`ctx.invoke` has tree caps.** `limits.maxInvokeDepth` default `10` (root counts as 1); `limits.maxChildrenPerRun` default `1000`. Exceeding either throws `INVOKE_DEPTH_EXCEEDED` / `INVOKE_FANOUT_EXCEEDED` non-retryably. Stops accidental infinite recursion or runaway fan-out from filling the runs table.
-
-Full reference: [docs/replay-semantics.md](docs/replay-semantics.md), [docs/signals.md](docs/signals.md).
-
-## The model
-
-```mermaid
-flowchart LR
-  i(("input I")) -->|"I"| a["step a<br/>fn returns A"]
-  a -->|"A"| s["sleep 3d<br/>transparent"]
-  s -->|"A"| h["signal survey<br/>delivers payload P"]
-  h -->|"P"| o(("output O"))
-```
-
-A flow is a linear chain (with optional loops). Each `.step()` fn is memoized by `(runId, cursor_key)` and **re-runs only if no result is stored**. `sleep` and `signal` suspend the run durably; the engine resumes it later from snapshot.
-
-Inside a step / flow body:
-
-<!-- doc-check: skip — bare body shape; no ctx/url/childHandle binding -->
-
-```ts
-async (ctx) => {
-  const x = await ctx.step("fetch", async ({ signal }) => fetch(url, { signal }));
-  await ctx.sleep("1h");
-  const survey = await ctx.signal<{ score: number }>("survey", {
-    timeout: "7d",
-  });
-  const summary = await ctx.invoke(childHandle, { x, survey }); // child flow
-  return summary;
-};
-```
-
-## Production
-
-<!-- doc-check: skip — references in-scope `db`/`pool`/`counters`/`histograms` -->
-
-```ts
-const engine = createEngine({
-  db,
-  pool, // caller-owned; ≥ worker.concurrency + headroom
-  logger: consoleLogger(), // or your own Logger
-  worker: { concurrency: 10 },
-  retention: {
-    eventsOlderThan: "30d",
-    runsOlderThan: "90d",
-    schedule: "0 * * * *", // hourly
-  },
-  limits: {
-    maxRunAttempts: 100, // hard ceiling — stops poison-pill loops
-    defaultStepTimeoutMs: 30 * 60_000, // 30m fallback per step
-    maxInputBytes: 256 * 1024,
-    maxStepResultBytes: 256 * 1024,
-    maxSignalPayloadBytes: 64 * 1024,
-  },
-  metrics: {
-    runStarted: ({ name }) => counters.runs_started.inc({ name }),
-    runCompleted: ({ name, durationMs }) => histograms.run_duration.observe({ name }, durationMs),
-    stepFinished: ({ status, durationMs }) => histograms.step.observe({ status }, durationMs),
-    signalDelivered: ({ kind }) => counters.signals.inc({ kind }),
+const onboard = defineFlow({
+  name: "onboard",
+  version: 1,
+  signals: { survey: signalType<{ score: number }>() }, // declare the signal's payload type
+  run: async (ctx, input: { userId: string }): Promise<{ score: number }> => {
+    await ctx.step("create-account", () => createAccount(input.userId));
+    await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days, durable
+    const survey = await ctx.signal("survey"); // typed { score: number }
+    return { score: survey.score };
   },
 });
 
-const detach = engine.attachShutdownSignals();
-await engine.listen();
+const engine = createEngine(createPgBackend(pgPool(new Pool())), [onboard]);
+const stop = engine.run(); // resident worker loop; returns a stop fn
+
+const handle = await engine.submit(onboard, { userId: "u_1" });
+// 3 days later, from a webhook:
+await engine.signal(handle, "survey", { score: 9 });
+const { output } = await engine.result(handle); // { score: 9 }
+await stop();
 ```
 
-**`AbortSignal` in steps.** Every step fn receives `{ input, signal, attempt }`. Pass `signal` to `fetch`, `undici`, `pg`, `openai` SDKs — `engine.cancel(runId)` propagates an abort. With `limits.defaultStepTimeoutMs` set, a hung step gets a `step "name" exceeded timeoutMs=...` error AND the abort fires.
+That run lives in your backend for three days. Workers can crash, deploys can roll, the process can be
+killed and restarted — when the timer fires, the flow resumes from where it left off, replaying the
+memoized `create-account` step instead of re-running it.
 
-**Multi-tenant idempotency.** The unique constraint is `(name, version, idempotencyKey)`. For multi-tenant deployments prefix the key yourself: `idempotencyKey: \`\${tenantId}:\${requestId}\``.
+- **Steps** memoized by `(runId, cursor)` — `ctx.step(label, fn)`, the unit of at-least-once execution
+- **Sleeps** and external **signals** lasting days — `ctx.sleep(ms)` / `ctx.signal(name)`
+- **`ctx.invoke(child, input)`** for child flows, and `ctx.invoke([…])` for parallel fan-out + join
+- **Typed contracts** — `submit` returns a `RunHandle<Output, Signals>`; outputs and signal payloads
+  are typed end to end
+- **At-least-once** via a transactional outbox committed with each step; a reconciler re-drives
+  anything stranded by a crash
+- **Serverless or resident** — `engine.run()` for a worker loop, or `serverlessTick` for one bounded
+  cycle per Lambda/Vercel/Cron invocation
+- **Structured concurrency** — a run that terminates without success cancels its descendants
 
-**Pool ownership.** `createEngine` doesn't own the `pg.Pool`. Call `engine.stop()` then `pool.end()` in your shutdown path.
+## Packages
 
-**Versioning.** `.version(N)` enforces positive integers and forbids regression. Changes to a flow's shape between versions are caught by the replay-compat check — including **renames inside loop bodies** (occurrence count inside a loop is dynamic, but base names are still verified).
+| Package                                                      | What it is                                                                                                    |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| [`@iterativeflow/core`](packages/core)                       | The engine — `defineFlow`, `ctx`, `createEngine`, replay, outbox. Pair it with one backend.                   |
+| [`@iterativeflow/memory`](packages/memory)                   | In-memory backend — tests, dev, single process.                                                               |
+| [`@iterativeflow/postgres`](packages/postgres)               | Postgres backend — transactional outbox, optional `LISTEN/NOTIFY` push, serverless-friendly. **The default.** |
+| [`@iterativeflow/sqlite`](packages/sqlite)                   | SQLite backend (`@libsql/client`) — embedded, Turso, or a single-node service.                                |
+| [`@iterativeflow/mysql`](packages/mysql)                     | MySQL/InnoDB backend — `FOR UPDATE SKIP LOCKED` claims.                                                       |
+| [`@iterativeflow/mongodb`](packages/mongodb)                 | MongoDB backend — multi-document transactional outbox (replica set required).                                 |
+| [`@iterativeflow/redis`](packages/redis)                     | Redis backend — Lua-scripted outbox, single-node.                                                             |
+| [`@iterativeflow/dynamodb`](packages/dynamodb)               | DynamoDB backend — single-table, `TransactWriteItems` outbox, serverless AWS.                                 |
+| [`@iterativeflow/durable-objects`](packages/durable-objects) | Run the engine **inside a Cloudflare Durable Object** on its built-in SQLite — no external DB.                |
+| [`@iterativeflow/webhooks`](packages/webhooks)               | Inbound edge — verify a signed provider webhook and deliver it as a durable signal a parked flow `await`s.    |
+| [`@iterativeflow/dashboard`](packages/dashboard)             | Dependency-free ops UI (runs list, detail, cancel/retry/signal) as a fetch handler.                           |
+| [`@iterativeflow/conformance`](packages/conformance)         | The shared suites every backend must pass — the executable definition of a correct backend.                   |
 
-**Non-retryable errors.** Throw `FlowRuntimeError` with `nonRetryable: true` to skip retries on a permanent failure:
+Every backend implements the same four ports and passes the same nine conformance suites, so swapping
+one for another changes only the `create*Backend(...)` call.
 
-<!-- doc-check: skip — bare body snippet; no ctx binding -->
+### Which backend?
+
+- **`memory`** — tests, examples, a single-process app.
+- **`postgres`** — the default: strong consistency, push completion via `LISTEN/NOTIFY`, works on
+  serverless/pooled Postgres.
+- **`sqlite`** — embedded or edge, one file or Turso/libsql; zero server.
+- **`durable-objects`** — the edge, strongly consistent per object, no external database.
+- **`redis`** — low-latency, single-node (Valkey/Dragonfly work too).
+- **`mysql` / `mongodb` / `dynamodb`** — when that store is already your stack.
+
+## Install & quick start
+
+```bash
+npm install @iterativeflow/core @iterativeflow/memory
+```
 
 ```ts
-import { FlowRuntimeError } from "iterativeflow";
+import { createEngine, defineFlow } from "@iterativeflow/core";
+import { createMemoryBackend } from "@iterativeflow/memory";
 
-await ctx.step("charge", async () => {
-  if (declined) {
-    throw new FlowRuntimeError({
-      code: "CARD_DECLINED",
-      message: "issuer declined",
-      nonRetryable: true,
-    });
-  }
+const double = defineFlow<{ x: number }, number>({
+  name: "double",
+  version: 1,
+  run: async (ctx, input) => ctx.step("d", () => input.x * 2),
 });
+
+const engine = createEngine(createMemoryBackend(), [double]);
+const handle = await engine.submit(double, { x: 21 });
+const stop = engine.run();
+const res = await engine.result(handle, { timeoutMs: 5_000 });
+await stop();
+// res.output === 42
 ```
 
-**Serverless.** No long-lived process? Run on Vercel / Lambda / Cloudflare against your own Postgres — including scale-to-zero databases — with `engine.handleRun` driven by an HTTP route and a wake outbox instead of the resident worker. State never leaves your DB. See **[docs/serverless.md](docs/serverless.md)**.
+Swap `createMemoryBackend()` for `createPgBackend(...)`, `createSqliteBackend(...)`, etc. — nothing
+else changes. Each backend's README covers its connection setup and `applySchema`.
 
-**Dashboard.** `createFlowsDashboard({ engine })` from `iterativeflow/dashboard` returns a fetch handler serving an observability UI — an overview, a runs list with filters, run detail (steps, sleeps, signals), cancel/retry/signal actions, and (pass your own `crons`) a crons view with manual triggers — as a dependency-free app. Open panels and filters live in the URL, so a refresh restores your view. Mount it at any path behind your own auth. See **[docs/dashboard.md](docs/dashboard.md)**.
+## The flow context
 
-Full concepts, versioning, failure modes, and reference: **[docs/guide.md](docs/guide.md)**.
+Inside `run`, `ctx` is the durable surface; every call is a checkpoint:
+
+- `ctx.step(label, fn)` — run `fn` once; memoize its result and replay it on every later attempt.
+- `ctx.sleep(ms)` — suspend and resume after a durable timer.
+- `ctx.signal(name)` — park until an external `engine.signal(runId, name, payload)` (or
+  [`@iterativeflow/webhooks`](packages/webhooks)) delivers a typed payload.
+- `ctx.invoke(flow, input)` — run a child flow and await its output; pass an array to fan out in
+  parallel and join outputs in order.
+
+Replay assumes the body is stable: each step memo records a shape fingerprint, and a redeploy that
+reorders the body triggers the flow's `driftPolicy` (park or fail) instead of running the wrong step.
+Keep step order and labels stable across deploys; bump `version` when the body changes meaningfully.
+
+### Builder (fluent, typed)
+
+Prefer a chain? `builder` compiles to the same `ctx.step` — each `.step` result is added to a typed
+accumulator (`acc.account`, `acc.survey`) that later steps and the output projection can read. Sleeps,
+signals, and invokes happen through `ctx` inside a step (there are no separate chain nodes for them):
+
+```ts
+import { builder } from "@iterativeflow/core";
+
+const onboard = builder<{ userId: string }>("onboard", 1)
+  .step("account", (acc) => createAccount(acc.input.userId))
+  .step("survey", async (_acc, ctx) => {
+    await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days
+    return (await ctx.signal("survey")) as { score: number };
+  })
+  .output((acc) => ({ score: acc.survey.score }));
+```
+
+## Docs
+
+- [ARCHITECTURE](../docs/v2/ARCHITECTURE.md) — the four ports + transactional outbox
+- [CONTRACTS](../docs/v2/CONTRACTS.md) — typed flows & signals
+- [MIGRATION](../docs/v2/MIGRATION.md) — schema ownership, resident vs. serverless
+- [PARITY](../docs/v2/PARITY.md) — v1 → v2 feature parity
 
 ## License
 
