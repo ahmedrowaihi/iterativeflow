@@ -28,6 +28,6 @@ allowed to stay local. Every backend must pass all nine conformance suites.
 
 ## Verify
 
-`cd v2 && npm run typecheck && npm run lint && npm test` (backend suites need Docker: postgres, redis,
-mysql, mongodb, dynamodb; memory/sqlite/durable-objects/core/webhooks need none). `npm run api:check`
+`pnpm run typecheck && pnpm run lint && pnpm test` (backend suites need Docker: postgres, redis,
+mysql, mongodb, dynamodb; memory/sqlite/durable-objects/core/webhooks need none). `pnpm run api:check`
 regenerates and diffs the `etc/*.api.md` public-surface snapshots.

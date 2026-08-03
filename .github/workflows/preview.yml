@@ -11,6 +11,9 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 jobs:
   publish:
     name: pkg.pr.new
@@ -22,7 +25,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-          cache: npm
-      - run: npm install --no-audit --no-fund
-      - run: npm run build
-      - run: npx pkg-pr-new publish
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm dlx pkg-pr-new publish

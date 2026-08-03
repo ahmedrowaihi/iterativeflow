@@ -10,8 +10,7 @@ pre-commit:
     - name: format
       glob: "*.{ts,tsx,js,jsx,md,json,yml,yaml}"
       exclude:
-        - "package-lock.json"
-        - "**/package-lock.json"
+        - "pnpm-lock.yaml"
         - "dist/**"
         - "node_modules/**"
         - "etc/**"
@@ -23,10 +22,10 @@ pre-push:
   parallel: false
   jobs:
     - name: typecheck
-      run: npm run typecheck
+      run: pnpm run typecheck
     - name: test
-      run: SKIP_TESTCONTAINERS=1 npm test
+      run: SKIP_TESTCONTAINERS=1 pnpm test
     - name: build
-      run: npm run build
+      run: pnpm run build
     - name: api-check
-      run: npm run api:check
+      run: pnpm run api:check

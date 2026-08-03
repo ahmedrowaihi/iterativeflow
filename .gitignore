@@ -5,5 +5,4 @@ coverage
 
 # local Claude Code state (agent worktrees, settings)
 .claude/
-pnpm-lock.yaml
 yarn.lock

@@ -12,6 +12,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 jobs:
   test:
     name: typecheck + tests (node ${{ matrix.node }})
@@ -30,16 +33,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
+      - run: corepack enable
       # Suites start their own Postgres + DynamoDB Local via testcontainers (Docker is available
       # on hosted runners), so no service containers or SKIP_TESTCONTAINERS here.
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm run test:coverage
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test:coverage
+      - run: pnpm run build
       # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface change fails
       # here until etc/*.api.md is regenerated and committed.
-      - run: npm run api:snapshot && git diff --exit-code etc
+      - run: pnpm run api:snapshot && git diff --exit-code etc
 
   release:
     name: changesets
@@ -58,9 +62,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-      - run: npm install -g npm@latest
-      - run: npm install --no-audit --no-fund
-      - run: npm run build
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
 
       - name: detect pending changesets
         id: changesets
@@ -88,8 +92,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B changeset-release/main
-          npx changeset version
-          npm install --package-lock-only --no-audit --no-fund
+          pnpm changeset version
+          pnpm install --lockfile-only
           git add .
           git commit -m "chore: version packages"
           git push -f origin changeset-release/main
@@ -100,13 +104,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # `changeset publish` is per-package idempotent — it skips versions already on npm and
-      # publishes only the missing ones (so it also recovers a partial publish), and no-ops once
-      # everything is published. No coarse version gate, which would wrongly skip missing packages
-      # after a partial publish.
       - name: publish via oidc
         if: steps.changesets.outputs.hasChangesets == 'false'
-        run: npx changeset publish
+        run: pnpm changeset publish
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
