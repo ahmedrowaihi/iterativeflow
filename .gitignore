@@ -6,3 +6,6 @@ coverage
 # local Claude Code state (agent worktrees, settings)
 .claude/
 yarn.lock
+
+# local-only working docs: design notes, field reports, ADR drafts, case studies, the docs plan
+docs/
