@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { ddl, drizzleSchema } from "@iterativeflow/postgres";
 import { generateDrizzleJson, generateMigration } from "drizzle-kit/api";
@@ -43,7 +42,8 @@ describe.skipIf(skip)("drizzle schema mirrors ddl()", () => {
 
     // 2. The consumer's generated drizzle schema, materialized through drizzle-kit into SQL and
     //    applied to its own schema — exactly what `drizzle-kit push`/migrate would do on their side.
-    tmp = mkdtempSync(join(tmpdir(), "if-drz-"));
+    const pkgRoot = fileURLToPath(new URL("..", import.meta.url));
+    tmp = mkdtempSync(join(pkgRoot, "if-drz-"));
     const file = join(tmp, "schema.ts");
     writeFileSync(file, drizzleSchema(DRZ_SCHEMA));
     const mod = await import(pathToFileURL(file).href);
