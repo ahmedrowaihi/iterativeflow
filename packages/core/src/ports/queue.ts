@@ -101,9 +101,11 @@ export interface Queue {
   /**
    * Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. Postgres answers it
    * with one aggregate query; memory and DynamoDB read the whole job set, so call it on a coarse
-   * cadence (a readiness probe every few seconds), not per request.
+   * cadence (a readiness probe every few seconds), not per request. `names` restricts the counts to
+   * runs whose flow `name` is in the set — the per-shard backlog for a sharded worker's autoscaling,
+   * mirroring {@link ClaimOpts.names}; omitted ⇒ the whole engine.
    */
-  depth(now: Date): Promise<QueueDepth>;
+  depth(now: Date, names?: readonly string[]): Promise<QueueDepth>;
 
   /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A

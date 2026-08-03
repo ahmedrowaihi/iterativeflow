@@ -8,3 +8,5 @@ export { reconcileConformance } from "#reconcile";
 export { cronConformance } from "#cron";
 export { engineConformance } from "#engine";
 export { claimFilterConformance } from "#claim-filter";
+export { shardedClaimConformance } from "#sharded-claim";
+export { pendingWorkConformance } from "#pending-work";

@@ -28,6 +28,17 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
       });
     },
 
+    async dueCount(now, names) {
+      if (names && names.length === 0) return 0;
+      const filter = names ? ` AND r.name IN (${names.map(() => "?").join(", ")})` : "";
+      const rows = await sql.query<{ n: number }>(
+        `SELECT count(*) AS n FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
+         WHERE tm.fire_at <= ?${filter}`,
+        [now.getTime(), ...(names ?? [])],
+      );
+      return Number(rows[0].n);
+    },
+
     async cancel(runId) {
       await sql.query(`DELETE FROM ${t.timer} WHERE run_id = ?`, [runId]);
     },

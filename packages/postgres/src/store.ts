@@ -377,6 +377,15 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       }));
     },
 
+    async dueCronCount(now, names) {
+      const rows = await sql.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM ${t.cron}
+         WHERE next_run_at <= $1::timestamptz AND ($2::text[] IS NULL OR flow_name = ANY($2))`,
+        [now, names ?? null],
+      );
+      return rows[0].n;
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const rows = await sql.query(
         `UPDATE ${t.cron} SET next_run_at = $3, last_run_at = $4

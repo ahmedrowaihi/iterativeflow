@@ -1,18 +1,14 @@
-# iterativeflow v2
+# iterativeflow
 
 [![core](https://img.shields.io/npm/v/@iterativeflow/core?label=%40iterativeflow%2Fcore&labelColor=171717&color=FF570A)](https://www.npmjs.com/package/@iterativeflow/core)
-[![license](https://img.shields.io/npm/l/@iterativeflow/core?labelColor=171717&color=FF570A)](../LICENSE)
+[![license](https://img.shields.io/npm/l/@iterativeflow/core?labelColor=171717&color=FF570A)](LICENSE)
 
 Durable, backend-agnostic workflows for TypeScript.
 
 Write a flow as an ordinary async function; it survives process crashes, retries failed steps, sleeps
 for days, and resumes deterministically by replaying memoized steps. The same engine runs behind a
 four-port `Backend` interface — **Postgres, SQLite, MySQL, MongoDB, Redis, DynamoDB, Cloudflare
-Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*` scope
-(latest `2.0.0-alpha.2`).
-
-> This is the v2 rewrite. The v1 API (`flow().step()` on graphile-worker) is unchanged and still
-> shipped as [`iterativeflow`](../README.md).
+Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*` scope.
 
 ```ts
 import { createEngine, defineFlow, signalType } from "@iterativeflow/core";
@@ -56,6 +52,31 @@ memoized `create-account` step instead of re-running it.
   cycle per Lambda/Vercel/Cron invocation
 - **Structured concurrency** — a run that terminates without success cancels its descendants
 
+## How it works
+
+One engine, four ports, one datastore. The engine runs your flow, and each step commits its result and
+its side effects — child spawns, enqueues, timers — in a single transaction (the outbox), so a crash
+never leaves state and its follow-up out of sync. On restart the engine replays the flow from the
+start; memoized steps short-circuit, so only un-run work executes again.
+
+```mermaid
+flowchart TB
+  flow["your flow — an async function"] --> engine
+  engine["engine · replay · retry · outbox · reconcile"] --> store & queue & timer & wakeup
+  subgraph backend ["Backend — four ports"]
+    direction LR
+    store["Store<br/>runs · steps · signals · crons"]
+    queue["Queue<br/>claim · lease"]
+    timer["Timer<br/>sleeps · deadlines"]
+    wakeup["Wakeup<br/>completion nudge"]
+  end
+  backend --> db[("one datastore:<br/>Postgres · SQLite · MySQL · Mongo · Redis · DynamoDB · DO")]
+```
+
+Every backend implements those four ports and passes the same conformance suites — the executable
+definition of a correct backend — so swapping one for another changes only the `create*Backend(...)`
+call.
+
 ## Packages
 
 | Package                                                      | What it is                                                                                                    |
@@ -73,9 +94,6 @@ memoized `create-account` step instead of re-running it.
 | [`@iterativeflow/dashboard`](packages/dashboard)             | Dependency-free ops UI (runs list, detail, cancel/retry/signal) as a fetch handler.                           |
 | [`@iterativeflow/conformance`](packages/conformance)         | The shared suites every backend must pass — the executable definition of a correct backend.                   |
 
-Every backend implements the same four ports and passes the same nine conformance suites, so swapping
-one for another changes only the `create*Backend(...)` call.
-
 ### Which backend?
 
 - **`memory`** — tests, examples, a single-process app.
@@ -85,6 +103,8 @@ one for another changes only the `create*Backend(...)` call.
 - **`durable-objects`** — the edge, strongly consistent per object, no external database.
 - **`redis`** — low-latency, single-node (Valkey/Dragonfly work too).
 - **`mysql` / `mongodb` / `dynamodb`** — when that store is already your stack.
+
+See [patterns/backends](patterns/backends) for each backend's setup, tuning, and gotchas.
 
 ## Install & quick start
 
@@ -103,15 +123,15 @@ const double = defineFlow<{ x: number }, number>({
 });
 
 const engine = createEngine(createMemoryBackend(), [double]);
-const handle = await engine.submit(double, { x: 21 });
 const stop = engine.run();
+const handle = await engine.submit(double, { x: 21 });
 const res = await engine.result(handle, { timeoutMs: 5_000 });
 await stop();
 // res.output === 42
 ```
 
 Swap `createMemoryBackend()` for `createPgBackend(...)`, `createSqliteBackend(...)`, etc. — nothing
-else changes. Each backend's README covers its connection setup and `applySchema`.
+else changes. Each backend's guide covers its connection setup and `applySchema`.
 
 ## The flow context
 
@@ -148,10 +168,9 @@ const onboard = builder<{ userId: string }>("onboard", 1)
 
 ## Docs
 
-- [ARCHITECTURE](../docs/v2/ARCHITECTURE.md) — the four ports + transactional outbox
-- [CONTRACTS](../docs/v2/CONTRACTS.md) — typed flows & signals
-- [MIGRATION](../docs/v2/MIGRATION.md) — schema ownership, resident vs. serverless
-- [PARITY](../docs/v2/PARITY.md) — v1 → v2 feature parity
+- [Backends](patterns/backends) — per-backend setup, production tuning, and gotchas.
+- [Deployment](patterns/deployment.md) — execution models, connection pooling, clocks and leases,
+  scaling to zero, sharding, and rolling deploys.
 
 ## License
 

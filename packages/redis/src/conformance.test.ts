@@ -1,8 +1,10 @@
 import {
   claimFilterConformance,
+  shardedClaimConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
+  pendingWorkConformance,
   queueConformance,
   reconcileConformance,
   signalConformance,
@@ -42,6 +44,8 @@ describe.skipIf(skip)("redis backend", () => {
   storeConformance("redis", async () => (await makeBackend()).store);
   queueConformance("redis", async () => (await makeBackend()).queue);
   claimFilterConformance("redis", () => makeBackend());
+  shardedClaimConformance("redis", () => makeBackend());
+  pendingWorkConformance("redis", () => makeBackend());
   timerConformance("redis", async () => (await makeBackend()).timer);
   wakeupConformance("redis", async () => (await makeBackend()).wakeup);
   outboxConformance("redis", () => makeBackend());

@@ -73,14 +73,15 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
       );
     },
 
-    async depth(now): Promise<QueueDepth> {
-      const claimable = `run_at <= $1::timestamptz AND (lease_expires IS NULL OR lease_expires <= $1::timestamptz)`;
+    async depth(now, names): Promise<QueueDepth> {
+      const named = `($2::text[] IS NULL OR r.name = ANY($2))`;
+      const claimable = `j.run_at <= $1::timestamptz AND (j.lease_expires IS NULL OR j.lease_expires <= $1::timestamptz) AND ${named}`;
       const rows = await sql.query<{ claimable: number; leased: number; oldest: Date | null }>(
         `SELECT count(*) FILTER (WHERE ${claimable})::int AS claimable,
-                count(*) FILTER (WHERE lease_expires > $1::timestamptz)::int AS leased,
-                min(run_at) FILTER (WHERE ${claimable}) AS oldest
-         FROM ${t.job}`,
-        [at(now)],
+                count(*) FILTER (WHERE j.lease_expires > $1::timestamptz AND ${named})::int AS leased,
+                min(j.run_at) FILTER (WHERE ${claimable}) AS oldest
+         FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id`,
+        [at(now), names ?? null],
       );
       const r = rows[0];
       return {

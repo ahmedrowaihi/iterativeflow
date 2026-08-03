@@ -168,6 +168,11 @@ export interface Store {
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
 
+  /** Count crons due at/before `now` (the due-cron contribution to the autoscaling backlog: a due
+   *  cron won't fire at zero replicas until a worker is woken). `names` restricts to crons whose
+   *  `flowName` is in the set (per-shard); omitted ⇒ all. Read-only. */
+  dueCronCount(now: Date, names?: readonly string[]): Promise<number>;
+
   /**
    * Advance a cron's `nextRunAt` — but ONLY if it still equals `expectedNextRunAt` (CAS). The
    * winner of that CAS is the single worker that fires this occurrence, so a cron never

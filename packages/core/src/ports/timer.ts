@@ -34,4 +34,13 @@ export interface Timer {
    * never a scan; signals and child-joins wake by enqueue, so they are NOT covered by this.
    */
   nextDueAt(now: Date): Promise<Date | null>;
+
+  /**
+   * Count timers due at/before `now` WITHOUT consuming them — the due-sleep contribution to the
+   * autoscaling backlog (a scaled-to-zero worker must still be woken for a due `ctx.sleep`, and a
+   * claimable-only count would miss it since no worker has drained the timer onto the queue yet).
+   * `names` restricts to runs whose flow `name` is in the set (per-shard), mirroring the queue's
+   * name filter; omitted ⇒ all. Read-only; call on a coarse cadence.
+   */
+  dueCount(now: Date, names?: readonly string[]): Promise<number>;
 }

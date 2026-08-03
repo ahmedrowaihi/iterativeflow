@@ -81,16 +81,29 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       );
     },
 
-    async depth(now): Promise<QueueDepth> {
+    async depth(now, names): Promise<QueueDepth> {
+      if (names && names.length === 0) return queueDepthOf([], now.getTime());
+      const nowMs = now.getTime();
+      const namePredicate = names ? ` WHERE r.name IN (${names.map(() => "?").join(",")})` : "";
       const rows = await sql.query<{
-        run_at: number | string;
-        lease_expires: number | string | null;
-      }>(`SELECT run_at, lease_expires FROM ${t.job}`);
-      const jobs = rows.map((r) => ({
-        runAt: Number(r.run_at),
-        leaseExpires: r.lease_expires == null ? undefined : Number(r.lease_expires),
-      }));
-      return queueDepthOf(jobs, now.getTime());
+        claimable: number | string | null;
+        leased: number | string | null;
+        oldest: number | string | null;
+      }>(
+        `SELECT SUM(claimable) AS claimable, SUM(leased) AS leased,
+                MIN(CASE WHEN claimable = 1 THEN run_at END) AS oldest
+           FROM (SELECT j.run_at AS run_at,
+                        (j.run_at <= ? AND (j.lease_expires IS NULL OR j.lease_expires <= ?)) AS claimable,
+                        (j.lease_expires > ?) AS leased
+                   FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id${namePredicate}) x`,
+        [nowMs, nowMs, nowMs, ...(names ?? [])],
+      );
+      const r = rows[0];
+      return {
+        claimable: Number(r?.claimable ?? 0),
+        leased: Number(r?.leased ?? 0),
+        oldestClaimableAgeMs: r?.oldest == null ? null : nowMs - Number(r.oldest),
+      };
     },
   };
 };

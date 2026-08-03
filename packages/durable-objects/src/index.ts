@@ -20,6 +20,7 @@ export const createDurableObjectBackend = (
   opts?: SqliteBackendOpts,
 ): Backend => createSqliteBackend(doStorageSql(storage), opts);
 
-/** Apply the schema to a Durable Object's SQLite storage. Run once before use. */
+/** Apply the schema to a Durable Object's SQLite storage. Run once before use. DO storage manages its
+ *  own durability, so the file-store PRAGMAs are skipped (`PRAGMA journal_mode` is unsupported there). */
 export const applySchema = (storage: SqlStorage, prefix = ""): Promise<void> =>
-  applySqliteSchema(doStorageSql(storage), prefix);
+  applySqliteSchema(doStorageSql(storage), prefix, { pragmas: false });

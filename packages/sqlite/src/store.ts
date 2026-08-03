@@ -370,6 +370,16 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       return rows.map(mapCron);
     },
 
+    async dueCronCount(now, names) {
+      if (names && names.length === 0) return 0;
+      const filter = names ? ` AND flow_name IN ${inList(names.length)}` : "";
+      const rows = await sql.query<{ n: number }>(
+        `SELECT count(*) AS n FROM ${t.cron} WHERE next_run_at <= ?${filter}`,
+        [now.getTime(), ...(names ?? [])],
+      );
+      return Number(rows[0].n);
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const rows = await sql.query(
         `UPDATE ${t.cron} SET next_run_at = ?, last_run_at = ?

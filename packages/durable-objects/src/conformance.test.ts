@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   claimFilterConformance,
+  pendingWorkConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
@@ -44,6 +45,7 @@ describe("durable-objects backend (SQLite over node:sqlite)", () => {
   storeConformance("durable-objects", async () => (await makeBackend()).store);
   queueConformance("durable-objects", async () => (await makeBackend()).queue);
   claimFilterConformance("durable-objects", () => makeBackend());
+  pendingWorkConformance("durable-objects", () => makeBackend());
   timerConformance("durable-objects", async () => (await makeBackend()).timer);
   wakeupConformance("durable-objects", async () => (await makeBackend()).wakeup);
   outboxConformance("durable-objects", () => makeBackend());

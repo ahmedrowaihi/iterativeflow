@@ -193,15 +193,17 @@ export const runTick = async (
   // shape drifted under it (`flow_drift`). Park and re-check on a flat delay; a redeploy or version
   // bump recovers it. (The dead-letter cap still bounds a permanently-stuck run.)
   const parkForRedeploy = (
-    tickStatus: TickStatus,
+    tickStatus: "unknown_flow" | "flow_drift",
     extra?: Omit<TickResult, "runId" | "status">,
-  ): Promise<TickResult> =>
-    suspend(
+  ): Promise<TickResult> => {
+    obs.metrics.redeployParked?.(run.id, tickStatus);
+    return suspend(
       "retrying",
       tickStatus,
       { timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }] },
       extra,
     );
+  };
 
   const flow = flows.get(flowKey(run.name, run.version));
   if (!flow) return parkForRedeploy("unknown_flow");

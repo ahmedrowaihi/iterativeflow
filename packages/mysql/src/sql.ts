@@ -32,22 +32,26 @@ const bind = (q: Pool | PoolConnection): Pick<Sql, "query" | "exec"> => ({
 
 const onConn = (c: PoolConnection): Sql => ({ ...bind(c), tx: (fn) => fn(onConn(c)) });
 
+/** Options for {@link mysqlPool}. */
+export interface MysqlPoolOpts {
+  /**
+   * Set READ COMMITTED per transaction (default `true`). The engine needs READ COMMITTED so a
+   * first-writer-wins checkpoint's re-read sees a concurrent winner's just-committed row. On
+   * PlanetScale/Vitess a per-connection `SET` taints the connection into a reserved pool slot, so
+   * set this `false` there and configure the server's default isolation to READ COMMITTED instead.
+   */
+  setIsolation?: boolean;
+}
+
 /** Adapt a `mysql2/promise` {@link Pool} to {@link Sql}. `tx` checks out one connection for the unit. */
-export const mysqlPool = (pool: Pool): Sql => {
-  // READ COMMITTED (not MySQL's REPEATABLE READ default): a first-writer-wins checkpoint's re-read
-  // must see a concurrent winner's just-committed row, as the Postgres-based model assumes. Set
-  // SESSION-scoped once per physical connection (the pool reuses connection objects), so it's off
-  // the per-transaction hot path but still applied before that connection's first transaction.
-  const configured = new WeakSet<PoolConnection>();
+export const mysqlPool = (pool: Pool, opts: MysqlPoolOpts = {}): Sql => {
+  const setIsolation = opts.setIsolation ?? true;
   return {
     ...bind(pool),
     async tx(fn) {
       const c = await pool.getConnection();
       try {
-        if (!configured.has(c)) {
-          await c.query("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED");
-          configured.add(c);
-        }
+        if (setIsolation) await c.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
         await c.beginTransaction();
         const out = await fn(onConn(c));
         await c.commit();

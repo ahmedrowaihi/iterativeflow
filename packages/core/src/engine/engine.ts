@@ -66,6 +66,12 @@ export interface EngineOpts {
    * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
    * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
    * batch tail is stranded until the oversized lease expires. Default 30000.
+   *
+   * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
+   * pool must keep its clocks NTP-synced and size `leaseMs` to absorb the residual skew (≥ longest
+   * step + max skew): a fast-clocked worker that reclaims a peer's still-running run early only
+   * re-executes it (bounded by the exactly-once memo — never data loss), but wastes the work.
+   * Single-worker and `serverlessTick` deployments have no peer, so no skew applies.
    */
   leaseMs?: number;
   /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
@@ -152,11 +158,26 @@ export interface Engine {
   liveness(): Promise<Liveness>;
 
   /**
+   * Probe the backend; throw a clear error if the schema is missing or unreachable (unapplied
+   * `applySchema`, or the wrong database). Call it at startup to fail a readiness probe cleanly
+   * instead of looping on query errors. Checks that the schema responds, not that it matches a version.
+   */
+  check(): Promise<void>;
+
+  /**
    * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
    * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
    * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
    */
   nextWakeAt(): Promise<Date | null>;
+
+  /**
+   * The autoscaling backlog as of now — claimable jobs + due timers + due crons — as one count.
+   * The number a KEDA `metrics-api` scaler (or a self-terminating serverless loop) reads: counting
+   * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
+   * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
+   */
+  pendingWork(names?: readonly string[]): Promise<number>;
 
   registerCron<I>(def: CronDef<I>): Promise<void>;
 
@@ -228,7 +249,28 @@ export const createEngine = (
     status: (runId) => backend.store.loadRun(runId),
     listRuns: (filter, page) => backend.store.listRuns(filter, page),
     health: () => backend.store.runStats(),
+
+    check: async () => {
+      try {
+        await backend.store.runStats();
+      } catch (cause) {
+        throw new Error(
+          "iterativeflow: backend schema is missing or unreachable — run applySchema() and check the connection",
+          { cause },
+        );
+      }
+    },
+
     nextWakeAt: () => backend.timer.nextDueAt(clock()),
+    pendingWork: async (names) => {
+      const at = clock();
+      const [depth, dueTimers, dueCrons] = await Promise.all([
+        backend.queue.depth(at, names),
+        backend.timer.dueCount(at, names),
+        backend.store.dueCronCount(at, names),
+      ]);
+      return depth.claimable + dueTimers + dueCrons;
+    },
     liveness: async () => {
       const [queue, runs] = await Promise.all([
         backend.queue.depth(clock()),

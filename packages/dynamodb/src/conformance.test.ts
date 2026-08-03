@@ -3,9 +3,11 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { BatchWriteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import {
   claimFilterConformance,
+  shardedClaimConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
+  pendingWorkConformance,
   queueConformance,
   reconcileConformance,
   signalConformance,
@@ -90,6 +92,8 @@ describe.skipIf(skip)("dynamodb backend", () => {
   storeConformance("dynamodb", async () => (await makeBackend()).store);
   queueConformance("dynamodb", async () => (await makeBackend()).queue);
   claimFilterConformance("dynamodb", () => makeBackend());
+  shardedClaimConformance("dynamodb", () => makeBackend());
+  pendingWorkConformance("dynamodb", () => makeBackend());
   timerConformance("dynamodb", async () => (await makeBackend()).timer);
   wakeupConformance("dynamodb", async () => (await makeBackend()).wakeup);
   outboxConformance("dynamodb", () => makeBackend());

@@ -409,6 +409,14 @@ export const createMongoStore = (
       return docs.map(mapCron);
     },
 
+    async dueCronCount(now, names) {
+      const q: Filter<CronDoc> = {
+        next_run_at: { $lte: now.getTime() },
+        ...(names && { flow_name: { $in: [...names] } }),
+      };
+      return crons.countDocuments(q);
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const res = await crons.updateOne(
         { _id: name, next_run_at: expectedNextRunAt.getTime() },

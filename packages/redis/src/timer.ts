@@ -1,6 +1,6 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
-import type { Keys } from "#keys";
+import { type Keys, RUN } from "#keys";
 import { luaRunner } from "#scripts";
 import { ms } from "#time";
 
@@ -40,6 +40,22 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
         1,
       );
       return score === undefined ? null : new Date(Number(score));
+    },
+
+    async dueCount(now, names) {
+      const wanted = names && new Set(names);
+      if (!wanted) return client.zcount(keys.timers, "-inf", ms(now));
+      const due = await client.zrangebyscore(keys.timers, "-inf", ms(now));
+      if (due.length === 0) return 0;
+      const pipe = client.pipeline();
+      for (const runId of due) pipe.hget(keys.run(runId), RUN.name);
+      const res = (await pipe.exec()) ?? [];
+      let n = 0;
+      for (let i = 0; i < due.length; i++) {
+        const name = res[i]?.[1] as string | null;
+        if (name !== null && wanted.has(name)) n += 1;
+      }
+      return n;
     },
   };
 };

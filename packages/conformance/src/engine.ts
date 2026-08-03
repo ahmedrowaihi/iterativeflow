@@ -7,6 +7,8 @@ import {
   defineFlow,
   reconcile,
   registry,
+  runTick,
+  serverlessTick,
   signalRun,
   submit,
   tickOnce,
@@ -32,8 +34,9 @@ export const engineConformance = (
       flows: ReturnType<typeof registry>,
       runId: string,
       retry?: RetryPolicy,
+      start?: Date,
     ): Promise<{ status: string; output?: unknown; error?: { code?: string } }> => {
-      let clock = new Date("2030-01-01T00:00:00Z");
+      let clock = start ?? new Date("2030-01-01T00:00:00Z");
       const now = (): Date => clock;
       for (let i = 0; i < 200; i++) {
         await tickOnce(backend, flows, { ...base, now, retry });
@@ -365,6 +368,242 @@ export const engineConformance = (
       expect(kids).toHaveLength(2);
       expect(kids.every((k) => isTerminal(k.status))).toBe(true);
       expect(kids.some((k) => k.status === "canceled")).toBe(true);
+    });
+
+    it("a claimed run for an unregistered flow version parks and resumes once that version deploys", async () => {
+      const backend = await makeBackend();
+      const v1 = defineFlow({ name: "wf", version: 1, run: async (): Promise<string> => "v1" });
+      const v2 = defineFlow({ name: "wf", version: 2, run: async (): Promise<string> => "v2" });
+      const fast: RetryPolicy = { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 };
+      const runId = await submit(backend, v2, {});
+      let clock = new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => clock;
+      // A worker running only v1 shares the "wf" name, so it claims the v2 run but can't advance it.
+      await tickOnce(backend, registry([v1]), { ...base, now, retry: fast });
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("retrying");
+      // The deploy-skew window must not dead-letter the run: repeated stale-worker ticks keep it parked.
+      for (let i = 0; i < 4; i++) {
+        clock = new Date(clock.getTime() + 60_000);
+        await tickOnce(backend, registry([v1]), { ...base, now, retry: fast });
+        expect((await backend.store.loadRunRow(runId))?.status).toBe("retrying");
+      }
+      const run = await drive(backend, registry([v2]), runId, fast, clock);
+      expect(run).toMatchObject({ status: "done", output: "v2" });
+    });
+
+    it("a signal delivered at the timeout deadline wins the race — never lost to the timeout", async () => {
+      const backend = await makeBackend();
+      const flow = defineFlow({
+        name: "raced",
+        version: 1,
+        signals: { go: signalType<string>() },
+        run: async (ctx): Promise<string> => {
+          const r = await ctx.signal("go", { timeoutMs: 5_000 });
+          return r.received ? `signal:${r.payload}` : "timeout";
+        },
+      });
+      const flows = registry([flow]);
+      const t0 = new Date("2030-01-01T00:00:00Z");
+      const runId = await submit(backend, flow, {});
+      await tickOnce(backend, flows, { ...base, now: () => t0 });
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("awaiting_signal");
+      // Collision: at the exact deadline the timeout timer is due AND a signal sits in the inbox.
+      const deadline = new Date(t0.getTime() + 5_000);
+      await signalRun(backend, runId, "go", "ok");
+      const run = await drive(backend, flows, runId, undefined, deadline);
+      expect(run).toMatchObject({ status: "done", output: "signal:ok" });
+    });
+
+    it("a bounded signal wait commits { received: false } when nothing arrives before the deadline", async () => {
+      const backend = await makeBackend();
+      const flow = defineFlow({
+        name: "waits-out",
+        version: 1,
+        signals: { go: signalType<string>() },
+        run: async (ctx): Promise<string> => {
+          const r = await ctx.signal("go", { timeoutMs: 5_000 });
+          return r.received ? "signal" : "timeout";
+        },
+      });
+      const runId = await submit(backend, flow, {});
+      await tickOnce(backend, registry([flow]), {
+        ...base,
+        now: () => new Date("2030-01-01T00:00:00Z"),
+      });
+      const run = await drive(backend, registry([flow]), runId);
+      expect(run).toMatchObject({ status: "done", output: "timeout" });
+    });
+
+    it("memoizes a completed step across a crash-retry — the step fn runs once, the run still completes", async () => {
+      const backend = await makeBackend();
+      let stepCalls = 0;
+      let invocations = 0;
+      const flow = defineFlow({
+        name: "flaky",
+        version: 1,
+        run: async (ctx): Promise<number> => {
+          const v = await ctx.step("charge", () => {
+            stepCalls += 1;
+            return 42;
+          });
+          invocations += 1;
+          if (invocations === 1) throw new Error("crash after the charge committed");
+          return v;
+        },
+      });
+      const runId = await submit(backend, flow, {});
+      const run = await drive(backend, registry([flow]), runId, {
+        maxAttempts: 5,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+      });
+      expect(run).toMatchObject({ status: "done", output: 42 });
+      expect(stepCalls).toBe(1);
+    });
+
+    it("reconcile re-drives a run stranded off the queue (crash between start and enqueue)", async () => {
+      const backend = await makeBackend();
+      const flow = defineFlow({
+        name: "stranded",
+        version: 1,
+        run: async (): Promise<string> => "recovered",
+      });
+      const flows = registry([flow]);
+      const { runId } = await backend.store.startRun({ name: "stranded", version: 1, input: {} });
+      let clock = new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => clock;
+      for (let i = 0; i < 10; i++) {
+        await reconcile(backend, { limit: 16 });
+        await tickOnce(backend, flows, { ...base, now });
+        const r = await backend.store.loadRunRow(runId);
+        if (r && isTerminal(r.status)) break;
+        clock = new Date(clock.getTime() + 60_000);
+      }
+      expect(await backend.store.loadRunRow(runId)).toMatchObject({
+        status: "done",
+        output: "recovered",
+      });
+    });
+
+    it("a reclaimed run fences the crashed worker — its stale ack and duplicate commit don't corrupt the new owner", async () => {
+      const { store, queue } = await makeBackend();
+      const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
+      await queue.enqueue(runId);
+      const t0 = new Date("2030-01-01T00:00:00Z");
+      const [a] = await queue.claim({ limit: 1, leaseMs: 1_000, now: t0 });
+      // A's lease expires; B reclaims and commits real progress.
+      const t1 = new Date(t0.getTime() + 2_000);
+      const [b] = await queue.claim({ limit: 1, leaseMs: 600_000, now: t1 });
+      expect(b?.runId).toBe(runId);
+      await store.checkpointStep({
+        runId,
+        cursorKey: "s0",
+        status: "ok",
+        result: "B",
+        attempts: 1,
+      });
+      // A wakes stale: its duplicate step is first-writer-fenced, its ack is a no-op.
+      const late = await store.checkpointStep({
+        runId,
+        cursorKey: "s0",
+        status: "ok",
+        result: "A",
+        attempts: 1,
+      });
+      expect(late.result).toBe("B");
+      await queue.ack(a!, { now: new Date(t1.getTime() + 1_000) });
+      expect((await store.loadRun(runId))?.steps.get("s0")?.result).toBe("B");
+      // B's lease survived A's stale ack — a heartbeat still renews it.
+      await expect(
+        queue.heartbeat(b!, { leaseMs: 600_000, now: new Date(t1.getTime() + 1_000) }),
+      ).resolves.toBeDefined();
+    });
+
+    it("a cancel landing while a worker holds a live lease still cancels — the in-flight tick doesn't resurrect it", async () => {
+      const backend = await makeBackend();
+      let bodyRan = 0;
+      const flow = defineFlow({
+        name: "cancelable",
+        version: 1,
+        run: async (ctx): Promise<string> => {
+          bodyRan += 1;
+          await ctx.sleep(10_000);
+          return "done";
+        },
+      });
+      const flows = registry([flow]);
+      const { store, queue } = backend;
+      const { runId } = await store.startRun({ name: "cancelable", version: 1, input: {} });
+      await queue.enqueue(runId);
+      const t0 = new Date("2030-01-01T00:00:00Z");
+      const [lease] = await queue.claim({ limit: 1, leaseMs: 600_000, now: t0 });
+      // Cancel arrives while the worker holds a live lease, before its tick observes the run.
+      await cancelRun(backend, runId);
+      const result = await runTick(backend, flows, lease!, { ...base, now: () => t0 });
+      expect(result.status).toBe("already_terminal");
+      expect((await store.loadRunRow(runId))?.status).toBe("canceled");
+      expect(bodyRan).toBe(0);
+      const after = await queue.claim({
+        limit: 1,
+        leaseMs: 1_000,
+        now: new Date(t0.getTime() + 1_000),
+      });
+      expect(after).toHaveLength(0);
+    });
+
+    it("two disjoint worker registries drive their own flows to completion against one backend", async () => {
+      const backend = await makeBackend();
+      const a = defineFlow({ name: "sa", version: 1, run: async (): Promise<string> => "a-done" });
+      const b = defineFlow({ name: "sb", version: 1, run: async (): Promise<string> => "b-done" });
+      const podA = registry([a]);
+      const podB = registry([b]);
+      const idA = await submit(backend, a, {});
+      const idB = await submit(backend, b, {});
+      let clock = new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => clock;
+      for (let i = 0; i < 10; i++) {
+        // Two registries share one backend; each claims only the flow it registered (name shard).
+        await tickOnce(backend, podA, { ...base, now });
+        await tickOnce(backend, podB, { ...base, now });
+        const ra = await backend.store.loadRunRow(idA);
+        const rb = await backend.store.loadRunRow(idB);
+        if (ra && rb && isTerminal(ra.status) && isTerminal(rb.status)) break;
+        clock = new Date(clock.getTime() + 60_000);
+      }
+      expect(await backend.store.loadRunRow(idA)).toMatchObject({
+        status: "done",
+        output: "a-done",
+      });
+      expect(await backend.store.loadRunRow(idB)).toMatchObject({
+        status: "done",
+        output: "b-done",
+      });
+    });
+
+    it("serverlessTick advances a durable sleep and reports the next wake horizon (no resident loop)", async () => {
+      const backend = await makeBackend();
+      const flow = defineFlow({
+        name: "napper",
+        version: 1,
+        run: async (ctx): Promise<string> => {
+          await ctx.sleep(60_000);
+          return "woke";
+        },
+      });
+      const flows = registry([flow]);
+      let clock = new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => clock;
+      const runId = await submit(backend, flow, {});
+      const s1 = await serverlessTick(backend, flows, { ...base, now });
+      expect(s1.results.map((r) => r.status)).toContain("sleeping");
+      expect(s1.nextWakeAt?.getTime()).toBe(clock.getTime() + 60_000);
+      // One invocation after the deadline resumes the sleep — nothing ran between the two.
+      clock = new Date(clock.getTime() + 60_000);
+      await serverlessTick(backend, flows, { ...base, now });
+      expect(await backend.store.loadRunRow(runId)).toMatchObject({
+        status: "done",
+        output: "woke",
+      });
     });
   });
 };

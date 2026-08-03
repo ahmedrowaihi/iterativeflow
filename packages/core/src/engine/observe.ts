@@ -61,6 +61,7 @@ export interface Metrics {
   runStarted?(runId: string): void;
   runSettled?(runId: string, status: "done" | "failed"): void;
   runSuspended?(runId: string, status: SuspendStatus): void;
+  redeployParked?(runId: string, reason: "unknown_flow" | "flow_drift"): void;
   stepFinished?(runId: string, cursorKey: string): void;
   tickError?(err: unknown): void;
 }

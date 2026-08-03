@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS ${t.step} (
   PRIMARY KEY (run_id, cursor_key)
 );
 
+-- vacuum this high-churn table at 2% dead rows (vs the 20% default); on create so a later ALTER isn't reset.
 CREATE TABLE IF NOT EXISTS ${t.job} (
   run_id        text PRIMARY KEY,
   run_at        timestamptz NOT NULL DEFAULT now(),
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS ${t.job} (
   version       bigint NOT NULL DEFAULT 0,
   lease_token   text,
   lease_expires timestamptz
-);
+) WITH (autovacuum_vacuum_scale_factor = 0.02);
 CREATE INDEX IF NOT EXISTS job_claimable ON ${t.job} (priority, run_at) WHERE lease_expires IS NULL;
 
 CREATE TABLE IF NOT EXISTS ${t.timer} (
@@ -118,6 +119,18 @@ CREATE TABLE IF NOT EXISTS ${t.cron} (
   last_run_at  timestamptz
 );
 CREATE INDEX IF NOT EXISTS cron_due ON ${t.cron} (next_run_at);
+
+CREATE OR REPLACE FUNCTION "${schema}".pending_work(flow_names text[] DEFAULT NULL, as_of timestamptz DEFAULT now())
+RETURNS bigint LANGUAGE sql STABLE AS $$
+  SELECT
+    (SELECT count(*) FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+       WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
+         AND (flow_names IS NULL OR r.name = ANY(flow_names)))
+  + (SELECT count(*) FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
+       WHERE tm.fire_at <= as_of AND (flow_names IS NULL OR r.name = ANY(flow_names)))
+  + (SELECT count(*) FROM ${t.cron} c
+       WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR c.flow_name = ANY(flow_names)))
+$$;
 `;
 };
 

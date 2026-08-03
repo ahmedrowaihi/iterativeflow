@@ -308,9 +308,11 @@ interface Queue {
   /**
    * Liveness snapshot: backlog, in-flight, and oldest-claimable age as of `now`. Postgres answers it
    * with one aggregate query; memory and DynamoDB read the whole job set, so call it on a coarse
-   * cadence (a readiness probe every few seconds), not per request.
+   * cadence (a readiness probe every few seconds), not per request. `names` restricts the counts to
+   * runs whose flow `name` is in the set — the per-shard backlog for a sharded worker's autoscaling,
+   * mirroring {@link ClaimOpts.names}; omitted ⇒ the whole engine.
    */
-  depth(now: Date): Promise<QueueDepth>;
+  depth(now: Date, names?: readonly string[]): Promise<QueueDepth>;
   /**
    * Optional dispatch push: block up to `timeoutMs`, returning early when a run is enqueued. A
    * backend backed by a real notification bus (Postgres `LISTEN/NOTIFY`) implements this so the
@@ -353,6 +355,14 @@ interface Timer {
    * never a scan; signals and child-joins wake by enqueue, so they are NOT covered by this.
    */
   nextDueAt(now: Date): Promise<Date | null>;
+  /**
+   * Count timers due at/before `now` WITHOUT consuming them — the due-sleep contribution to the
+   * autoscaling backlog (a scaled-to-zero worker must still be woken for a due `ctx.sleep`, and a
+   * claimable-only count would miss it since no worker has drained the timer onto the queue yet).
+   * `names` restricts to runs whose flow `name` is in the set (per-shard), mirroring the queue's
+   * name filter; omitted ⇒ all. Read-only; call on a coarse cadence.
+   */
+  dueCount(now: Date, names?: readonly string[]): Promise<number>;
 }
 //#endregion
 //#region src/ports/wakeup.d.ts
@@ -598,6 +608,10 @@ interface Store {
   upsertCron(spec: CronSpec): Promise<void>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
+  /** Count crons due at/before `now` (the due-cron contribution to the autoscaling backlog: a due
+   *  cron won't fire at zero replicas until a worker is woken). `names` restricts to crons whose
+   *  `flowName` is in the set (per-shard); omitted ⇒ all. Read-only. */
+  dueCronCount(now: Date, names?: readonly string[]): Promise<number>;
   /**
    * Advance a cron's `nextRunAt` — but ONLY if it still equals `expectedNextRunAt` (CAS). The
    * winner of that CAS is the single worker that fires this occurrence, so a cron never
@@ -650,6 +664,7 @@ interface Metrics {
   runStarted?(runId: string): void;
   runSettled?(runId: string, status: "done" | "failed"): void;
   runSuspended?(runId: string, status: SuspendStatus): void;
+  redeployParked?(runId: string, reason: "unknown_flow" | "flow_drift"): void;
   stepFinished?(runId: string, cursorKey: string): void;
   tickError?(err: unknown): void;
 }
@@ -1242,6 +1257,12 @@ interface EngineOpts {
    * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
    * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
    * batch tail is stranded until the oversized lease expires. Default 30000.
+   *
+   * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
+   * pool must keep its clocks NTP-synced and size `leaseMs` to absorb the residual skew (≥ longest
+   * step + max skew): a fast-clocked worker that reclaims a peer's still-running run early only
+   * re-executes it (bounded by the exactly-once memo — never data loss), but wastes the work.
+   * Single-worker and `serverlessTick` deployments have no peer, so no skew applies.
    */
   leaseMs?: number;
   /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
@@ -1313,11 +1334,24 @@ interface Engine {
    */
   liveness(): Promise<Liveness>;
   /**
+   * Probe the backend; throw a clear error if the schema is missing or unreachable (unapplied
+   * `applySchema`, or the wrong database). Call it at startup to fail a readiness probe cleanly
+   * instead of looping on query errors. Checks that the schema responds, not that it matches a version.
+   */
+  check(): Promise<void>;
+  /**
    * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
    * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
    * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
    */
   nextWakeAt(): Promise<Date | null>;
+  /**
+   * The autoscaling backlog as of now — claimable jobs + due timers + due crons — as one count.
+   * The number a KEDA `metrics-api` scaler (or a self-terminating serverless loop) reads: counting
+   * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
+   * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
+   */
+  pendingWork(names?: readonly string[]): Promise<number>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;

@@ -719,18 +719,30 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       return items
         .sort((a, b) => a.nextRunAt - b.nextRunAt)
         .slice(0, limit)
-        .map(
-          (c): CronRow => ({
-            name: c.cronName,
-            schedule: c.schedule,
-            flowName: c.flowName,
-            flowVersion: c.flowVersion,
-            input: dec(c.cronInput),
-            overlap: c.overlap,
-            nextRunAt: new Date(c.nextRunAt),
-            lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
-          }),
-        );
+        .map((c): CronRow => ({
+          name: c.cronName,
+          schedule: c.schedule,
+          flowName: c.flowName,
+          flowVersion: c.flowVersion,
+          input: dec(c.cronInput),
+          overlap: c.overlap,
+          nextRunAt: new Date(c.nextRunAt),
+          lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
+        }));
+    },
+
+    async dueCronCount(now, names) {
+      const items = await queryAll<{ flowName: string }>({
+        TableName: table,
+        IndexName: "gsi1",
+        KeyConditionExpression: "gsi1pk = :cd AND gsi1sk <= :now",
+        ExpressionAttributeValues: { ":cd": CRON_DUE_GSI_PK, ":now": pad(now.getTime()) },
+        ProjectionExpression: "flowName",
+      });
+      if (names === undefined) return items.length;
+      const wanted = new Set(names);
+      if (wanted.size === 0) return 0;
+      return items.filter((c) => wanted.has(c.flowName)).length;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {

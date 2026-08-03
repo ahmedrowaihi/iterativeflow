@@ -1,8 +1,9 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { BatchGetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import { runNames } from "#run-names";
 import { JOB_GSI_PK, key } from "#schema";
 import { enqueueParams } from "#statements";
 
@@ -53,29 +54,11 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       if (names !== undefined) {
         const wanted = new Set(names);
         if (wanted.size === 0) return [];
-        const nameById = new Map<string, string>();
-        for (let i = 0; i < candidates.length; i += 100) {
-          let keys = candidates.slice(i, i + 100).map((j) => key.run(j.runId));
-          while (keys.length > 0) {
-            const res = await send<{
-              Responses?: Record<string, { id: string; name: string }[]>;
-              UnprocessedKeys?: Record<string, { Keys?: { pk: string; sk: string }[] }>;
-            }>(
-              new BatchGetCommand({
-                RequestItems: {
-                  [table]: {
-                    Keys: keys,
-                    ProjectionExpression: "id, #name",
-                    ExpressionAttributeNames: { "#name": "name" },
-                    ConsistentRead: true,
-                  },
-                },
-              }),
-            );
-            for (const r of res.Responses?.[table] ?? []) nameById.set(r.id, r.name);
-            keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
-          }
-        }
+        const nameById = await runNames(
+          doc,
+          table,
+          candidates.map((j) => j.runId),
+        );
         allowed = candidates.filter((j) => wanted.has(nameById.get(j.runId) ?? ""));
       }
       const leases: Lease[] = [];
@@ -166,7 +149,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       }
     },
 
-    async depth(now) {
+    async depth(now, names) {
       const t = at(now);
       const jobs: JobItem[] = [];
       let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -177,13 +160,25 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
             IndexName: "gsi1",
             KeyConditionExpression: "gsi1pk = :job",
             ExpressionAttributeValues: { ":job": JOB_GSI_PK },
+            ProjectionExpression: "runId, runAt, leaseExpires",
             ExclusiveStartKey,
           }),
         );
         jobs.push(...(res.Items ?? []));
         ExclusiveStartKey = res.LastEvaluatedKey;
       } while (ExclusiveStartKey);
-      return queueDepthOf(jobs, t);
+      if (names === undefined) return queueDepthOf(jobs, t);
+      const wanted = new Set(names);
+      if (wanted.size === 0) return queueDepthOf([], t);
+      const nameById = await runNames(
+        doc,
+        table,
+        jobs.map((j) => j.runId),
+      );
+      return queueDepthOf(
+        jobs.filter((j) => wanted.has(nameById.get(j.runId) ?? "")),
+        t,
+      );
     },
   };
 };

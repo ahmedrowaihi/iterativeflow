@@ -1,8 +1,10 @@
 import {
   claimFilterConformance,
+  shardedClaimConformance,
   cronConformance,
   engineConformance,
   outboxConformance,
+  pendingWorkConformance,
   queueConformance,
   reconcileConformance,
   signalConformance,
@@ -62,6 +64,8 @@ describe.skipIf(skip)("mongodb backend", () => {
   storeConformance("mongodb", async () => (await makeBackend()).store);
   queueConformance("mongodb", async () => (await makeBackend()).queue);
   claimFilterConformance("mongodb", () => makeBackend());
+  shardedClaimConformance("mongodb", () => makeBackend());
+  pendingWorkConformance("mongodb", () => makeBackend());
   timerConformance("mongodb", async () => (await makeBackend()).timer);
   wakeupConformance("mongodb", async () => (await makeBackend()).wakeup);
   outboxConformance("mongodb", () => makeBackend());

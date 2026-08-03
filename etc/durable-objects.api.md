@@ -35,7 +35,8 @@ declare const doStorageSql: (storage: SqlStorage) => Sql;
  * migration), then drive the engine inside the DO.
  */
 declare const createDurableObjectBackend: (storage: SqlStorage, opts?: SqliteBackendOpts) => Backend;
-/** Apply the schema to a Durable Object's SQLite storage. Run once before use. */
+/** Apply the schema to a Durable Object's SQLite storage. Run once before use. DO storage manages its
+ *  own durability, so the file-store PRAGMAs are skipped (`PRAGMA journal_mode` is unsupported there). */
 declare const applySchema: (storage: SqlStorage, prefix?: string) => Promise<void>;
 //#endregion
 export { type SqlStorage, applySchema, createDurableObjectBackend, ddl, doStorageSql };

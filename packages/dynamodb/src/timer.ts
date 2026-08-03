@@ -2,6 +2,7 @@ import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import { runNames } from "#run-names";
 import { TIMER_GSI_PK, key, pad } from "#schema";
 
 interface TimerItem {
@@ -81,6 +82,35 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
       );
       const next = res.Items?.[0];
       return next ? new Date(next.fireAt) : null;
+    },
+
+    async dueCount(now, names) {
+      const t = now.getTime();
+      const due: TimerItem[] = [];
+      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      do {
+        const res = await send<{ Items?: TimerItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+          new QueryCommand({
+            TableName: table,
+            IndexName: "gsi1",
+            KeyConditionExpression: "gsi1pk = :tp AND gsi1sk <= :now",
+            ExpressionAttributeValues: { ":tp": TIMER_GSI_PK, ":now": pad(t) },
+            ProjectionExpression: "runId",
+            ExclusiveStartKey,
+          }),
+        );
+        due.push(...(res.Items ?? []));
+        ExclusiveStartKey = res.LastEvaluatedKey;
+      } while (ExclusiveStartKey);
+      if (names === undefined) return due.length;
+      const wanted = new Set(names);
+      if (wanted.size === 0) return 0;
+      const nameById = await runNames(
+        doc,
+        table,
+        due.map((d) => d.runId),
+      );
+      return due.filter((d) => wanted.has(nameById.get(d.runId) ?? "")).length;
     },
   };
 };

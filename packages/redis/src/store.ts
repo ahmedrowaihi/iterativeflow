@@ -596,6 +596,22 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       });
     },
 
+    async dueCronCount(now, names) {
+      const wanted = names && new Set(names);
+      if (!wanted) return client.zcount(keys.cronsDue, "-inf", now.getTime());
+      const due = await client.zrangebyscore(keys.cronsDue, "-inf", now.getTime());
+      if (due.length === 0) return 0;
+      const pipe = client.pipeline();
+      for (const name of due) pipe.hget(keys.crons, name);
+      const res = (await pipe.exec()) ?? [];
+      let n = 0;
+      for (let i = 0; i < due.length; i++) {
+        const raw = res[i]?.[1] as string | null;
+        if (raw && wanted.has(decodeCron(raw).flowName)) n += 1;
+      }
+      return n;
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const res = await evalLua<number>(
         ADVANCE_CRON_LUA,

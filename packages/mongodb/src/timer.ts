@@ -10,6 +10,7 @@ interface TimerDoc {
 /** @internal */
 export const createMongoTimer = (db: Db, n: Names): Timer => {
   const timers = db.collection<TimerDoc>(n.timers);
+  const runs = db.collection<{ _id: string; name: string }>(n.runs);
 
   return {
     async schedule(runId, fireAt) {
@@ -30,6 +31,21 @@ export const createMongoTimer = (db: Db, n: Names): Timer => {
       const ids = due.map((d) => d._id);
       if (ids.length) await timers.deleteMany({ _id: { $in: ids } });
       return ids;
+    },
+
+    async dueCount(now, names) {
+      const t = now.getTime();
+      if (!names) return timers.countDocuments({ fire_at: { $lte: t } });
+      const due = await timers
+        .find({ fire_at: { $lte: t } })
+        .project({ _id: 1 })
+        .toArray();
+      if (due.length === 0) return 0;
+      const allowed = await runs
+        .find({ _id: { $in: due.map((d) => d._id) }, name: { $in: [...names] } })
+        .project({ _id: 1 })
+        .toArray();
+      return allowed.length;
     },
 
     async cancel(runId) {

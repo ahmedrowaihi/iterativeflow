@@ -101,8 +101,27 @@ CREATE INDEX IF NOT EXISTS ${t.cron}_due ON ${t.cron} (next_run_at);
 `;
 };
 
-/** Apply the schema DDL (idempotent). Splits on `;` because libsql executes one statement per call. */
-export const applySchema = async (sql: Sql, prefix = ""): Promise<void> => {
+/** Options for {@link applySchema}. */
+export interface ApplySchemaOpts {
+  /** Set the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (safe file-store defaults). Default
+   *  `true`; `false` for a Durable Object, whose storage manages durability and rejects `PRAGMA journal_mode`. */
+  pragmas?: boolean;
+}
+
+/**
+ * Apply the schema DDL (idempotent). Splits on `;` because libsql runs one statement per call. On a
+ * file store it also sets the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (see {@link ApplySchemaOpts}).
+ */
+export const applySchema = async (
+  sql: Sql,
+  prefix = "",
+  opts: ApplySchemaOpts = {},
+): Promise<void> => {
+  if (opts.pragmas ?? true) {
+    for (const pragma of ["journal_mode = WAL", "busy_timeout = 5000", "synchronous = NORMAL"]) {
+      await sql.query(`PRAGMA ${pragma}`);
+    }
+  }
   for (const stmt of ddl(prefix).split(";")) {
     const s = stmt.trim();
     if (s) await sql.query(s);

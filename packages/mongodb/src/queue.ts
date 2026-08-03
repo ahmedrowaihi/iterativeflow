@@ -97,8 +97,22 @@ export const createMongoQueue = (
       }
     },
 
-    async depth(now) {
-      const all = await jobs.find({}).toArray();
+    async depth(now, names) {
+      let all = await jobs
+        .find({})
+        .project<{ _id: string; run_at: number; lease_expires?: number }>({
+          run_at: 1,
+          lease_expires: 1,
+        })
+        .toArray();
+      if (names) {
+        const allowed = await runs
+          .find({ _id: { $in: all.map((j) => j._id) }, name: { $in: [...names] } })
+          .project({ _id: 1 })
+          .toArray();
+        const allowedIds = new Set(allowed.map((r) => r._id));
+        all = all.filter((j) => allowedIds.has(j._id));
+      }
       return queueDepthOf(
         all.map((j) => ({ runAt: j.run_at, leaseExpires: j.lease_expires })),
         ms(now),

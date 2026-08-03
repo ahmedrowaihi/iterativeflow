@@ -125,14 +125,12 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
           ...tokens,
         ],
       );
-      return rows.map(
-        (r): Lease => ({
-          runId: r[0],
-          token: r[1],
-          expiresAt: new Date(nowMs + leaseMs),
-          version: Number(r[2]),
-        }),
-      );
+      return rows.map((r): Lease => ({
+        runId: r[0],
+        token: r[1],
+        expiresAt: new Date(nowMs + leaseMs),
+        version: Number(r[2]),
+      }));
     },
 
     async heartbeat(lease: Lease, { leaseMs, now }) {
@@ -154,20 +152,34 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
       );
     },
 
-    async depth(now) {
+    async depth(now, names) {
       const nowMs = ms(now);
+      const wanted = names && new Set(names);
       const runIds = await client.zrange(keys.queue, 0, -1);
       if (runIds.length === 0) return queueDepthOf([], nowMs);
       const pipe = client.pipeline();
-      for (const runId of runIds) pipe.hmget(keys.job(runId), JOB.runAt, JOB.leaseExpires);
-      const res = await pipe.exec();
-      const jobs = (res ?? []).map(([, fields]) => {
-        const [runAt, leaseExpires] = fields as [string | null, string | null];
-        return {
+      for (const runId of runIds) {
+        pipe.hmget(keys.job(runId), JOB.runAt, JOB.leaseExpires);
+        if (wanted) pipe.hget(keys.run(runId), RUN.name);
+      }
+      const res = (await pipe.exec()) ?? [];
+      const stride = wanted ? 2 : 1;
+      const jobs: { runAt: number; leaseExpires?: number }[] = [];
+      for (let i = 0; i < runIds.length; i++) {
+        if (wanted) {
+          const name = res[i * stride + 1]?.[1] as string | null;
+          if (name === null || !wanted.has(name)) continue;
+        }
+        const [runAt, leaseExpires] = (res[i * stride]?.[1] ?? []) as [
+          string | null,
+          string | null,
+        ];
+        if (runAt === null) continue;
+        jobs.push({
           runAt: Number(runAt),
           leaseExpires: leaseExpires === null ? undefined : Number(leaseExpires),
-        };
-      });
+        });
+      }
       return queueDepthOf(jobs, nowMs);
     },
   };

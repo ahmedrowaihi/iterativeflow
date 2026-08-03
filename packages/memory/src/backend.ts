@@ -334,6 +334,15 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         .map((c) => structuredClone(c));
     },
 
+    async dueCronCount(now, names) {
+      const wanted = names && new Set(names);
+      let n = 0;
+      for (const c of crons.values()) {
+        if (c.nextRunAt.getTime() <= now.getTime() && (!wanted || wanted.has(c.flowName))) n += 1;
+      }
+      return n;
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const c = crons.get(name);
       if (!c || c.nextRunAt.getTime() !== expectedNextRunAt.getTime()) return false; // CAS lost
@@ -408,11 +417,11 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       }
     },
 
-    async depth(now) {
-      const jobsForDepth = [...jobs.values()].map((j) => ({
-        runAt: j.runAtMs,
-        leaseExpires: j.leaseExpiresMs,
-      }));
+    async depth(now, names) {
+      const wanted = names && new Set(names);
+      const jobsForDepth = [...jobs.values()]
+        .filter((j) => !wanted || wanted.has(runs.get(j.runId)?.name ?? ""))
+        .map((j) => ({ runAt: j.runAtMs, leaseExpires: j.leaseExpiresMs }));
       return queueDepthOf(jobsForDepth, ms(now));
     },
   };
@@ -444,6 +453,16 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         if (fireAtMs > t && (min === undefined || fireAtMs < min)) min = fireAtMs;
       }
       return min === undefined ? null : new Date(min);
+    },
+
+    async dueCount(now, names) {
+      const t = ms(now);
+      const wanted = names && new Set(names);
+      let n = 0;
+      for (const [runId, fireAtMs] of deadlines) {
+        if (fireAtMs <= t && (!wanted || wanted.has(runs.get(runId)?.name ?? ""))) n += 1;
+      }
+      return n;
     },
   };
 

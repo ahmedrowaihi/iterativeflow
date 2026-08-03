@@ -6,7 +6,7 @@ import type { Sql } from "#sql";
 import { createPgTimer } from "#timer";
 
 export interface PgBackendOpts {
-  /** Schema the four tables live in. Default `workflow`. */
+  /** Schema the tables live in. Default `workflow`. */
   schema?: string;
   /** Id generator for runs and lease tokens. Defaults to {@link newId} (RFC-4122 v4). */
   id?: IdGen;

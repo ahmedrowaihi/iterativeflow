@@ -89,5 +89,29 @@ declare const engineConformance: (label: string, makeBackend: () => Backend | Pr
  */
 declare const claimFilterConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
-export { claimFilterConformance, cronConformance, engineConformance, outboxConformance, queueConformance, reconcileConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
+//#region src/sharded-claim.d.ts
+/**
+ * A horizontally-sharded worker pool where each pod claims only the flow names it registered.
+ * Proves that two pods claiming ONE backend concurrently are SAFE — no run is ever leased by both,
+ * and no pod ever leases a run outside its shard — and LIVE: together they drain both shards. Server
+ * backends only; single-writer backends (sqlite / memory / durable-objects) can't issue concurrent
+ * transactions, so their name-shard claim is covered sequentially by {@link claimFilterConformance}.
+ *
+ * Per-round throughput is backend-specific: Postgres locks only the name-matched rows, so both shards
+ * drain in one round; MySQL's `FOR UPDATE OF j SKIP LOCKED` locks the eligible `job` head before the
+ * `run`-side name filter applies, so the first claimer transiently blocks the other's shard, which
+ * fills on the next round. Both are safe — the loop asserts safety every round and liveness overall.
+ */
+declare const shardedClaimConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
+//#endregion
+//#region src/pending-work.d.ts
+/**
+ * Pins the autoscaling-backlog reads — `Queue.depth(now, names)`, `Timer.dueCount(now, names)`, and
+ * `Store.dueCronCount(now, names)` — that `engine.pendingWork` composes. Every backend must count the
+ * same due work (claimable jobs, due timers, due crons), exclude leased/future work, and filter by
+ * flow name identically.
+ */
+declare const pendingWorkConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
+//#endregion
+export { claimFilterConformance, cronConformance, engineConformance, outboxConformance, pendingWorkConformance, queueConformance, reconcileConformance, shardedClaimConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
 ```

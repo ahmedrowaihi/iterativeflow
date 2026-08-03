@@ -369,6 +369,17 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       return rows.map(mapCron);
     },
 
+    async dueCronCount(now, names) {
+      if (names && names.length === 0) return 0;
+      const namePredicate = names ? ` AND flow_name IN ${inList(names.length)}` : "";
+      const params = names ? [now.getTime(), ...names] : [now.getTime()];
+      const rows = await sql.query<{ n: number | string }>(
+        `SELECT count(*) AS n FROM ${t.cron} WHERE next_run_at <= ?${namePredicate}`,
+        params,
+      );
+      return Number(rows[0]?.n ?? 0);
+    },
+
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const res = await sql.exec(
         `UPDATE ${t.cron} SET next_run_at = ?, last_run_at = ?

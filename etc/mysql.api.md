@@ -25,8 +25,18 @@ interface Sql {
   exec(text: string, params?: readonly unknown[]): Promise<WriteResult>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
+/** Options for {@link mysqlPool}. */
+interface MysqlPoolOpts {
+  /**
+   * Set READ COMMITTED per transaction (default `true`). The engine needs READ COMMITTED so a
+   * first-writer-wins checkpoint's re-read sees a concurrent winner's just-committed row. On
+   * PlanetScale/Vitess a per-connection `SET` taints the connection into a reserved pool slot, so
+   * set this `false` there and configure the server's default isolation to READ COMMITTED instead.
+   */
+  setIsolation?: boolean;
+}
 /** Adapt a `mysql2/promise` {@link Pool} to {@link Sql}. `tx` checks out one connection for the unit. */
-declare const mysqlPool: (pool: Pool) => Sql;
+declare const mysqlPool: (pool: Pool, opts?: MysqlPoolOpts) => Sql;
 //#endregion
 //#region src/backend.d.ts
 interface MysqlBackendOpts {

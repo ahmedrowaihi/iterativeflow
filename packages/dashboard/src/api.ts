@@ -41,6 +41,11 @@ export const createDashboard = (
       return json(await engine.health());
     }
 
+    if (req.method === "GET" && path === "/api/metrics") {
+      const names = url.searchParams.getAll("name");
+      return json({ pendingWork: await engine.pendingWork(names.length ? names : undefined) });
+    }
+
     if (req.method === "GET" && path === "/api/runs") {
       const statuses = url.searchParams.getAll("status").filter(isRunStatus);
       const filter = {
