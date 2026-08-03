@@ -1,19 +1,19 @@
 {
-  "mode": "pre",
-  "tag": "alpha",
+  "mode": "exit",
+  "tag": "rc",
   "initialVersions": {
-    "@iterativeflow/conformance": "2.0.0-alpha.0",
-    "@iterativeflow/core": "2.0.0-alpha.0",
-    "@iterativeflow/dashboard": "2.0.0-alpha.0",
-    "@iterativeflow/dynamodb": "2.0.0-alpha.0",
-    "@iterativeflow/memory": "2.0.0-alpha.0",
-    "@iterativeflow/postgres": "2.0.0-alpha.0",
-    "@iterativeflow/durable-objects": "2.0.0-alpha.1",
-    "@iterativeflow/mongodb": "2.0.0-alpha.1",
-    "@iterativeflow/mysql": "2.0.0-alpha.1",
-    "@iterativeflow/redis": "2.0.0-alpha.1",
-    "@iterativeflow/sqlite": "2.0.0-alpha.1",
-    "@iterativeflow/webhooks": "2.0.0-alpha.1"
+    "@iterativeflow/conformance": "2.0.0-alpha.11",
+    "@iterativeflow/core": "2.0.0-alpha.11",
+    "@iterativeflow/dashboard": "2.0.0-alpha.11",
+    "@iterativeflow/durable-objects": "2.0.0-alpha.11",
+    "@iterativeflow/dynamodb": "2.0.0-alpha.11",
+    "@iterativeflow/memory": "2.0.0-alpha.11",
+    "@iterativeflow/mongodb": "2.0.0-alpha.11",
+    "@iterativeflow/mysql": "2.0.0-alpha.11",
+    "@iterativeflow/postgres": "2.0.0-alpha.11",
+    "@iterativeflow/redis": "2.0.0-alpha.11",
+    "@iterativeflow/sqlite": "2.0.0-alpha.11",
+    "@iterativeflow/webhooks": "2.0.0-alpha.11"
   },
   "changesets": [
     "audit-pass-fixes",
