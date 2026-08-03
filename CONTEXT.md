@@ -2,7 +2,7 @@
 
 Shared vocabulary for the library. Use these terms exactly — across code, docs, comments, and architecture reviews. Drift makes refactors harder than they should be.
 
-The domain terms below (Flow, Run, Step, Sleep, Signal, Invoke, Cursor key, Snapshot, Claim, Suspend, Terminal, Wake) are stable across both codebases. The **Storage / Dispatcher / Wake** implementation terms describe **v1** (`src/`, drizzle + graphile). The four-port **v2** rewrite (`v2/packages/*`) has its own implementation vocabulary — see [v2 ports](#v2-ports).
+The domain terms below (Flow, Run, Step, Sleep, Signal, Invoke, Cursor key, Snapshot, Claim, Suspend, Terminal, Wake) are stable across both codebases. The **Storage / Dispatcher / Wake** implementation terms describe **v1** (drizzle + graphile), now preserved on the `v1` branch. The four-port **v2** engine is the repo root (`packages/*`) and has its own implementation vocabulary — see [v2 ports](#v2-ports).
 
 ## Terms
 
@@ -53,7 +53,7 @@ A request to advance a run — start, resume, sleep (a future `run_at`), or sign
 
 ## v2 ports
 
-The v2 rewrite (`v2/packages/*`) is backend-agnostic: the engine speaks only four port interfaces (`core/src/ports/*`), and each backend (memory, postgres, dynamodb, redis, sqlite, mysql, mongodb, durable-objects) implements them against its own primitive.
+The v2 engine (`packages/*`) is backend-agnostic: the engine speaks only four port interfaces (`core/src/ports/*`), and each backend (memory, postgres, dynamodb, redis, sqlite, mysql, mongodb, durable-objects) implements them against its own primitive.
 
 **Store** — the durable checkpoint interface: runs, one memoized write per step, signals, crons, retention. Replaces v1 `Storage`.
 

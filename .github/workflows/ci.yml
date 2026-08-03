@@ -19,112 +19,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: iterativeflow_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      ITERATIVE_PG_URL: postgres://postgres:postgres@localhost:5432/iterativeflow_test
-      SKIP_TESTCONTAINERS: "1"
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: npm run smoke:dist
-      - run: npm run size:check
-      - run: npm run docs:check
-
-  release:
-    name: changesets
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          cache: npm
-      - run: npm install -g npm@latest
-      - run: npm install --no-audit --no-fund
-      - run: npm run build
-
-      - id: changesets
-        uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1
-        with:
-          version: npm run changeset:version
-          commit: "chore: version packages"
-          title: "chore: version packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # hasChangesets=='false' is true on every changeset-free push, not just after a version
-      # bump — so skip when this version is already on npm, or the frozen v1 root re-publishes
-      # itself and npm 403s on the duplicate.
-      - name: publish via oidc
-        if: steps.changesets.outputs.hasChangesets == 'false'
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "iterativeflow@${VERSION}" version >/dev/null 2>&1; then
-            echo "iterativeflow@${VERSION} already published — nothing to publish."
-          else
-            npx changeset publish
-          fi
-        env:
-          NPM_CONFIG_PROVENANCE: "true"
-
-      - name: push tags + github release
-        if: steps.changesets.outputs.hasChangesets == 'false'
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if git ls-remote --exit-code --tags origin "v${VERSION}" >/dev/null 2>&1; then
-            echo "tag v${VERSION} already exists — skipping release."
-          else
-            git push origin "refs/tags/v${VERSION}"
-            awk "/^## ${VERSION}/{flag=1; next} /^## [0-9]/{flag=0} flag" CHANGELOG.md > /tmp/notes.md
-            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file /tmp/notes.md
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  test-v2:
-    name: v2 typecheck + tests (node ${{ matrix.node }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
         # Node 22+ only: the durable-objects equivalence test uses the built-in `node:sqlite`
         # (added in 22.5), and the testcontainers/undici stack needs 22+ (`markAsUncloneable`).
         # The packages run on Node 20 at runtime; the test tooling does not.
         node: ["22"]
-    defaults:
-      run:
-        working-directory: v2
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -132,33 +30,28 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
-      # v2 suites start their own Postgres + DynamoDB Local via testcontainers (Docker is
-      # available on hosted runners), so no service containers or SKIP_TESTCONTAINERS here.
+      # Suites start their own Postgres + DynamoDB Local via testcontainers (Docker is available
+      # on hosted runners), so no service containers or SKIP_TESTCONTAINERS here.
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:coverage
       - run: npm run build
-      # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface
-      # change fails here until etc/*.api.md is regenerated and committed.
+      # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface change fails
+      # here until etc/*.api.md is regenerated and committed.
       - run: npm run api:snapshot && git diff --exit-code etc
 
-  release-v2:
-    name: changesets (v2)
-    needs: [test-v2]
+  release:
+    name: changesets
+    needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       id-token: write
-    defaults:
-      run:
-        working-directory: v2
     steps:
-      # persist-credentials stays on: this job pushes the version branch itself (the root job
-      # delegates pushing to changesets/action, which can't target v2's nested workspace —
-      # both instances would fight over the same changeset-release/main head branch).
+      # persist-credentials stays on: this job pushes the version branch itself.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
@@ -169,8 +62,8 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run build
 
-      - name: detect pending v2 changesets
-        id: v2changesets
+      - name: detect pending changesets
+        id: changesets
         run: |
           pending=false
           if [ -f .changeset/pre.json ]; then
@@ -189,20 +82,20 @@ jobs:
           fi
           echo "hasChangesets=$pending" >> "$GITHUB_OUTPUT"
 
-      - name: open v2 version PR
-        if: steps.v2changesets.outputs.hasChangesets == 'true'
+      - name: open version PR
+        if: steps.changesets.outputs.hasChangesets == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B changeset-release/v2-main
+          git checkout -B changeset-release/main
           npx changeset version
           npm install --package-lock-only --no-audit --no-fund
           git add .
-          git commit -m "chore(v2): version packages"
-          git push -f origin changeset-release/v2-main
-          gh pr create --base main --head changeset-release/v2-main \
-            --title "chore(v2): version packages" \
-            --body "Automated v2 changesets version PR." \
+          git commit -m "chore: version packages"
+          git push -f origin changeset-release/main
+          gh pr create --base main --head changeset-release/main \
+            --title "chore: version packages" \
+            --body "Automated changesets version PR." \
             || echo "PR already open — branch force-pushed"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -211,12 +104,12 @@ jobs:
       # publishes only the missing ones (so it also recovers a partial publish), and no-ops once
       # everything is published. No coarse version gate, which would wrongly skip missing packages
       # after a partial publish.
-      - name: publish v2 via oidc
-        if: steps.v2changesets.outputs.hasChangesets == 'false'
+      - name: publish via oidc
+        if: steps.changesets.outputs.hasChangesets == 'false'
         run: npx changeset publish
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
-      - name: push v2 tags
-        if: steps.v2changesets.outputs.hasChangesets == 'false'
+      - name: push tags
+        if: steps.changesets.outputs.hasChangesets == 'false'
         run: git push --tags

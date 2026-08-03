@@ -1,129 +1,36 @@
 {
-  "name": "iterativeflow",
-  "version": "5.6.0",
-  "description": "Durable, iterative workflows on your own Postgres. Steps, sleeps, signals, loops, cron — runs resident in your Node app or serverless (Vercel/Lambda/Cloudflare) on graphile-worker + drizzle-orm.",
-  "keywords": [
-    "cron",
-    "drizzle",
-    "durable-execution",
-    "graphile-worker",
-    "iterative",
-    "loop",
-    "orchestration",
-    "postgres",
-    "saga",
-    "serverless",
-    "temporal",
-    "trigger.dev",
-    "workflow"
-  ],
-  "homepage": "https://github.com/ahmedrowaihi/iterativeflow#readme",
-  "bugs": {
-    "url": "https://github.com/ahmedrowaihi/iterativeflow/issues"
-  },
-  "license": "MIT",
-  "author": "Ahmed Rowaihi <ahmedrowaihi1@gmail.com>",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git"
-  },
-  "bin": {
-    "iterativeflow": "./dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "migrations"
+  "name": "@iterativeflow/monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
   "type": "module",
-  "sideEffects": false,
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./serverless": {
-      "types": "./dist/serverless.d.ts",
-      "import": "./dist/serverless.js"
-    },
-    "./pgmq": {
-      "types": "./dist/pgmq.d.ts",
-      "import": "./dist/pgmq.js"
-    },
-    "./dashboard": {
-      "types": "./dist/dashboard.d.ts",
-      "import": "./dist/dashboard.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
-    "build": "tsdown && npm run build:dashboard && node scripts/copy-schema-asset.mjs",
-    "build:dashboard": "vite build --config src/dashboard/app/vite.config.ts",
-    "migrations:generate": "tsx scripts/generate-migrations.ts",
-    "docs:check": "node scripts/extract-doc-examples.mjs && tsc -p tests/docs-examples",
-    "corpus:capture": "tsx scripts/capture-corpus.ts",
-    "api:check": "api-extractor run --local && node scripts/normalize-api-report.mjs && git diff --exit-code --quiet -- etc/iterativeflow.api.md",
-    "api:update": "api-extractor run --local && node scripts/normalize-api-report.mjs",
-    "smoke:dist": "node scripts/smoke-dist.mjs",
-    "size:check": "node scripts/size-check.mjs",
-    "typecheck": "tsc --noEmit && tsc -p src/dashboard/app/tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "oxlint",
-    "format": "oxfmt",
-    "format:check": "oxfmt --check",
-    "changeset": "changeset",
-    "changeset:version": "changeset version",
-    "release": "changeset publish",
-    "prepare": "lefthook install || true",
-    "prepublishOnly": "npm run build"
-  },
-  "dependencies": {
-    "@opentelemetry/api": "1.9.1",
-    "@standard-schema/spec": "^1.1.0"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint packages",
+    "test": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "build": "npm run build --workspaces --if-present",
+    "api:snapshot": "node scripts/api-snapshot.mjs",
+    "api:check": "npm run build && npm run api:snapshot && git diff --exit-code etc"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
-    "@electric-sql/pglite": "0.2.12",
-    "@microsoft/api-extractor": "^7.58.7",
-    "@preact/preset-vite": "^2.10.5",
-    "@preact/signals": "^2.9.3",
-    "@tailwindcss/vite": "^4.3.2",
+    "@aws-sdk/client-dynamodb": "^3.906.0",
+    "@aws-sdk/lib-dynamodb": "^3.906.0",
+    "@changesets/cli": "^2.31.1",
+    "@libsql/client": "^0.17.4",
     "@testcontainers/postgresql": "^12.0.1",
-    "@types/node": "^22.19.19",
-    "@types/pg": "8.15.5",
-    "class-variance-authority": "^0.7.1",
-    "cnfast": "^0.0.8",
-    "drizzle-kit": "^0.31.10",
-    "drizzle-orm": "^0.45.2",
-    "franken-ui": "^2.1.2",
-    "graphile-worker": "^0.16.6",
-    "lefthook": "^2.1.8",
-    "oxfmt": "^0.52.0",
-    "oxlint": "^1.67.0",
-    "pg": "8.16.0",
-    "postcss-js": "^4.1.0",
-    "preact": "^10.29.7",
-    "preact-router": "^4.1.2",
-    "sugar-high": "^1.2.1",
-    "swr": "^2.4.2",
-    "tailwindcss": "^4.3.2",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.15.5",
+    "@vitest/coverage-v8": "^4.1.10",
+    "ioredis": "^5.11.1",
+    "mongodb": "^7.5.0",
+    "mysql2": "^3.23.1",
+    "oxlint": "^1.73.0",
+    "pg": "^8.16.0",
     "testcontainers": "^12.0.1",
-    "tsdown": "^0.15.6",
-    "tsx": "^4.22.3",
-    "typescript": "^5.9.3",
-    "vite": "^8.1.4",
-    "vitest": "3.2.4",
-    "zod": "^4.3.6"
-  },
-  "peerDependencies": {
-    "drizzle-orm": ">=0.45.0",
-    "graphile-worker": ">=0.16.0",
-    "pg": ">=8.10.0"
-  },
-  "engines": {
-    "node": ">=20"
+    "tsdown": "^0.22.13",
+    "typescript": "~5.9",
+    "vitest": "^4.1.10"
   }
 }
