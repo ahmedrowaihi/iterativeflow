@@ -1,4 +1,10 @@
 packages:
   - "packages/*"
+onlyBuiltDependencies:
+  - esbuild
+  - lefthook
+  - ssh2
+  - cpu-features
+  - protobufjs
 minimumReleaseAgeExclude:
   - "@iterativeflow/*"
