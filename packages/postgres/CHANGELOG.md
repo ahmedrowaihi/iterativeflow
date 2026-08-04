@@ -1,5 +1,11 @@
 # @iterativeflow/postgres
 
+## 2.1.0
+
+### Patch Changes
+
+- @iterativeflow/core@2.1.0
+
 ## 2.0.1
 
 ### Patch Changes
