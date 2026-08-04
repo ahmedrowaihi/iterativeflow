@@ -1,5 +1,90 @@
 # @iterativeflow/sqlite
 
+## 2.0.0
+
+### Minor Changes
+
+- d35db90: `inTx` for MySQL and SQLite — transactional-enqueue parity with Postgres.
+
+  `@iterativeflow/mysql` and `@iterativeflow/sqlite` now export `inTx(driver, fn, opts?)`, mirroring
+  `@iterativeflow/postgres`: it runs `fn` in one transaction with a `Backend` bound to it, so a `submit`
+  (startRun + enqueue) commits atomically with the caller's own writes — the flow runs iff the domain row
+  commits, and a throw rolls back both. It stays poll-first (a short bounded tx, not a pinned `LISTEN`)
+  and closes only the enqueue-drop window (the reconciler still recovers a worker dying mid-flow). Not in
+  core `submit` because it needs a caller-joinable transaction — DynamoDB and Redis can't offer it. Also
+  documents the pattern in the postgres README.
+
+- d35db90: New backend: **`@iterativeflow/sqlite`** — the four ports over one SQLite database, for embedded and
+  edge use (a local file, Turso/libSQL, or a Cloudflare Durable Object's SQLite storage) through a
+  small `Sql` driver seam. State and dispatch share the database, so the transactional outbox commits
+  in one `BEGIN…COMMIT` — the same atomic model as Postgres. Single-writer, so `claim` is a plain
+  `SELECT`+`UPDATE` (no `SKIP LOCKED`); Wakeup is in-process. Passes the same
+  store/queue/timer/wakeup/outbox/signal/reconcile/cron/engine conformance suites as the other
+  backends. `@libsql/client` is a peer dependency; a `libsqlDb` adapter is included.
+
+### Patch Changes
+
+- d35db90: Pre-release audit pass — correctness, consistency, and hardening fixes:
+
+  - **core (cron at-most-once bug):** `runDueCrons` now starts the occurrence's idempotent run BEFORE
+    advancing the schedule CAS. Previously a crash between `advanceCron` and `startRun` dropped the
+    occurrence silently — at-most-once delivery inside an otherwise at-least-once engine. Also adds the
+    `orphanedRunsSql` and `assertSqlIdentifier` backend-SPI helpers.
+  - **mysql (atomicity bug):** transactions now run at READ COMMITTED, not MySQL's REPEATABLE READ
+    default, so a concurrent first-writer-wins checkpoint's re-read sees the winner's just-committed
+    row — matching Postgres, the model the store targets. Surfaced by a new concurrency conformance
+    test.
+  - **dynamodb / mongodb (lease version):** `claim` captures the job `version` from the atomic lease
+    write (`ReturnValues: ALL_NEW` / the `findOneAndUpdate` result) rather than a stale pre-lease read,
+    matching the other six backends.
+  - **redis (performance):** `listRuns` scans the run index in bounded windows instead of loading every
+    run on an interactive page.
+  - **postgres:** the job `version` seeds at 1 like every other backend; the orphan query uses the
+    shared `orphanedRunsSql`. **sqlite / mysql** share the same builder (one predicate, one home).
+  - **hardening:** the webhook `hmacVerifier` refuses an empty secret at construction (fail closed);
+    the SQL backends validate the schema/table-prefix identifier at construction.
+
+- d483f4f: Autoscaling backlog primitive, plus operability for rolling deploys and pooled/serverless databases.
+
+  - **Autoscaling backlog.** `engine.pendingWork(names?)` returns claimable jobs + due timers + due
+    crons as one number, served over HTTP at the dashboard's `GET /api/metrics`. Postgres also ships a
+    `pending_work(flow_names, as_of)` SQL function so KEDA's Postgres scaler can read it directly,
+    including scaling to and from zero. Counting due timers/crons (not just queued jobs) is what wakes a
+    scaled-to-zero worker for a durable `ctx.sleep` or a cron.
+  - **`engine.check()`** — a startup probe that throws a clear error if the backend schema is missing or
+    unreachable, instead of the worker loop silently retrying query errors.
+  - **`redeployParked` metric** — fires when a claimed run parks for `unknown_flow`/`flow_drift`, so a
+    rolling deploy can alert on runs stuck waiting for a flow version that didn't come back.
+  - **SQLite safe defaults.** `applySchema` now sets WAL, `busy_timeout`, and `synchronous=NORMAL` for a
+    concurrent, durable file store. Opt out via `ApplySchemaOpts.pragmas` (Durable Objects, which manage
+    their own durability, skip them automatically).
+  - **Postgres autovacuum.** The high-churn `job` table is created with aggressive autovacuum so a queue
+    workload doesn't bloat; set once on create, so a later operator `ALTER` is never reset.
+  - **MySQL isolation.** READ COMMITTED is now set per transaction (safe behind a connection pooler).
+    `mysqlPool(pool, { setIsolation: false })` skips it for PlanetScale/Vitess, where a server-default
+    READ COMMITTED avoids tainting pooled connections.
+
+- Updated dependencies [d35db90]
+- Updated dependencies [d483f4f]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+  - @iterativeflow/core@2.0.0
+
 ## 2.0.0-alpha.11
 
 ### Patch Changes

@@ -1,5 +1,65 @@
 # @iterativeflow/durable-objects
 
+## 2.0.0
+
+### Minor Changes
+
+- d35db90: New: **`@iterativeflow/durable-objects`** — run iterativeflow inside a Cloudflare Durable Object on
+  its built-in SQLite storage. It's the `@iterativeflow/sqlite` backend driven through a thin `Sql`
+  adapter over `ctx.storage.sql` (`createDurableObjectBackend(storage)` + `applySchema`), so one DO
+  becomes a self-contained, strongly-consistent durable-execution engine at the edge with no external
+  database. No dependency beyond core + sqlite (the `SqlStorage` type is structural). Passes the same
+  nine conformance suites as every other backend, verified against Node's synchronous `node:sqlite`,
+  which matches the DO storage shape. A DO serves one request at a time (single-writer by
+  construction); the outbox relies on the DO's invocation-level atomicity rather than a manual
+  transaction, which DO SQLite forbids.
+
+### Patch Changes
+
+- d483f4f: Autoscaling backlog primitive, plus operability for rolling deploys and pooled/serverless databases.
+
+  - **Autoscaling backlog.** `engine.pendingWork(names?)` returns claimable jobs + due timers + due
+    crons as one number, served over HTTP at the dashboard's `GET /api/metrics`. Postgres also ships a
+    `pending_work(flow_names, as_of)` SQL function so KEDA's Postgres scaler can read it directly,
+    including scaling to and from zero. Counting due timers/crons (not just queued jobs) is what wakes a
+    scaled-to-zero worker for a durable `ctx.sleep` or a cron.
+  - **`engine.check()`** — a startup probe that throws a clear error if the backend schema is missing or
+    unreachable, instead of the worker loop silently retrying query errors.
+  - **`redeployParked` metric** — fires when a claimed run parks for `unknown_flow`/`flow_drift`, so a
+    rolling deploy can alert on runs stuck waiting for a flow version that didn't come back.
+  - **SQLite safe defaults.** `applySchema` now sets WAL, `busy_timeout`, and `synchronous=NORMAL` for a
+    concurrent, durable file store. Opt out via `ApplySchemaOpts.pragmas` (Durable Objects, which manage
+    their own durability, skip them automatically).
+  - **Postgres autovacuum.** The high-churn `job` table is created with aggressive autovacuum so a queue
+    workload doesn't bloat; set once on create, so a later operator `ALTER` is never reset.
+  - **MySQL isolation.** READ COMMITTED is now set per transaction (safe behind a connection pooler).
+    `mysqlPool(pool, { setIsolation: false })` skips it for PlanetScale/Vitess, where a server-default
+    READ COMMITTED avoids tainting pooled connections.
+
+- Updated dependencies [d35db90]
+- Updated dependencies [d483f4f]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+- Updated dependencies [d35db90]
+  - @iterativeflow/core@2.0.0
+  - @iterativeflow/sqlite@2.0.0
+
 ## 2.0.0-alpha.11
 
 ### Patch Changes
