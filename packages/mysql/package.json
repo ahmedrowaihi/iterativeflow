@@ -28,7 +28,7 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@iterativeflow/core": "2.0.0-alpha.11"
+    "@iterativeflow/core": "workspace:*"
   },
   "peerDependencies": {
     "mysql2": ">=3.0.0"

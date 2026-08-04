@@ -66,8 +66,8 @@ importers:
   packages/conformance:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       vitest:
         specifier: '>=3'
         version: 4.1.10(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(vite@8.2.0(@types/node@26.1.2)(esbuild@0.28.1)(terser@5.49.0)(tsx@4.23.4)(yaml@2.9.0))
@@ -77,17 +77,17 @@ importers:
   packages/dashboard:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
 
   packages/durable-objects:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       '@iterativeflow/sqlite':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11(@libsql/client@0.17.4)(@op-engineering/op-sqlite@17.1.3(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))(react@19.2.8))
+        specifier: workspace:*
+        version: link:../sqlite
 
   packages/dynamodb:
     dependencies:
@@ -98,20 +98,20 @@ importers:
         specifier: '>=3.0.0'
         version: 3.1101.0(@aws-sdk/client-dynamodb@3.1101.0)
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
 
   packages/memory:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
 
   packages/mongodb:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       mongodb:
         specifier: '>=6.0.0'
         version: 7.5.0
@@ -119,8 +119,8 @@ importers:
   packages/mysql:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       mysql2:
         specifier: '>=3.0.0'
         version: 3.23.2(@types/node@26.1.2)
@@ -128,8 +128,8 @@ importers:
   packages/postgres:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       pg:
         specifier: '>=8.10.0'
         version: 8.22.0
@@ -144,8 +144,8 @@ importers:
   packages/redis:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       ioredis:
         specifier: '>=5.0.0'
         version: 5.11.1(supports-color@8.1.1)
@@ -153,8 +153,8 @@ importers:
   packages/sqlite:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
       '@libsql/client':
         specifier: '>=0.14.0'
         version: 0.17.4
@@ -165,8 +165,8 @@ importers:
   packages/webhooks:
     dependencies:
       '@iterativeflow/core':
-        specifier: 2.0.0-alpha.11
-        version: 2.0.0-alpha.11
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 
@@ -888,20 +888,6 @@ packages:
   '@isaacs/ttlcache@1.4.1':
     resolution: {integrity: sha512-RQgQ4uQ+pLbqXfOmieB91ejmLwvSgv9nLx6sT6sD83s7umBypgg+OIBOBbEUiJXrfpnp9j0mRhYYdzp9uqq3lA==}
     engines: {node: '>=12'}
-
-  '@iterativeflow/core@2.0.0-alpha.11':
-    resolution: {integrity: sha512-TKRygv22pfby5SB8oMiX/hioxG5n7KPrg1HuSoOHnOF2jlFipZpMaPQ68oi2WCZgXe+888TFhlcFDS9i9nYllw==}
-
-  '@iterativeflow/sqlite@2.0.0-alpha.11':
-    resolution: {integrity: sha512-By8+rNyByuUFsZzrqHLuL6Zav/eR6s11Qb7hInhn872plO5NxgiSUmntrumVghxV3R3H1Uh5XOaNUA8E//vEiQ==}
-    peerDependencies:
-      '@libsql/client': '>=0.14.0'
-      '@op-engineering/op-sqlite': '>=9'
-    peerDependenciesMeta:
-      '@libsql/client':
-        optional: true
-      '@op-engineering/op-sqlite':
-        optional: true
 
   '@jest/schemas@29.6.3':
     resolution: {integrity: sha512-mo5j5X+jIZmJQveBKeS/clAueipV7KgiX1vMgCxam1RNYiqE1w62n0/tJJnHtjW8ZHcQco5gY85jA3mi0L+nSA==}
@@ -4391,15 +4377,6 @@ snapshots:
       wrap-ansi-cjs: wrap-ansi@7.0.0
 
   '@isaacs/ttlcache@1.4.1': {}
-
-  '@iterativeflow/core@2.0.0-alpha.11': {}
-
-  '@iterativeflow/sqlite@2.0.0-alpha.11(@libsql/client@0.17.4)(@op-engineering/op-sqlite@17.1.3(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))(react@19.2.8))':
-    dependencies:
-      '@iterativeflow/core': 2.0.0-alpha.11
-    optionalDependencies:
-      '@libsql/client': 0.17.4
-      '@op-engineering/op-sqlite': 17.1.3(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))(react@19.2.8)
 
   '@jest/schemas@29.6.3':
     dependencies:

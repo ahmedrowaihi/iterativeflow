@@ -28,7 +28,7 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@iterativeflow/core": "2.0.0-alpha.11"
+    "@iterativeflow/core": "workspace:*"
   },
   "peerDependencies": {
     "@aws-sdk/client-dynamodb": ">=3.0.0",

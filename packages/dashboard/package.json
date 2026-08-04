@@ -28,6 +28,6 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@iterativeflow/core": "2.0.0-alpha.11"
+    "@iterativeflow/core": "workspace:*"
   }
 }
