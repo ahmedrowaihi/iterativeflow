@@ -1,0 +1,7 @@
+rules:
+  artipacked:
+    ignore:
+      - ci.yml
+  use-trusted-publishing:
+    ignore:
+      - preview.yml
