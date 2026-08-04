@@ -1,5 +1,12 @@
 # @iterativeflow/dynamodb
 
+## 2.0.1
+
+### Patch Changes
+
+- e91ccbf: DynamoDB: the unfiltered autoscaling-backlog counts (`Timer.dueCount`, `Store.dueCronCount`) now use `Select: COUNT`, so DynamoDB returns the count server-side and transfers no item attributes over the wire.
+  - @iterativeflow/core@2.0.1
+
 ## 2.0.0
 
 ### Minor Changes
