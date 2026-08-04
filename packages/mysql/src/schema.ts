@@ -99,6 +99,19 @@ export const ddl = (prefix = ""): string[] => {
       last_run_at  BIGINT,
       KEY cron_due (next_run_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+    `DROP FUNCTION IF EXISTS \`${prefix}pending_work\``,
+    `CREATE FUNCTION \`${prefix}pending_work\`(flow_names JSON, as_of BIGINT)
+     RETURNS BIGINT READS SQL DATA
+     RETURN (
+       (SELECT COUNT(*) FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+          WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
+            AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))
+     + (SELECT COUNT(*) FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
+          WHERE tm.fire_at <= as_of AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))
+     + (SELECT COUNT(*) FROM ${t.cron} c
+          WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(c.flow_name))))
+     )`,
   ];
 };
 

@@ -63,10 +63,11 @@ testable and able to run in the browser). Open an issue if you need it.
 The library gives you the numbers; you wire up the scaling.
 
 - `engine.pendingWork(names?)` returns one number: claimable jobs plus due timers plus due crons. It's
-  served at `GET /api/metrics` (with an optional `?name=` filter). Point a KEDA `metrics-api` scaler at
-  it, or point KEDA's Postgres scaler at the `pending_work(flow_names, as_of)` SQL function. Counting
-  due timers and crons, not just queued jobs, is what lets a worker scaled to zero wake for a
-  `ctx.sleep` or a cron.
+  served at `GET /api/metrics` (with an optional `?name=` filter) for a KEDA `metrics-api` scaler.
+  Postgres and MySQL also ship a `pending_work(flow_names, as_of)` SQL function so KEDA's database scaler
+  can read it directly; MongoDB exposes `pendingWorkPipeline` (a `$unionWith` aggregation) for a
+  mongo-side metric. Counting due timers and crons, not just queued jobs, is what lets a worker scaled to
+  zero wake for a `ctx.sleep` or a cron.
 - `engine.nextWakeAt()` (also on the `serverlessTick` result) returns the next time work is due. Use it
   to schedule a single wake-up — SQS `DelaySeconds`, EventBridge, a Step Functions `Wait` — instead of
   polling on a timer. Signals and child completions wake a run directly, so they aren't part of this.

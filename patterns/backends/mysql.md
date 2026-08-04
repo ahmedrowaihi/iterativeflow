@@ -122,9 +122,17 @@ blocked, usually by a stuck transaction elsewhere.
 
 - `engine.health()` returns run counts per status; `engine.liveness()` returns the dispatch backlog and
   oldest-claimable age (use it for a readiness probe).
-- For autoscaling, `engine.pendingWork(names?)` returns the backlog as one number. Serve it over HTTP
-  (the dashboard's `GET /api/metrics`) for a KEDA `metrics-api` scaler. Unlike Postgres, MySQL has no
-  in-database `pending_work()` function — use the HTTP path.
+- For autoscaling, `applySchema` creates a `pending_work(flow_names, as_of)` function (like Postgres),
+  so KEDA's mysql scaler can read the backlog directly. Creating it needs the `CREATE ROUTINE`
+  privilege. `flow_names` is a JSON array (`NULL` for the whole backlog); `as_of` is epoch ms:
+
+  ```sql
+  SELECT pending_work(NULL, UNIX_TIMESTAMP(NOW(3)) * 1000);                 -- whole backlog
+  SELECT pending_work(JSON_ARRAY('greet'), UNIX_TIMESTAMP(NOW(3)) * 1000);  -- one flow's shard
+  ```
+
+  Or serve `engine.pendingWork(names?)` over HTTP (the dashboard's `GET /api/metrics`) for a KEDA
+  `metrics-api` scaler.
 
 ### Running a pool of workers
 

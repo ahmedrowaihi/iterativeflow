@@ -94,7 +94,16 @@ only the primary deletes), so don't treat it as prompt or as a correctness bound
 - `engine.health()` returns run counts per status; `engine.liveness()` returns the dispatch backlog and
   oldest-claimable age.
 - For autoscaling, serve `engine.pendingWork(names?)` over HTTP (the dashboard's `GET /api/metrics`) for
-  a KEDA `metrics-api` scaler.
+  a KEDA `metrics-api` scaler. MongoDB has no stored functions and KEDA's mongodb scaler counts one
+  collection, so for a mongo-side backlog metric (a dashboard, or a scaler that runs an aggregation) use
+  `pendingWorkPipeline`, which spans all three collections:
+
+  ```ts
+  import { pendingWorkPipeline } from "@iterativeflow/mongodb";
+
+  const [row] = await db.collection("jobs").aggregate(pendingWorkPipeline(Date.now())).toArray();
+  const backlog = (row?.pendingWork as number) ?? 0;
+  ```
 
 ### Running a pool of workers
 

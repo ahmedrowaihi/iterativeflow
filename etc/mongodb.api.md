@@ -6,7 +6,7 @@
 
 ```ts
 import { Backend, IdGen } from "@iterativeflow/core/backend";
-import { ClientSession, Db, MongoClient } from "mongodb";
+import { ClientSession, Db, Document, MongoClient } from "mongodb";
 //#region src/backend.d.ts
 interface MongoBackendOpts {
   /** Database name. Default `iterativeflow`. */
@@ -34,6 +34,18 @@ declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts,
  */
 declare const ensureIndexes: (db: Db, prefix?: string) => Promise<void>;
 //#endregion
+//#region src/pending-work.d.ts
+/**
+ * Aggregation pipeline that returns the autoscaling backlog — claimable jobs + due timers + due crons —
+ * as `[{ pendingWork: N }]` (an empty result means `0`). Run it on the `jobs` collection. MongoDB has
+ * no stored functions, and KEDA's mongodb scaler counts one collection, so this `$unionWith` pipeline is
+ * how a mongo-side metric spans all three. It's the whole backlog; for a per-shard count use
+ * `engine.pendingWork(names)` / the dashboard's `/api/metrics`.
+ */
+declare const pendingWorkPipeline: (now: Date | number, opts?: {
+  prefix?: string;
+}) => Document[];
+//#endregion
 //#region src/tx.d.ts
 /**
  * Run `fn` inside one MongoDB transaction, handing it a {@link Backend} bound to that transaction
@@ -54,5 +66,5 @@ declare const ensureIndexes: (db: Db, prefix?: string) => Promise<void>;
  */
 declare const inTx: <T>(client: MongoClient, fn: (backend: Backend, session: ClientSession) => Promise<T>, opts?: MongoBackendOpts) => Promise<T>;
 //#endregion
-export { type MongoBackendOpts, createMongoBackend, ensureIndexes, inTx };
+export { type MongoBackendOpts, createMongoBackend, ensureIndexes, inTx, pendingWorkPipeline };
 ```
