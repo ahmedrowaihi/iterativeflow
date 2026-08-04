@@ -28,6 +28,7 @@ import {
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import { countQuery } from "#count";
 import {
   type CronItem,
   type RunItem,
@@ -732,16 +733,25 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async dueCronCount(now, names) {
+      const cond = "gsi1pk = :cd AND gsi1sk <= :now";
+      const values = { ":cd": CRON_DUE_GSI_PK, ":now": pad(now.getTime()) };
+      if (names === undefined) {
+        return countQuery(doc, {
+          TableName: table,
+          IndexName: "gsi1",
+          KeyConditionExpression: cond,
+          ExpressionAttributeValues: values,
+        });
+      }
+      const wanted = new Set(names);
+      if (wanted.size === 0) return 0;
       const items = await queryAll<{ flowName: string }>({
         TableName: table,
         IndexName: "gsi1",
-        KeyConditionExpression: "gsi1pk = :cd AND gsi1sk <= :now",
-        ExpressionAttributeValues: { ":cd": CRON_DUE_GSI_PK, ":now": pad(now.getTime()) },
+        KeyConditionExpression: cond,
+        ExpressionAttributeValues: values,
         ProjectionExpression: "flowName",
       });
-      if (names === undefined) return items.length;
-      const wanted = new Set(names);
-      if (wanted.size === 0) return 0;
       return items.filter((c) => wanted.has(c.flowName)).length;
     },
 
