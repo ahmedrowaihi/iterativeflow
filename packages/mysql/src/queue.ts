@@ -32,7 +32,9 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       const at = ms(now);
       const expiresAt = new Date(at + leaseMs);
       return sql.tx(async (tx) => {
-        const namePredicate = names ? ` AND r.name IN (${names.map(() => "?").join(",")})` : "";
+        const namePredicate = names
+          ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
+          : "";
         const params = names ? [at, at, ...names, limit] : [at, at, limit];
         const due = await tx.query<ClaimRow>(
           `SELECT j.run_id AS run_id, j.version AS version

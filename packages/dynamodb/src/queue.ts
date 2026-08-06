@@ -59,7 +59,9 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
           table,
           candidates.map((j) => j.runId),
         );
-        allowed = candidates.filter((j) => wanted.has(nameById.get(j.runId) ?? ""));
+        allowed = candidates.filter(
+          (j) => !nameById.has(j.runId) || wanted.has(nameById.get(j.runId) ?? ""),
+        );
       }
       const leases: Lease[] = [];
       for (const j of allowed) {

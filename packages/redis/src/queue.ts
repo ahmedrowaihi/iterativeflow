@@ -33,7 +33,7 @@ for _, runId in ipairs(ids) do
     local keep = true
     if wanted ~= nil then
       local name = redis.call('HGET', runPre .. runId .. runSuf, '${RUN.name}')
-      keep = name ~= false and wanted[name] == true
+      keep = name == false or wanted[name] == true
     end
     if keep then
       due[#due + 1] = { runId = runId, priority = tonumber(f[2]) or 0, runAt = runAt, version = tonumber(f[3]) or 0, key = jobKey }

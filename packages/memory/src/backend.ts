@@ -364,7 +364,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         (j) =>
           j.runAtMs <= t &&
           (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t) &&
-          (!wanted || wanted.has(runs.get(j.runId)?.name ?? "")),
+          (!wanted || !runs.has(j.runId) || wanted.has(runs.get(j.runId)?.name ?? "")),
       );
       due.sort((a, b) => a.priority - b.priority || a.runAtMs - b.runAtMs);
       const leases: Lease[] = [];

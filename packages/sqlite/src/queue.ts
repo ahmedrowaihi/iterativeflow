@@ -33,7 +33,9 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
     async claim({ limit, leaseMs, names, now }: ClaimOpts) {
       const at = ms(now);
       if (names && names.length === 0) return [];
-      const nameFilter = names ? ` AND r.name IN (${names.map(() => "?").join(", ")})` : "";
+      const nameFilter = names
+        ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")}))`
+        : "";
       return sql.tx(async (tx) => {
         const due = await tx.query<{ run_id: string }>(
           `SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id

@@ -29,7 +29,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
            SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
            WHERE j.run_at <= $1::timestamptz
              AND (j.lease_expires IS NULL OR j.lease_expires <= $1::timestamptz)
-             AND ($5::text[] IS NULL OR r.name = ANY($5))
+             AND ($5::text[] IS NULL OR r.name IS NULL OR r.name = ANY($5))
            ORDER BY j.priority, j.run_at
            FOR UPDATE OF j SKIP LOCKED
            LIMIT $3

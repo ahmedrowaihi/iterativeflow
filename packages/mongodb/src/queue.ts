@@ -44,12 +44,15 @@ export const createMongoQueue = (
         .limit(limit)
         .toArray();
       if (names) {
-        const allowed = await runs
-          .find({ _id: { $in: candidates.map((c) => c._id) }, name: { $in: [...names] } })
-          .project({ _id: 1 })
+        const wanted = new Set(names);
+        const present = await runs
+          .find({ _id: { $in: candidates.map((c) => c._id) } })
+          .project<{ _id: string; name: string }>({ name: 1 })
           .toArray();
-        const allowedIds = new Set(allowed.map((r) => r._id));
-        candidates = candidates.filter((c) => allowedIds.has(c._id));
+        const nameById = new Map(present.map((r) => [r._id, r.name]));
+        candidates = candidates.filter(
+          (c) => !nameById.has(c._id) || wanted.has(nameById.get(c._id) ?? ""),
+        );
       }
       const leases: Lease[] = [];
       for (const cand of candidates) {

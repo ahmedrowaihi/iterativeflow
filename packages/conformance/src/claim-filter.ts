@@ -34,5 +34,16 @@ export const claimFilterConformance = (
       const all = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(all.map((l) => l.runId)).toEqual([a.runId]);
     });
+
+    it("leases a run-less job under a name filter so it can be acked, not skipped forever", async () => {
+      const { store, queue } = await makeBackend();
+      const a = await store.startRun({ name: "flow-a", version: 1, input: {} });
+      await queue.enqueue(a.runId);
+      await queue.enqueue("orphan-run"); // a job whose run row is gone (pruned or deleted out of band)
+      const leased = await queue.claim({ limit: 10, leaseMs: 1000, names: ["flow-a"], now: at(0) });
+      // the orphan is leased alongside flow-a so runTick's gone-path acks it, instead of a permanently
+      // claimable job the name filter drops every tick.
+      expect(leased.map((l) => l.runId).sort()).toEqual([a.runId, "orphan-run"].sort());
+    });
   });
 };
