@@ -365,8 +365,6 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async upsertCron(spec) {
-      // A re-register keeps the existing timing; a CHANGED schedule takes the new one, or the old
-      // cadence would outlive the deploy that changed it.
       const existing = crons.get(spec.name);
       crons.set(spec.name, {
         name: spec.name,

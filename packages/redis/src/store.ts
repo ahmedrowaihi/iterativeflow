@@ -191,7 +191,6 @@ if existing ~= false then
   local prev = cjson.decode(existing)
   local obj = cjson.decode(ARGV[2])
   obj.lastRunAt = prev.lastRunAt
-  -- a re-register keeps the existing timing; a CHANGED schedule takes the new one
   if prev.schedule == obj.schedule then
     obj.nextRunAt = prev.nextRunAt
     local zs = redis.call('ZSCORE', KEYS[2], ARGV[1])

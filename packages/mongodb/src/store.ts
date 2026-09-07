@@ -465,8 +465,7 @@ export const createMongoStore = (
 
     async upsertCron(spec) {
       // A pipeline update so the comparison is atomic: inside one $set every expression still sees
-      // the pre-update doc, so `$schedule` is the OLD schedule. A re-register keeps the existing
-      // timing; a CHANGED schedule takes the new one, or the old cadence outlives the deploy.
+      // the pre-update doc, so `$schedule` is the OLD schedule.
       const at = spec.nextRunAt.getTime();
       await crons.updateOne(
         { _id: spec.name },

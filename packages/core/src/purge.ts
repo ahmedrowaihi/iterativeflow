@@ -72,7 +72,7 @@ export const purgeMatcher = (filter: PurgeFilter): ((run: PurgeRun) => boolean) 
 /**
  * The `WHERE` body and binds selecting the rows a bulk cancel/retry acts on. `undefined` when the
  * filter intersects to no usable status — the caller then touches nothing rather than emitting an
- * empty `IN ()`. Statuses render as literals for the same reason as {@link purgeWhereSql}.
+ * empty `IN ()`. Statuses render as literals for the reason on {@link PurgeSqlOpts.statusTuple}.
  */
 export const runSetWhereSql = (
   filter: RunFilter,

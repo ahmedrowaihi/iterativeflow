@@ -89,9 +89,9 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
 }
 
 /**
- * Per-flow overrides of the engine's operational policy, merged over the engine defaults.
- * `maxFanOut` caps children per `ctx.invoke([...])` (default 10 000); `maxDepth` caps `ctx.invoke`
- * nesting (default 32). Both throw when exceeded, so raise them here if a flow legitimately needs to.
+ * Per-flow overrides of the engine's operational policy, merged over the engine defaults: how a
+ * drifted replay resolves, and the fan-out caps — `maxFanOut` children per `ctx.invoke([...])`
+ * (default 10 000) and `maxDepth` invoke nesting (default 32), both of which throw when exceeded.
  */
 export interface FlowPolicy {
   drift?: DriftPolicy;

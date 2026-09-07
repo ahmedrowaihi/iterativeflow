@@ -107,8 +107,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const q = purgeWhereSql(filter, MS_PURGE);
     if (!q) return 0;
-    // Oldest-first only matters for an age sweep; without a cutoff the whole matched set goes
-    // eventually, and the sort would force a full read before LIMIT could bound it.
+    // See the Postgres store: the sort only earns its place when there is an age cutoff.
     const order = filter.before === undefined ? "" : " ORDER BY seq";
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
@@ -407,8 +406,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
            (name, schedule, flow_name, flow_version, input, overlap, next_run_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-           -- MySQL applies these left to right, so compare the schedule BEFORE overwriting it: a
-           -- re-register keeps the existing timing, a CHANGED schedule takes effect now
+           -- MySQL applies these left to right, so compare the schedule BEFORE overwriting it
            next_run_at = IF(schedule <> VALUES(schedule), VALUES(next_run_at), next_run_at),
            schedule = VALUES(schedule),
            flow_name = VALUES(flow_name),

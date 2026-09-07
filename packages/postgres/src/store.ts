@@ -422,7 +422,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            flow_version = EXCLUDED.flow_version,
            input = EXCLUDED.input,
            overlap = EXCLUDED.overlap,
-           -- a re-register keeps the existing timing, but a CHANGED schedule must take effect now
            next_run_at = CASE WHEN ${t.cron}.schedule <> EXCLUDED.schedule
                               THEN EXCLUDED.next_run_at ELSE ${t.cron}.next_run_at END`,
         [

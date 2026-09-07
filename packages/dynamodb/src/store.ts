@@ -134,7 +134,6 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     return out as T[];
   };
 
-  // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
   const matchingRuns = async (
     filter: RunFilter,
     allowed: readonly RunStatus[],
@@ -155,6 +154,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       .slice(0, limit);
   };
 
+  // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
   const scanType = <T>(type: string, consistent = false): Promise<T[]> =>
     scanAll(
       {
@@ -749,9 +749,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async upsertCron(spec) {
-      // A re-register keeps the existing timing; a CHANGED schedule takes the new one, or the old
-      // cadence outlives the deploy. `if_not_exists` can't express that, so read the schedule first
-      // — this runs at registration, not on the hot path.
+      // `if_not_exists` can't express "unless the schedule changed", so read it first — this runs at
+      // registration, not on the hot path.
       const prev = await send<{ Item?: CronItem }>(
         new GetCommand({ TableName: table, Key: key.cron(spec.name) }),
       );

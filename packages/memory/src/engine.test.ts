@@ -313,8 +313,7 @@ describe("engine — end to end on the memory backend", () => {
     const runId = await submit(backend, flow, {});
     const settled = await driveToSettle(backend, flows, runId);
 
-    // before the scoped cursor this drifted at "b" (its key collided with the nested sleep's memo),
-    // parked, and dead-lettered as RUN_ATTEMPTS_EXHAUSTED
+    // regression: "b"'s key used to collide with the nested sleep's memo
     expect(settled).toMatchObject({ status: "done", output: 3 });
     expect(napRuns).toBe(2); // the body re-runs from the top on resume — nesting does not memoize it
   });

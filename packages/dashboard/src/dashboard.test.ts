@@ -85,7 +85,6 @@ describe("dashboard fetch handler", () => {
       },
     } as typeof engine;
     const app = createDashboard(spy);
-    // SQLite reads a negative LIMIT as "no limit", so a hostile value must never reach the store
     for (const raw of ["-1", "abc", "0", "99999", "25"]) {
       expect((await app(new Request(`http://x/api/runs?limit=${raw}`))).status).toBe(200);
     }

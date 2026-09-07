@@ -13,8 +13,8 @@ import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, 
  * every backend. `wait` is the inter-poll sleep the poll-first loop uses; `signal` wakes
  * current in-process waiters early. It pins nothing (no `LISTEN`, no stream), so it is safe
  * behind RDS Proxy / PgBouncer out of the box. Postgres ships an opt-in cross-process listener
- * (`createPgListener`); other backends are poll-only. Correctness never depends on it — the engine re-reads
- * the store every tick regardless.
+ * (`createPgListener`); other backends are poll-only. Correctness never depends on it — the engine
+ * re-reads the store every tick regardless.
  */
 declare const createLocalWakeup: () => Wakeup;
 //#endregion
@@ -53,7 +53,7 @@ declare const purgeMatcher: (filter: PurgeFilter) => ((run: PurgeRun) => boolean
 /**
  * The `WHERE` body and binds selecting the rows a bulk cancel/retry acts on. `undefined` when the
  * filter intersects to no usable status — the caller then touches nothing rather than emitting an
- * empty `IN ()`. Statuses render as literals for the same reason as {@link purgeWhereSql}.
+ * empty `IN ()`. Statuses render as literals for the reason on {@link PurgeSqlOpts.statusTuple}.
  */
 declare const runSetWhereSql: (filter: RunFilter, allowed: readonly RunStatus[], op: string, o: PurgeSqlOpts) => {
   where: string;
@@ -311,9 +311,9 @@ interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
   policy?: FlowPolicy;
 }
 /**
- * Per-flow overrides of the engine's operational policy, merged over the engine defaults.
- * `maxFanOut` caps children per `ctx.invoke([...])` (default 10 000); `maxDepth` caps `ctx.invoke`
- * nesting (default 32). Both throw when exceeded, so raise them here if a flow legitimately needs to.
+ * Per-flow overrides of the engine's operational policy, merged over the engine defaults: how a
+ * drifted replay resolves, and the fan-out caps — `maxFanOut` children per `ctx.invoke([...])`
+ * (default 10 000) and `maxDepth` invoke nesting (default 32), both of which throw when exceeded.
  */
 interface FlowPolicy {
   drift?: DriftPolicy;
@@ -667,14 +667,7 @@ interface Engine {
   }): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
-  /**
-   * Cancel every live run matching `filter`, up to `limit` (default 1000) — one round trip instead of
-   * N. Descendants cancel themselves on their next dispatch, so the cascade completes a maintenance
-   * interval later rather than inline. Returns how many were canceled; repeat until `< limit`.
-   */
   cancelMany(filter: RunFilter, limit?: number): Promise<number>;
-  /** Re-drive every `failed` run matching `filter`, up to `limit` (default 1000). Same per-run
-   *  semantics as {@link Engine.retry}. Returns how many were retried; repeat until `< limit`. */
   retryMany(filter: RunFilter, limit?: number): Promise<number>;
   result<O = unknown>(runId: RunHandle<O> | string, opts?: {
     timeoutMs?: number;
@@ -710,8 +703,7 @@ interface Engine {
    */
   pendingWork(names?: readonly string[]): Promise<number>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
-  /** Every registered cron. A cron deleted from source keeps firing from its row until
-   *  {@link Engine.removeCron} takes it out. */
+  /** Every registered cron — a cron deleted from source keeps firing until `removeCron`. */
   listCrons(): Promise<readonly CronRow[]>;
   /** Remove a cron; `false` if it wasn't registered. */
   removeCron(name: string): Promise<boolean>;
@@ -1319,14 +1311,13 @@ interface Store {
   retryRun(runId: string): Promise<{
     retried: boolean;
   }>;
-  /** Register or update a cron. Keeps the existing `nextRunAt` when the cron already exists, so a
-   *  redeploy re-registering it doesn't reset the schedule timing. */
+  /** Register or update a cron. Keeps the existing `nextRunAt` when the schedule is unchanged, so a
+   *  redeploy re-registering it doesn't reset the timing — a CHANGED schedule takes the new one, or
+   *  the old cadence would outlive the deploy that changed it. */
   upsertCron(spec: CronSpec): Promise<void>;
-  /** Every registered cron, by name. The ops read surface — without it a cron deleted from source
-   *  is invisible, and keeps firing from the row it left behind. */
+  /** Every registered cron, by name. */
   listCrons(): Promise<readonly CronRow[]>;
-  /** Remove a cron. Returns whether a row was there. Deregistering in code is not enough: the row
-   *  outlives it, so this is how a retired schedule actually stops. */
+  /** Remove a cron. Returns whether a row was there — a row outlives its deregistration in code. */
   removeCron(name: string): Promise<boolean>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
@@ -1381,15 +1372,15 @@ interface Span {
 interface Tracer {
   span(span: Span): void;
 }
-/** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
 /** Which flow a metric belongs to, so a callback can label without reading the store. */
 interface FlowLabel {
   name: string;
   version: number;
 }
+/** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. Durations are
+ *  wall-clock milliseconds, absent when the source instant was never recorded. */
 interface Metrics {
   runStarted?(runId: string, flow: FlowLabel): void;
-  /** `durationMs` is wall-clock from the run's first dispatch, absent if it was never recorded. */
   runSettled?(runId: string, status: "done" | "failed", flow: FlowLabel, extra?: {
     durationMs?: number;
     errorCode?: string;

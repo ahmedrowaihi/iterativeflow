@@ -56,16 +56,16 @@ export interface Tracer {
   span(span: Span): void;
 }
 
-/** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
 /** Which flow a metric belongs to, so a callback can label without reading the store. */
 export interface FlowLabel {
   name: string;
   version: number;
 }
 
+/** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. Durations are
+ *  wall-clock milliseconds, absent when the source instant was never recorded. */
 export interface Metrics {
   runStarted?(runId: string, flow: FlowLabel): void;
-  /** `durationMs` is wall-clock from the run's first dispatch, absent if it was never recorded. */
   runSettled?(
     runId: string,
     status: "done" | "failed",

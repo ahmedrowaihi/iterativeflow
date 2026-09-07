@@ -412,8 +412,8 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.cancelRuns({ name: "f" }, 100)).toBe(2);
       expect((await s.loadRunRow(live1))?.status).toBe("canceled");
       expect((await s.loadRunRow(live2))?.status).toBe("canceled");
-      expect((await s.loadRunRow(other))?.status).toBe("pending"); // other flow untouched
-      expect((await s.loadRunRow(done))?.status).toBe("done"); // terminal never overwritten
+      expect((await s.loadRunRow(other))?.status).toBe("pending");
+      expect((await s.loadRunRow(done))?.status).toBe("done");
       expect(await s.cancelRuns({ name: "f" }, 100)).toBe(0); // idempotent — nothing live left
       await expect(s.cancelRuns({}, 100)).rejects.toThrow();
     });
@@ -436,7 +436,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         expect(row?.attempts).toBe(0); // else the dead-letter cap re-fails it without executing
       }
       expect((await s.loadRunRow(live))?.status).toBe("pending");
-      expect(await s.retryRuns({ name: "f" }, 100)).toBe(0); // nothing failed left
+      expect(await s.retryRuns({ name: "f" }, 100)).toBe(0);
       await expect(s.retryRuns({}, 100)).rejects.toThrow();
     });
 

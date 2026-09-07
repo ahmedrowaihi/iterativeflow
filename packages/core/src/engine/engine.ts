@@ -151,14 +151,7 @@ export interface Engine {
   ): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
-  /**
-   * Cancel every live run matching `filter`, up to `limit` (default 1000) — one round trip instead of
-   * N. Descendants cancel themselves on their next dispatch, so the cascade completes a maintenance
-   * interval later rather than inline. Returns how many were canceled; repeat until `< limit`.
-   */
   cancelMany(filter: RunFilter, limit?: number): Promise<number>;
-  /** Re-drive every `failed` run matching `filter`, up to `limit` (default 1000). Same per-run
-   *  semantics as {@link Engine.retry}. Returns how many were retried; repeat until `< limit`. */
   retryMany(filter: RunFilter, limit?: number): Promise<number>;
   result<O = unknown>(
     runId: RunHandle<O> | string,
@@ -199,8 +192,7 @@ export interface Engine {
   pendingWork(names?: readonly string[]): Promise<number>;
 
   registerCron<I>(def: CronDef<I>): Promise<void>;
-  /** Every registered cron. A cron deleted from source keeps firing from its row until
-   *  {@link Engine.removeCron} takes it out. */
+  /** Every registered cron — a cron deleted from source keeps firing until `removeCron`. */
   listCrons(): Promise<readonly CronRow[]>;
   /** Remove a cron; `false` if it wasn't registered. */
   removeCron(name: string): Promise<boolean>;
@@ -272,8 +264,6 @@ export const createEngine = (
       return submitMany(backend, items, clock);
     },
     signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) => {
-      // A signal payload lands in the durable inbox and is re-read on every subsequent loadRun, so
-      // the runaway-payload guard has to cover it too — webhooks and the dashboard both feed it.
       guard("signal", payload);
       return signalRun(backend, runId, name, payload, o);
     },

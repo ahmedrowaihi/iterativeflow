@@ -109,8 +109,7 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const q = purgeWhereSql(filter, MS_PURGE);
     if (!q) return 0;
-    // Oldest-first only matters for an age sweep; without a cutoff the whole matched set goes
-    // eventually, and the sort would force a full read before LIMIT could bound it.
+    // See the Postgres store: the sort only earns its place when there is an age cutoff.
     const order = filter.before === undefined ? "" : " ORDER BY created_at";
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
@@ -406,7 +405,6 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
            flow_version = excluded.flow_version,
            input = excluded.input,
            overlap = excluded.overlap,
-           -- a re-register keeps the existing timing, but a CHANGED schedule must take effect now
            next_run_at = CASE WHEN ${t.cron}.schedule <> excluded.schedule
                               THEN excluded.next_run_at ELSE ${t.cron}.next_run_at END`,
         [

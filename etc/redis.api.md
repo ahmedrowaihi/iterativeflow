@@ -8,7 +8,8 @@
 import { Backend, IdGen } from "@iterativeflow/core/backend";
 import { Redis } from "ioredis";
 //#region src/client.d.ts
-/** The ioredis connection the backend runs on. Pass a `new Redis(url)` (single-node: the outbox Lua spans keys, so a Cluster fails with CROSSSLOT). */
+/** The ioredis connection the backend runs on. Pass a `new Redis(url)` (single-node — the outbox Lua
+ * spans keys, so a Cluster fails with CROSSSLOT). */
 type RedisClient = Redis;
 //#endregion
 //#region src/backend.d.ts

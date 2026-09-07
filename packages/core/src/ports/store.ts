@@ -191,16 +191,15 @@ export interface Store {
    */
   retryRun(runId: string): Promise<{ retried: boolean }>;
 
-  /** Register or update a cron. Keeps the existing `nextRunAt` when the cron already exists, so a
-   *  redeploy re-registering it doesn't reset the schedule timing. */
+  /** Register or update a cron. Keeps the existing `nextRunAt` when the schedule is unchanged, so a
+   *  redeploy re-registering it doesn't reset the timing — a CHANGED schedule takes the new one, or
+   *  the old cadence would outlive the deploy that changed it. */
   upsertCron(spec: CronSpec): Promise<void>;
 
-  /** Every registered cron, by name. The ops read surface — without it a cron deleted from source
-   *  is invisible, and keeps firing from the row it left behind. */
+  /** Every registered cron, by name. */
   listCrons(): Promise<readonly CronRow[]>;
 
-  /** Remove a cron. Returns whether a row was there. Deregistering in code is not enough: the row
-   *  outlives it, so this is how a retired schedule actually stops. */
+  /** Remove a cron. Returns whether a row was there — a row outlives its deregistration in code. */
   removeCron(name: string): Promise<boolean>;
 
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */

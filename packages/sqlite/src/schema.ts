@@ -112,10 +112,6 @@ export interface ApplySchemaOpts {
   pragmas?: boolean;
 }
 
-/**
- * Apply the schema DDL (idempotent). Splits on `;` because libsql runs one statement per call. On a
- * file store it also sets the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (see {@link ApplySchemaOpts}).
- */
 // SQLite has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
 const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
   const cols = await sql.query<{ name: string }>(`PRAGMA table_info(${t.signal})`);
@@ -123,6 +119,10 @@ const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
   await sql.query(`ALTER TABLE ${t.signal} ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0`);
 };
 
+/**
+ * Apply the schema DDL (idempotent). Splits on `;` because libsql runs one statement per call. On a
+ * file store it also sets the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (see {@link ApplySchemaOpts}).
+ */
 export const applySchema = async (
   sql: Sql,
   prefix = "",
