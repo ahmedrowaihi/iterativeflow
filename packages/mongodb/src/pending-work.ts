@@ -3,10 +3,12 @@ import { names } from "#collections";
 
 /**
  * Aggregation pipeline that returns the autoscaling backlog — claimable jobs + due timers + due crons —
- * as `[{ pendingWork: N }]` (an empty result means `0`). Run it on the `jobs` collection. MongoDB has
- * no stored functions, and KEDA's mongodb scaler counts one collection, so this `$unionWith` pipeline is
- * how a mongo-side metric spans all three. It's the whole backlog; for a per-shard count use
- * `engine.pendingWork(names)` / the dashboard's `/api/metrics`.
+ * as `[{ pendingWork: N }]` (an empty result means `0`). Run it on the `jobs` collection (prefixed, if
+ * `opts.prefix` is set). MongoDB has no stored functions, and KEDA's mongodb scaler counts one
+ * collection with a filter document rather than running an aggregation — so this `$unionWith` pipeline
+ * is for a dashboard, or a scaler that can run an aggregation, not for that scaler directly. It's the
+ * whole backlog; for a per-shard count use `engine.pendingWork(names)` / the dashboard's
+ * `/api/metrics`.
  */
 export const pendingWorkPipeline = (
   now: Date | number,

@@ -36,10 +36,12 @@ export const createPgTimer = (sql: Sql, schema: string): Timer => {
     },
 
     async dueCount(now, names) {
+      if (names?.length === 0) return 0;
       const rows = await sql.query<{ n: number }>(
         `SELECT count(*)::int AS n
          FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
-         WHERE tm.fire_at <= $1::timestamptz AND ($2::text[] IS NULL OR r.name = ANY($2))`,
+         WHERE tm.fire_at <= $1::timestamptz
+           AND ($2::text[] IS NULL OR r.name IS NULL OR r.name = ANY($2))`,
         [now, names ?? null],
       );
       return rows[0].n;

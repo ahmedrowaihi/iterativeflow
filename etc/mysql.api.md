@@ -60,6 +60,11 @@ declare const createMysqlBackend: (sql: Sql, opts?: MysqlBackendOpts) => Backend
  * MySQL has no implicit rowid). Indexed string columns are `VARCHAR(191)` to stay under the utf8mb4
  * index-key limit. The idempotency/signal-dedup UNIQUE KEYs need no partial `WHERE`: MySQL treats
  * NULLs as distinct, so unkeyed rows never collide.
+ *
+ * Also creates the `pending_work` function, so applying this needs `CREATE ROUTINE` as well as
+ * `CREATE TABLE`. MySQL has no `CREATE OR REPLACE FUNCTION`, so that one statement is a `DROP` +
+ * `CREATE` rather than `IF NOT EXISTS` — a scaler polling the function across a boot can see one
+ * failed read.
  */
 declare const ddl: (prefix?: string) => string[];
 /** Apply the schema DDL (idempotent). Run once before use. */

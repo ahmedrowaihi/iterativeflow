@@ -30,7 +30,9 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
 
     async dueCount(now, names) {
       if (names && names.length === 0) return 0;
-      const namePredicate = names ? ` AND r.name IN (${names.map(() => "?").join(",")})` : "";
+      const namePredicate = names
+        ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
+        : "";
       const params = names ? [now.getTime(), ...names] : [now.getTime()];
       const rows = await sql.query<{ n: number | string }>(
         `SELECT count(*) AS n FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id

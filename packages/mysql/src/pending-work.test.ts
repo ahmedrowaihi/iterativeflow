@@ -1,9 +1,9 @@
-import { type Pool, createPool } from "mysql2/promise";
-import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
+import type { Pool } from "mysql2/promise";
+import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
-import { applySchema } from "#schema";
 import { mysqlPool } from "#sql";
+import { startMysql, stopMysql } from "#test-container";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 
@@ -12,34 +12,10 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    container = await new GenericContainer("mysql:8")
-      .withEnvironment({ MYSQL_ROOT_PASSWORD: "test", MYSQL_DATABASE: "iflow" })
-      .withExposedPorts(3306)
-      .withWaitStrategy(Wait.forLogMessage(/ready for connections/, 2))
-      .withStartupTimeout(180_000)
-      .start();
-    pool = createPool({
-      host: container.getHost(),
-      port: container.getMappedPort(3306),
-      user: "root",
-      password: "test",
-      database: "iflow",
-    });
-    for (let i = 0; i < 40; i++) {
-      try {
-        await pool.query("SELECT 1");
-        break;
-      } catch {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-    await applySchema(mysqlPool(pool));
+    ({ container, pool } = await startMysql());
   }, 240_000);
 
-  afterAll(async () => {
-    await pool?.end().catch(() => undefined);
-    await container?.stop().catch(() => undefined);
-  });
+  afterAll(() => stopMysql({ container, pool }));
 
   beforeEach(async () => {
     for (const table of ["run", "step", "job", "timer", "signal", "cron"]) {

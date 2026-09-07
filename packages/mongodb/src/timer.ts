@@ -35,17 +35,19 @@ export const createMongoTimer = (db: Db, n: Names): Timer => {
 
     async dueCount(now, names) {
       const t = now.getTime();
+      if (names?.length === 0) return 0;
       if (!names) return timers.countDocuments({ fire_at: { $lte: t } });
       const due = await timers
         .find({ fire_at: { $lte: t } })
         .project({ _id: 1 })
         .toArray();
       if (due.length === 0) return 0;
-      const allowed = await runs
-        .find({ _id: { $in: due.map((d) => d._id) }, name: { $in: [...names] } })
+      // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
+      const rejected = await runs
+        .find({ _id: { $in: due.map((d) => d._id) }, name: { $nin: [...names] } })
         .project({ _id: 1 })
         .toArray();
-      return allowed.length;
+      return due.length - rejected.length;
     },
 
     async cancel(runId) {

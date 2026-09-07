@@ -59,9 +59,10 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
           table,
           candidates.map((j) => j.runId),
         );
-        allowed = candidates.filter(
-          (j) => !nameById.has(j.runId) || wanted.has(nameById.get(j.runId) ?? ""),
-        );
+        allowed = candidates.filter((j) => {
+          const name = nameById.get(j.runId);
+          return name === undefined || wanted.has(name);
+        });
       }
       const leases: Lease[] = [];
       for (const j of allowed) {
@@ -177,8 +178,12 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         table,
         jobs.map((j) => j.runId),
       );
+      // a run-less job is unownable, so it passes every name filter (see Queue.claim)
       return queueDepthOf(
-        jobs.filter((j) => wanted.has(nameById.get(j.runId) ?? "")),
+        jobs.filter((j) => {
+          const name = nameById.get(j.runId);
+          return name === undefined || wanted.has(name);
+        }),
         t,
       );
     },

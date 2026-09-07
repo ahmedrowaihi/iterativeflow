@@ -110,6 +110,10 @@ declare const shardedClaimConformance: (label: string, makeBackend: () => Backen
  * `Store.dueCronCount(now, names)` — that `engine.pendingWork` composes. Every backend must count the
  * same due work (claimable jobs, due timers, due crons), exclude leased/future work, and filter by
  * flow name identically.
+ *
+ * A row whose run is gone counts under EVERY name filter, matching `Queue.claim` — a sharded fleet
+ * has to see the backlog it can actually lease, or it stays scaled to zero and the row never drains.
+ * An empty `names` is the exception: it means "this worker handles nothing", so it counts nothing.
  */
 declare const pendingWorkConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion

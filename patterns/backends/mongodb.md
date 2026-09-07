@@ -101,6 +101,7 @@ only the primary deletes), so don't treat it as prompt or as a correctness bound
   ```ts
   import { pendingWorkPipeline } from "@iterativeflow/mongodb";
 
+  // the `jobs` collection — prefixed, if you configured a prefix
   const [row] = await db.collection("jobs").aggregate(pendingWorkPipeline(Date.now())).toArray();
   const backlog = (row?.pendingWork as number) ?? 0;
   ```

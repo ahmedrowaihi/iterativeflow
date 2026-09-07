@@ -23,6 +23,11 @@ export type Tables = ReturnType<typeof tables>;
  * MySQL has no implicit rowid). Indexed string columns are `VARCHAR(191)` to stay under the utf8mb4
  * index-key limit. The idempotency/signal-dedup UNIQUE KEYs need no partial `WHERE`: MySQL treats
  * NULLs as distinct, so unkeyed rows never collide.
+ *
+ * Also creates the `pending_work` function, so applying this needs `CREATE ROUTINE` as well as
+ * `CREATE TABLE`. MySQL has no `CREATE OR REPLACE FUNCTION`, so that one statement is a `DROP` +
+ * `CREATE` rather than `IF NOT EXISTS` — a scaler polling the function across a boot can see one
+ * failed read.
  */
 export const ddl = (prefix = ""): string[] => {
   const t = tables(prefix);
@@ -104,11 +109,16 @@ export const ddl = (prefix = ""): string[] => {
     `CREATE FUNCTION \`${prefix}pending_work\`(flow_names JSON, as_of BIGINT)
      RETURNS BIGINT READS SQL DATA
      RETURN (
-       (SELECT COUNT(*) FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+       (SELECT COUNT(*) FROM ${t.job} j
           WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
-            AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))
-     + (SELECT COUNT(*) FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
-          WHERE tm.fire_at <= as_of AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))
+            AND (flow_names IS NULL OR (JSON_LENGTH(flow_names) > 0 AND NOT EXISTS (
+                  SELECT 1 FROM ${t.run} r
+                   WHERE r.id = j.run_id AND NOT JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))))
+     + (SELECT COUNT(*) FROM ${t.timer} tm
+          WHERE tm.fire_at <= as_of
+            AND (flow_names IS NULL OR (JSON_LENGTH(flow_names) > 0 AND NOT EXISTS (
+                  SELECT 1 FROM ${t.run} r
+                   WHERE r.id = tm.run_id AND NOT JSON_CONTAINS(flow_names, JSON_QUOTE(r.name))))))
      + (SELECT COUNT(*) FROM ${t.cron} c
           WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR JSON_CONTAINS(flow_names, JSON_QUOTE(c.flow_name))))
      )`,

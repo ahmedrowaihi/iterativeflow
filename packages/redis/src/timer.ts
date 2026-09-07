@@ -43,6 +43,7 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
     },
 
     async dueCount(now, names) {
+      if (names?.length === 0) return 0;
       const wanted = names && new Set(names);
       if (!wanted) return client.zcount(keys.timers, "-inf", ms(now));
       const due = await client.zrangebyscore(keys.timers, "-inf", ms(now));
@@ -52,8 +53,9 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
       const res = (await pipe.exec()) ?? [];
       let n = 0;
       for (let i = 0; i < due.length; i++) {
+        // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
         const name = res[i]?.[1] as string | null;
-        if (name !== null && wanted.has(name)) n += 1;
+        if (name === null || wanted.has(name)) n += 1;
       }
       return n;
     },

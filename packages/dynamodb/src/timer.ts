@@ -120,7 +120,11 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
         table,
         due.map((d) => d.runId),
       );
-      return due.filter((d) => wanted.has(nameById.get(d.runId) ?? "")).length;
+      // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
+      return due.filter((d) => {
+        const name = nameById.get(d.runId);
+        return name === undefined || wanted.has(name);
+      }).length;
     },
   };
 };

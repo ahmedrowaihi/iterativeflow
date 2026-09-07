@@ -14,13 +14,14 @@ import {
   wakeupConformance,
 } from "@iterativeflow/conformance";
 import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
-import { type Pool, createPool } from "mysql2/promise";
-import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
+import type { Pool } from "mysql2/promise";
+import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
-import { applySchema, tables } from "#schema";
+import { tables } from "#schema";
 import { type Sql, mysqlPool } from "#sql";
 import { inTx } from "#tx";
+import { startMysql, stopMysql } from "#test-container";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const t = tables("");
@@ -30,36 +31,10 @@ describe.skipIf(skip)("mysql backend", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    container = await new GenericContainer("mysql:8")
-      .withEnvironment({ MYSQL_ROOT_PASSWORD: "test", MYSQL_DATABASE: "iflow" })
-      .withExposedPorts(3306)
-      .withWaitStrategy(Wait.forLogMessage(/ready for connections/, 2))
-      .withStartupTimeout(180_000)
-      .start();
-    pool = createPool({
-      host: container.getHost(),
-      port: container.getMappedPort(3306),
-      user: "root",
-      password: "test",
-      database: "iflow",
-    });
-    // MySQL logs "ready" during its init temp-server phase then restarts, so the first connections
-    // can drop — ping until the real server is stable before applying the schema.
-    for (let i = 0; i < 40; i++) {
-      try {
-        await pool.query("SELECT 1");
-        break;
-      } catch {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-    await applySchema(mysqlPool(pool));
+    ({ container, pool } = await startMysql());
   }, 240_000);
 
-  afterAll(async () => {
-    await pool?.end().catch(() => undefined);
-    await container?.stop().catch(() => undefined);
-  });
+  afterAll(() => stopMysql({ container, pool }));
 
   const makeBackend = async (): Promise<Backend> => {
     for (const table of Object.values(t)) await pool.query(`TRUNCATE TABLE ${table}`);

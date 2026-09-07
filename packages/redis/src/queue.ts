@@ -105,6 +105,7 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
+      if (names?.length === 0) return [];
       const nowMs = ms(now);
       const tokens = Array.from({ length: limit }, () => id()); // Lua can't call IdGen; hand it fresh tokens
       const nameCount = names === undefined ? -1 : names.length;
@@ -154,6 +155,7 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
 
     async depth(now, names) {
       const nowMs = ms(now);
+      if (names?.length === 0) return queueDepthOf([], nowMs);
       const wanted = names && new Set(names);
       const runIds = await client.zrange(keys.queue, 0, -1);
       if (runIds.length === 0) return queueDepthOf([], nowMs);
@@ -167,8 +169,9 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
       const jobs: { runAt: number; leaseExpires?: number }[] = [];
       for (let i = 0; i < runIds.length; i++) {
         if (wanted) {
+          // a run-less job is unownable, so it passes every name filter (see Queue.claim)
           const name = res[i * stride + 1]?.[1] as string | null;
-          if (name === null || !wanted.has(name)) continue;
+          if (name !== null && !wanted.has(name)) continue;
         }
         const [runAt, leaseExpires] = (res[i * stride]?.[1] ?? []) as [
           string | null,

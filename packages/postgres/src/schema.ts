@@ -123,11 +123,14 @@ CREATE INDEX IF NOT EXISTS cron_due ON ${t.cron} (next_run_at);
 CREATE OR REPLACE FUNCTION "${schema}".pending_work(flow_names text[] DEFAULT NULL, as_of timestamptz DEFAULT now())
 RETURNS bigint LANGUAGE sql STABLE AS $$
   SELECT
-    (SELECT count(*) FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
+    (SELECT count(*) FROM ${t.job} j
        WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
-         AND (flow_names IS NULL OR r.name = ANY(flow_names)))
-  + (SELECT count(*) FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
-       WHERE tm.fire_at <= as_of AND (flow_names IS NULL OR r.name = ANY(flow_names)))
+         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
+               SELECT 1 FROM ${t.run} r WHERE r.id = j.run_id AND NOT (r.name = ANY(flow_names))))))
+  + (SELECT count(*) FROM ${t.timer} tm
+       WHERE tm.fire_at <= as_of
+         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
+               SELECT 1 FROM ${t.run} r WHERE r.id = tm.run_id AND NOT (r.name = ANY(flow_names))))))
   + (SELECT count(*) FROM ${t.cron} c
        WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR c.flow_name = ANY(flow_names)))
 $$;

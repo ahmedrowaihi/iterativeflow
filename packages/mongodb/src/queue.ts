@@ -36,6 +36,7 @@ export const createMongoQueue = (
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
+      if (names?.length === 0) return [];
       const t = ms(now);
       const unleased = [{ lease_expires: { $exists: false } }, { lease_expires: { $lte: t } }];
       let candidates = await jobs
@@ -50,9 +51,10 @@ export const createMongoQueue = (
           .project<{ _id: string; name: string }>({ name: 1 })
           .toArray();
         const nameById = new Map(present.map((r) => [r._id, r.name]));
-        candidates = candidates.filter(
-          (c) => !nameById.has(c._id) || wanted.has(nameById.get(c._id) ?? ""),
-        );
+        candidates = candidates.filter((c) => {
+          const name = nameById.get(c._id);
+          return name === undefined || wanted.has(name);
+        });
       }
       const leases: Lease[] = [];
       for (const cand of candidates) {
@@ -108,13 +110,15 @@ export const createMongoQueue = (
           lease_expires: 1,
         })
         .toArray();
+      if (names?.length === 0) return queueDepthOf([], ms(now));
       if (names) {
-        const allowed = await runs
-          .find({ _id: { $in: all.map((j) => j._id) }, name: { $in: [...names] } })
+        // a run-less job is unownable, so it passes every name filter (see Queue.claim)
+        const rejected = await runs
+          .find({ _id: { $in: all.map((j) => j._id) }, name: { $nin: [...names] } })
           .project({ _id: 1 })
           .toArray();
-        const allowedIds = new Set(allowed.map((r) => r._id));
-        all = all.filter((j) => allowedIds.has(j._id));
+        const dropped = new Set(rejected.map((r) => r._id));
+        all = all.filter((j) => !dropped.has(j._id));
       }
       return queueDepthOf(
         all.map((j) => ({ runAt: j.run_at, leaseExpires: j.lease_expires })),

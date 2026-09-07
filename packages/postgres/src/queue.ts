@@ -1,4 +1,11 @@
-import type { ClaimOpts, IdGen, Lease, Queue, QueueDepth } from "@iterativeflow/core/backend";
+import {
+  type ClaimOpts,
+  type IdGen,
+  type Lease,
+  type Queue,
+  type QueueDepth,
+  queueDepthOf,
+} from "@iterativeflow/core/backend";
 import { type Tables, tables } from "#schema";
 import { enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
@@ -21,6 +28,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
+      if (names?.length === 0) return [];
       const rows = await sql.query<LeaseRow>(
         `UPDATE ${t.job}
            SET lease_token = $4 || ':' || run_id,
@@ -74,7 +82,9 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
     },
 
     async depth(now, names): Promise<QueueDepth> {
-      const named = `($2::text[] IS NULL OR r.name = ANY($2))`;
+      if (names?.length === 0) return queueDepthOf([], now.getTime());
+      // a run-less job is unownable, so it passes every name filter (see Queue.claim)
+      const named = `($2::text[] IS NULL OR r.name IS NULL OR r.name = ANY($2))`;
       const claimable = `j.run_at <= $1::timestamptz AND (j.lease_expires IS NULL OR j.lease_expires <= $1::timestamptz) AND ${named}`;
       const rows = await sql.query<{ claimable: number; leased: number; oldest: Date | null }>(
         `SELECT count(*) FILTER (WHERE ${claimable})::int AS claimable,

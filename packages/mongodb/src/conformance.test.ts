@@ -15,11 +15,12 @@ import {
 import { randomUUID } from "node:crypto";
 import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
 import { type Collection, type Db, MongoClient } from "mongodb";
-import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
+import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMongoBackend } from "#backend";
-import { type Names, ensureIndexes, names } from "#collections";
+import { type Names, names } from "#collections";
 import { inTx } from "#tx";
+import { startMongo, stopMongo } from "#test-container";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const DB = "iterativeflow";
@@ -30,30 +31,10 @@ describe.skipIf(skip)("mongodb backend", () => {
   let client: MongoClient;
 
   beforeAll(async () => {
-    container = await new GenericContainer("mongo:7")
-      .withCommand(["--replSet", "rs0", "--bind_ip_all"])
-      .withExposedPorts(27017)
-      .withWaitStrategy(Wait.forLogMessage(/Waiting for connections/))
-      .start();
-    const uri = `mongodb://${container.getHost()}:${container.getMappedPort(27017)}/?directConnection=true`;
-    client = new MongoClient(uri);
-    await client.connect();
-    await client
-      .db("admin")
-      .command({ replSetInitiate: {} })
-      .catch(() => undefined);
-    for (let i = 0; i < 40; i++) {
-      const hello = await client.db("admin").command({ hello: 1 });
-      if (hello.isWritablePrimary) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    await ensureIndexes(client.db(DB));
+    ({ container, client } = await startMongo(DB));
   }, 180_000);
 
-  afterAll(async () => {
-    await client?.close().catch(() => undefined);
-    await container?.stop().catch(() => undefined);
-  });
+  afterAll(() => stopMongo({ container, client }));
 
   const makeBackend = async (): Promise<Backend> => {
     const db = client.db(DB);

@@ -91,7 +91,10 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
     async depth(now, names): Promise<QueueDepth> {
       if (names && names.length === 0) return queueDepthOf([], now.getTime());
       const nowMs = now.getTime();
-      const where = names ? ` WHERE r.name IN (${names.map(() => "?").join(", ")})` : "";
+      // a run-less job is unownable, so it passes every name filter (see Queue.claim)
+      const where = names
+        ? ` WHERE r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")})`
+        : "";
       const rows = await sql.query<{
         claimable: number | null;
         leased: number | null;

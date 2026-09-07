@@ -9,8 +9,8 @@ timeline, push wake-ups, an error classifier).
 - MySQL 8.0.1 or newer. The claim uses `SELECT ... FOR UPDATE SKIP LOCKED`, added in 8.0.1.
 - InnoDB tables (the default). The engine relies on row locks.
 - You provide a `mysql2` `Pool`. The library never opens connections on its own.
-- Applying the schema needs `CREATE TABLE` rights; a running worker needs `SELECT`/`INSERT`/`UPDATE`/
-  `DELETE`.
+- Applying the schema needs `CREATE TABLE` and `CREATE ROUTINE` rights (it also creates the
+  `pending_work` function); a running worker needs `SELECT`/`INSERT`/`UPDATE`/`DELETE`.
 
 ## Install
 
@@ -22,7 +22,9 @@ npm install @iterativeflow/mysql @iterativeflow/core mysql2
 
 ## Set up the database
 
-`applySchema` creates the engine's tables (idempotent — run it on every boot or once as a migration).
+`applySchema` creates the engine's tables and the `pending_work` function (idempotent — run it on every
+boot or once as a migration). The function is dropped and recreated each time, so a KEDA scaler polling
+it during a boot can see one failed read; the tables are never dropped.
 
 ```ts
 // db.ts

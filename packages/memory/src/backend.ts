@@ -136,6 +136,14 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     return { runId, created: true, status: "pending" };
   };
 
+  // A row whose run is gone is unownable, so it passes every name filter — the worker that leases it
+  // acks it (runTick's gone-path), which is what drains it. An empty `names` is handled by the callers.
+  const nameAllows = (wanted: Set<string> | undefined, runId: string): boolean => {
+    if (!wanted) return true;
+    const run = runs.get(runId);
+    return !run || wanted.has(run.name);
+  };
+
   const store: Backend["store"] = {
     async startRun(spec) {
       return startOne(spec);
@@ -361,13 +369,14 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
+      if (names?.length === 0) return [];
       const t = ms(now);
       const wanted = names && new Set(names);
       const due = [...jobs.values()].filter(
         (j) =>
           j.runAtMs <= t &&
           (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t) &&
-          (!wanted || !runs.has(j.runId) || wanted.has(runs.get(j.runId)?.name ?? "")),
+          nameAllows(wanted, j.runId),
       );
       due.sort((a, b) => a.priority - b.priority || a.runAtMs - b.runAtMs);
       const leases: Lease[] = [];
@@ -421,9 +430,10 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async depth(now, names) {
+      if (names?.length === 0) return queueDepthOf([], ms(now));
       const wanted = names && new Set(names);
       const jobsForDepth = [...jobs.values()]
-        .filter((j) => !wanted || wanted.has(runs.get(j.runId)?.name ?? ""))
+        .filter((j) => nameAllows(wanted, j.runId))
         .map((j) => ({ runAt: j.runAtMs, leaseExpires: j.leaseExpiresMs }));
       return queueDepthOf(jobsForDepth, ms(now));
     },
@@ -459,11 +469,12 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async dueCount(now, names) {
+      if (names?.length === 0) return 0;
       const t = ms(now);
       const wanted = names && new Set(names);
       let n = 0;
       for (const [runId, fireAtMs] of deadlines) {
-        if (fireAtMs <= t && (!wanted || wanted.has(runs.get(runId)?.name ?? ""))) n += 1;
+        if (fireAtMs <= t && nameAllows(wanted, runId)) n += 1;
       }
       return n;
     },
