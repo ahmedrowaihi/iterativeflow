@@ -380,7 +380,7 @@ export const createMongoStore = (
       return inTx(async (session) => {
         const res = await runs.updateOne(
           { _id: runId, status: "failed" },
-          { $set: { status: "pending" }, $unset: { error: "" } },
+          { $set: { status: "pending", attempts: 0 }, $unset: { error: "" } },
           { session },
         );
         const retried = res.modifiedCount === 1;

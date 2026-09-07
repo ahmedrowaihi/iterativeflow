@@ -403,6 +403,51 @@ describe("engine — end to end on the memory backend", () => {
     expect(firstStep).toBe(1); // the completed step did NOT re-run — memo preserved
   });
 
+  it("retryRun re-drives a run that dead-lettered, under the SAME retry policy", async () => {
+    let bodyRuns = 0;
+    let failing = true;
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "exhausted",
+      version: 1,
+      run: async (ctx) => {
+        bodyRuns += 1;
+        await ctx.step("call-vendor", () => {
+          if (failing) throw new Error("vendor down");
+          return "ok";
+        });
+        return "recovered";
+      },
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([flow]);
+    // one policy for the whole test — production retries a run under the same policy that failed it,
+    // so a retry that left `attempts` spent would trip the dead-letter cap before the body ever runs
+    const retry = { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1 };
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const now = (): Date => clock;
+    const drive = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) {
+        await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now, retry });
+        const run = (await backend.store.loadRun(runId))?.run;
+        if (run && TERMINAL.has(run.status)) return;
+        clock = new Date(clock.getTime() + 2_000);
+      }
+    };
+
+    const runId = await submit(backend, flow, {});
+    await drive();
+    expect((await backend.store.loadRun(runId))?.run.status).toBe("failed");
+    const runsWhileFailing = bodyRuns;
+
+    failing = false;
+    expect(await retryRun(backend, runId)).toBe(true);
+    await drive();
+
+    const settled = (await backend.store.loadRun(runId))?.run;
+    expect(bodyRuns).toBeGreaterThan(runsWhileFailing); // it actually executed again
+    expect(settled).toMatchObject({ status: "done", output: "recovered" });
+  });
+
   it("result() returns a completed run's terminal outcome", async () => {
     const flow = defineFlow<Record<string, never>, number>({
       name: "quick",

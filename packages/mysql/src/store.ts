@@ -341,7 +341,8 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     retryRun(runId) {
       return sql.tx(async (tx) => {
         const res = await tx.exec(
-          `UPDATE ${t.run} SET status = 'pending', error = NULL WHERE id = ? AND status = 'failed'`,
+          `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0
+           WHERE id = ? AND status = 'failed'`,
           [runId],
         );
         if (res.affectedRows !== 1) return { retried: false };

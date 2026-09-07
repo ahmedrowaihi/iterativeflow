@@ -164,9 +164,13 @@ export interface Store {
   orphanedRuns(limit: number): Promise<readonly string[]>;
 
   /**
-   * Re-drive a `failed` run: reset it to `pending`, clear the error, and re-enqueue —
-   * atomically. Completed (`ok`) step memos are KEPT, so replay skips them and only the work
-   * after the failure re-runs. A no-op (`retried: false`) on a run that isn't `failed`.
+   * Re-drive a `failed` run: reset it to `pending`, clear the error, zero `attempts`, and re-enqueue
+   * — atomically. Completed (`ok`) step memos are KEPT, so replay skips them and only the work after
+   * the failure re-runs. A no-op (`retried: false`) on a run that isn't `failed`.
+   *
+   * Zeroing `attempts` is what makes a dead-lettered run retryable at all: the executor's cap is
+   * checked against it before the body runs, so a retry that left it spent would re-fail the run
+   * with `RUN_ATTEMPTS_EXHAUSTED` without executing anything.
    */
   retryRun(runId: string): Promise<{ retried: boolean }>;
 

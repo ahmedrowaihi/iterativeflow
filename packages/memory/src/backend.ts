@@ -319,6 +319,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (row.status !== "failed") return { retried: false };
       row.status = "pending";
       row.error = undefined;
+      row.attempts = 0;
       enqueueCore(runId);
       return { retried: true };
     },

@@ -177,7 +177,7 @@ const RETRY_LUA = `${OUTBOX_LIB}
 local s = redis.call('HGET', KEYS[1], '${RUN.status}')
 if s == false then return -1 end
 if s ~= 'failed' then return 0 end
-redis.call('HSET', KEYS[1], '${RUN.status}', 'pending')
+redis.call('HSET', KEYS[1], '${RUN.status}', 'pending', '${RUN.attempts}', '0')
 redis.call('HDEL', KEYS[1], '${RUN.error}')
 iflow_enqueue(KEYS[3], ARGV[1], KEYS[2], ARGV[2], ARGV[3])
 return 1`;

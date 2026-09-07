@@ -341,7 +341,8 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     retryRun(runId) {
       return sql.tx(async (tx) => {
         const rows = await tx.query(
-          `UPDATE ${t.run} SET status = 'pending', error = NULL WHERE id = ? AND status = 'failed' RETURNING 1`,
+          `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0
+             WHERE id = ? AND status = 'failed' RETURNING 1`,
           [runId],
         );
         if (!rows[0]) return { retried: false };

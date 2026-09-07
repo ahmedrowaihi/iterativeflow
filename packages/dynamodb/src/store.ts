@@ -677,10 +677,14 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
                 Update: {
                   TableName: table,
                   Key: key.run(runId),
-                  UpdateExpression: "SET #status = :pending REMOVE #error",
+                  UpdateExpression: "SET #status = :pending, attempts = :zero REMOVE #error",
                   ConditionExpression: "attribute_exists(pk) AND #status = :failed",
                   ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-                  ExpressionAttributeValues: { ":pending": "pending", ":failed": "failed" },
+                  ExpressionAttributeValues: {
+                    ":pending": "pending",
+                    ":failed": "failed",
+                    ":zero": 0,
+                  },
                 },
               },
               { Update: enqueueParams(table, runId) },

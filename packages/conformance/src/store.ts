@@ -385,6 +385,21 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(again.retried).toBe(false);
     });
 
+    it("retryRun clears the spent attempt budget, so a dead-lettered run gets dispatched again", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
+      await s.markRunning(runId);
+      await s.markRunning(runId);
+      expect(await s.markRunning(runId)).toBe(3);
+      await s.markTerminal(runId, { status: "failed", error: { code: "X", message: "boom" } });
+
+      await s.retryRun(runId);
+      // the executor's dead-letter cap compares this against maxAttempts BEFORE running the body,
+      // so a retry that left it spent would re-fail the run without ever executing it
+      expect((await s.loadRunRow(runId))?.attempts).toBe(0);
+      expect(await s.markRunning(runId)).toBe(1);
+    });
+
     it("runStats counts runs per status", async () => {
       const s = await makeStore();
       const a = await s.startRun({ name: "f", version: 1, input: {} });

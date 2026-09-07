@@ -330,7 +330,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     retryRun(runId) {
       return sql.tx(async (tx) => {
         const rows = await tx.query(
-          `UPDATE ${t.run} SET status = 'pending', error = NULL WHERE id = $1 AND status = 'failed' RETURNING 1`,
+          `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0
+             WHERE id = $1 AND status = 'failed' RETURNING 1`,
           [runId],
         );
         if (!rows[0]) return { retried: false };
