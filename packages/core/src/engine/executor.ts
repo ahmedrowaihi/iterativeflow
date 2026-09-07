@@ -137,6 +137,7 @@ export const runTick = async (
     return { runId: snap.run.id, status: "already_terminal" };
   }
   const run = snap.run;
+  const flowLabel = { name: run.name, version: run.version };
 
   const res = (status: TickStatus, extra?: Omit<TickResult, "runId" | "status">): TickResult => ({
     runId: run.id,
@@ -174,7 +175,10 @@ export const runTick = async (
     // costs one empty query on the rare failure path — cheaper than scanning every tick's memo.
     if (status === "failed") await cancelDescendants(backend, run.id);
     await obs.event(event, run.id, now(), meta);
-    obs.metrics.runSettled?.(run.id, status);
+    obs.metrics.runSettled?.(run.id, status, flowLabel, {
+      durationMs: run.createdAt ? now().getTime() - run.createdAt.getTime() : undefined,
+      errorCode: outcome.status === "failed" ? outcome.error.code : undefined,
+    });
     if (run.parentRunId) {
       const remaining = await store.arriveAtJoin(run.parentRunId);
       if (status !== "done" || (remaining !== undefined && remaining <= 0)) {
@@ -196,7 +200,7 @@ export const runTick = async (
   ): Promise<TickResult> => {
     await store.suspendRun(run.id, status, fx);
     await obs.event("run.suspended", run.id, now(), { status });
-    obs.metrics.runSuspended?.(run.id, status);
+    obs.metrics.runSuspended?.(run.id, status, flowLabel);
     await queue.ack(held, { now: now() });
     return res(tickStatus, extra);
   };
@@ -252,7 +256,7 @@ export const runTick = async (
   }
   if (attempt === 1) {
     await obs.event("run.started", run.id, now());
-    obs.metrics.runStarted?.(run.id);
+    obs.metrics.runStarted?.(run.id, flowLabel);
   }
 
   // `snap` was loaded after the claim, so it already holds every durable step + signal; the

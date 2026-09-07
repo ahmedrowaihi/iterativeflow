@@ -1012,4 +1012,28 @@ describe("engine — end to end on the memory backend", () => {
     const b = createMemoryBackend();
     expect(await b.store.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
+
+  it("metrics carry the flow label and duration, so a callback can label without a store read", async () => {
+    const settledCalls: unknown[][] = [];
+    const startedCalls: unknown[][] = [];
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "labelled",
+      version: 3,
+      run: async (ctx) => ctx.step("s", () => 7),
+    });
+    const backend = createMemoryBackend();
+    await driveToSettle(backend, registry([flow]), await submit(backend, flow, {}), {
+      observe: {
+        metrics: {
+          runStarted: (...args) => startedCalls.push(args),
+          runSettled: (...args) => settledCalls.push(args),
+        },
+      },
+    });
+
+    expect(startedCalls[0][1]).toEqual({ name: "labelled", version: 3 });
+    expect(settledCalls[0][1]).toBe("done");
+    expect(settledCalls[0][2]).toEqual({ name: "labelled", version: 3 });
+    expect((settledCalls[0][3] as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
+  });
 });

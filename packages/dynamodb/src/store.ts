@@ -2,6 +2,7 @@ import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   BatchGetCommand,
   BatchWriteCommand,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -59,6 +60,17 @@ const TERMINAL_VALUES: Record<string, string> = Object.fromEntries(
   TERMINAL_STATUSES.map((s, i) => [`:t${i}`, s]),
 );
 const NOT_TERMINAL = `NOT (#status IN (${Object.keys(TERMINAL_VALUES).join(", ")}))`;
+
+const mapCronItem = (c: CronItem): CronRow => ({
+  name: c.cronName,
+  schedule: c.schedule,
+  flowName: c.flowName,
+  flowVersion: c.flowVersion,
+  input: dec(c.cronInput),
+  overlap: c.overlap,
+  nextRunAt: new Date(c.nextRunAt),
+  lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
+});
 
 /** @internal */
 export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => {
@@ -746,16 +758,23 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       return items
         .sort((a, b) => a.nextRunAt - b.nextRunAt)
         .slice(0, limit)
-        .map((c): CronRow => ({
-          name: c.cronName,
-          schedule: c.schedule,
-          flowName: c.flowName,
-          flowVersion: c.flowVersion,
-          input: dec(c.cronInput),
-          overlap: c.overlap,
-          nextRunAt: new Date(c.nextRunAt),
-          lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
-        }));
+        .map(mapCronItem);
+    },
+
+    async listCrons() {
+      const items = await scanType<CronItem>("cron");
+      return items.sort((a, b) => a.cronName.localeCompare(b.cronName)).map(mapCronItem);
+    },
+
+    async removeCron(name) {
+      const res = await send<{ Attributes?: CronItem }>(
+        new DeleteCommand({
+          TableName: table,
+          Key: key.cron(name),
+          ReturnValues: "ALL_OLD",
+        }),
+      );
+      return res.Attributes !== undefined;
     },
 
     async dueCronCount(now, names) {

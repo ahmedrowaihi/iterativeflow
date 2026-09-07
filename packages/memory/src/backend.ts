@@ -349,6 +349,16 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         .map((c) => structuredClone(c));
     },
 
+    async listCrons() {
+      return [...crons.values()]
+        .map((c) => structuredClone(c))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+
+    async removeCron(name) {
+      return crons.delete(name);
+    },
+
     async dueCronCount(now, names) {
       const wanted = names && new Set(names);
       let n = 0;

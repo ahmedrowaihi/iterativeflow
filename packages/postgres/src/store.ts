@@ -1,4 +1,5 @@
 import {
+  type CronRow,
   type IdGen,
   type PurgeFilter,
   type RunSpec,
@@ -18,6 +19,28 @@ import { type RunRecord, type StepRecord, j, mapRun, mapStep } from "#codec";
 import { type Tables, tables } from "#schema";
 import { applyOutbox, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
+
+interface CronRow_ {
+  name: string;
+  schedule: string;
+  flow_name: string;
+  flow_version: number;
+  input: unknown;
+  overlap: "allow" | "skip";
+  next_run_at: Date;
+  last_run_at: Date | null;
+}
+
+const mapCronRow = (r: CronRow_): CronRow => ({
+  name: r.name,
+  schedule: r.schedule,
+  flowName: r.flow_name,
+  flowVersion: r.flow_version,
+  input: r.input,
+  overlap: r.overlap,
+  nextRunAt: r.next_run_at,
+  lastRunAt: r.last_run_at ?? undefined,
+});
 
 const sqlTuple = (statuses: readonly string[]): string =>
   `(${statuses.map((s) => `'${s}'`).join(",")})`;
@@ -387,16 +410,17 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         `SELECT * FROM ${t.cron} WHERE next_run_at <= $1::timestamptz ORDER BY next_run_at LIMIT $2`,
         [now, limit],
       );
-      return rows.map((r) => ({
-        name: r.name,
-        schedule: r.schedule,
-        flowName: r.flow_name,
-        flowVersion: r.flow_version,
-        input: r.input,
-        overlap: r.overlap,
-        nextRunAt: r.next_run_at,
-        lastRunAt: r.last_run_at ?? undefined,
-      }));
+      return rows.map(mapCronRow);
+    },
+
+    async listCrons() {
+      const rows = await sql.query<CronRow_>(`SELECT * FROM ${t.cron} ORDER BY name`);
+      return rows.map(mapCronRow);
+    },
+
+    async removeCron(name) {
+      const rows = await sql.query(`DELETE FROM ${t.cron} WHERE name = $1 RETURNING 1`, [name]);
+      return rows.length > 0;
     },
 
     async dueCronCount(now, names) {

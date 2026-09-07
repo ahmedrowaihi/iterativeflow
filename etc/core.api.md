@@ -124,7 +124,7 @@ export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronS
 ## engine-<hash>.d.mts
 
 ```ts
-import { A as DriftPolicy, B as RunStatus, C as Lease, F as RunFilter, I as RunPage, M as Page, N as PurgeFilter, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, c as ObserveOpts, j as FlowError, p as Backend, t as IdGen } from "./id-<hash>.mjs";
+import { A as DriftPolicy, B as RunStatus, C as Lease, D as CronRow, F as RunFilter, I as RunPage, M as Page, N as PurgeFilter, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, c as ObserveOpts, j as FlowError, p as Backend, t as IdGen } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -678,6 +678,11 @@ interface Engine {
    */
   pendingWork(names?: readonly string[]): Promise<number>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
+  /** Every registered cron. A cron deleted from source keeps firing from its row until
+   *  {@link Engine.removeCron} takes it out. */
+  listCrons(): Promise<readonly CronRow[]>;
+  /** Remove a cron; `false` if it wasn't registered. */
+  removeCron(name: string): Promise<boolean>;
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;
   /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
@@ -1268,6 +1273,12 @@ interface Store {
   /** Register or update a cron. Keeps the existing `nextRunAt` when the cron already exists, so a
    *  redeploy re-registering it doesn't reset the schedule timing. */
   upsertCron(spec: CronSpec): Promise<void>;
+  /** Every registered cron, by name. The ops read surface — without it a cron deleted from source
+   *  is invisible, and keeps firing from the row it left behind. */
+  listCrons(): Promise<readonly CronRow[]>;
+  /** Remove a cron. Returns whether a row was there. Deregistering in code is not enough: the row
+   *  outlives it, so this is how a retired schedule actually stops. */
+  removeCron(name: string): Promise<boolean>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
   /** Count crons due at/before `now` (the due-cron contribution to the autoscaling backlog: a due
@@ -1322,12 +1333,23 @@ interface Tracer {
   span(span: Span): void;
 }
 /** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
+/** Which flow a metric belongs to, so a callback can label without reading the store. */
+interface FlowLabel {
+  name: string;
+  version: number;
+}
 interface Metrics {
-  runStarted?(runId: string): void;
-  runSettled?(runId: string, status: "done" | "failed"): void;
-  runSuspended?(runId: string, status: SuspendStatus): void;
+  runStarted?(runId: string, flow: FlowLabel): void;
+  /** `durationMs` is wall-clock from the run's first dispatch, absent if it was never recorded. */
+  runSettled?(runId: string, status: "done" | "failed", flow: FlowLabel, extra?: {
+    durationMs?: number;
+    errorCode?: string;
+  }): void;
+  runSuspended?(runId: string, status: SuspendStatus, flow: FlowLabel): void;
   redeployParked?(runId: string, reason: "unknown_flow" | "flow_drift"): void;
-  stepFinished?(runId: string, cursorKey: string): void;
+  stepFinished?(runId: string, cursorKey: string, extra?: {
+    durationMs?: number;
+  }): void;
   tickError?(err: unknown): void;
 }
 /** Observability wiring passed to the worker. All optional — omit for zero overhead. */

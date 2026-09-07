@@ -57,12 +57,24 @@ export interface Tracer {
 }
 
 /** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. */
+/** Which flow a metric belongs to, so a callback can label without reading the store. */
+export interface FlowLabel {
+  name: string;
+  version: number;
+}
+
 export interface Metrics {
-  runStarted?(runId: string): void;
-  runSettled?(runId: string, status: "done" | "failed"): void;
-  runSuspended?(runId: string, status: SuspendStatus): void;
+  runStarted?(runId: string, flow: FlowLabel): void;
+  /** `durationMs` is wall-clock from the run's first dispatch, absent if it was never recorded. */
+  runSettled?(
+    runId: string,
+    status: "done" | "failed",
+    flow: FlowLabel,
+    extra?: { durationMs?: number; errorCode?: string },
+  ): void;
+  runSuspended?(runId: string, status: SuspendStatus, flow: FlowLabel): void;
   redeployParked?(runId: string, reason: "unknown_flow" | "flow_drift"): void;
-  stepFinished?(runId: string, cursorKey: string): void;
+  stepFinished?(runId: string, cursorKey: string, extra?: { durationMs?: number }): void;
   tickError?(err: unknown): void;
 }
 

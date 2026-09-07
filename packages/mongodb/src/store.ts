@@ -460,6 +460,16 @@ export const createMongoStore = (
       return docs.map(mapCron);
     },
 
+    async listCrons() {
+      const docs = await crons.find({}).sort({ _id: 1 }).toArray();
+      return docs.map(mapCron);
+    },
+
+    async removeCron(name) {
+      const res = await crons.deleteOne({ _id: name });
+      return res.deletedCount === 1;
+    },
+
     async dueCronCount(now, names) {
       const q: Filter<CronDoc> = {
         next_run_at: { $lte: now.getTime() },

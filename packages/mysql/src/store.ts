@@ -392,6 +392,16 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       return rows.map(mapCron);
     },
 
+    async listCrons() {
+      const rows = await sql.query<CronRecord>(`SELECT * FROM ${t.cron} ORDER BY name`);
+      return rows.map(mapCron);
+    },
+
+    async removeCron(name) {
+      const res = await sql.exec(`DELETE FROM ${t.cron} WHERE name = ?`, [name]);
+      return res.affectedRows > 0;
+    },
+
     async dueCronCount(now, names) {
       if (names && names.length === 0) return 0;
       const namePredicate = names ? ` AND flow_name IN ${inList(names.length)}` : "";

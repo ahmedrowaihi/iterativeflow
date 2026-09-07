@@ -1,7 +1,15 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { QueueDepth } from "#ports/queue";
-import type { Page, PurgeFilter, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
+import type {
+  CronRow,
+  Page,
+  PurgeFilter,
+  RunFilter,
+  RunPage,
+  RunSnapshot,
+  RunStatus,
+} from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
 import {
@@ -182,6 +190,11 @@ export interface Engine {
   pendingWork(names?: readonly string[]): Promise<number>;
 
   registerCron<I>(def: CronDef<I>): Promise<void>;
+  /** Every registered cron. A cron deleted from source keeps firing from its row until
+   *  {@link Engine.removeCron} takes it out. */
+  listCrons(): Promise<readonly CronRow[]>;
+  /** Remove a cron; `false` if it wasn't registered. */
+  removeCron(name: string): Promise<boolean>;
 
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;
@@ -293,6 +306,8 @@ export const createEngine = (
     },
 
     registerCron: (def) => registerCron(backend, def, clock),
+    listCrons: () => backend.store.listCrons(),
+    removeCron: (name) => backend.store.removeCron(name),
 
     tick: () => tickOnce(backend, reg, tickOpts),
     reconcile: () => reconcile(backend, { limit: tickOpts.batchMax }),

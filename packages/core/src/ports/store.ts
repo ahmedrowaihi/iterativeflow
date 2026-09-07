@@ -178,6 +178,14 @@ export interface Store {
    *  redeploy re-registering it doesn't reset the schedule timing. */
   upsertCron(spec: CronSpec): Promise<void>;
 
+  /** Every registered cron, by name. The ops read surface — without it a cron deleted from source
+   *  is invisible, and keeps firing from the row it left behind. */
+  listCrons(): Promise<readonly CronRow[]>;
+
+  /** Remove a cron. Returns whether a row was there. Deregistering in code is not enough: the row
+   *  outlives it, so this is how a retired schedule actually stops. */
+  removeCron(name: string): Promise<boolean>;
+
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
 

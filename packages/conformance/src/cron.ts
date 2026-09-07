@@ -45,6 +45,18 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       expect(due[0].schedule).toBe("*/5 * * * *");
     });
 
+    it("listCrons returns every registered cron; removeCron stops one firing", async () => {
+      const s = await makeStore();
+      await s.upsertCron({ ...spec, nextRunAt: at(1000) });
+      await s.upsertCron({ ...spec, name: "weekly", nextRunAt: at(2000) });
+
+      expect((await s.listCrons()).map((c) => c.name).sort()).toEqual(["nightly", "weekly"]);
+      expect(await s.removeCron("weekly")).toBe(true);
+      expect(await s.removeCron("weekly")).toBe(false); // already gone
+      expect((await s.listCrons()).map((c) => c.name)).toEqual(["nightly"]);
+      expect((await s.dueCrons(at(2000), 10)).map((c) => c.name)).toEqual(["nightly"]);
+    });
+
     it("advanceCron is a CAS — only the worker matching the expected time wins", async () => {
       const s = await makeStore();
       await s.upsertCron({ ...spec, nextRunAt: at(1000) });

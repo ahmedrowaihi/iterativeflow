@@ -337,7 +337,7 @@ export const makeCtx = ({
     await keepalive?.renew();
     obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
-    obs.metrics.stepFinished?.(runId, key);
+    obs.metrics.stepFinished?.(runId, key, { durationMs: now().getTime() - startedAt.getTime() });
     return stored.result as T;
   };
 

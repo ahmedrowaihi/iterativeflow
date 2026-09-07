@@ -602,6 +602,24 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       });
     },
 
+    async listCrons() {
+      const all = await client.hgetall(keys.crons);
+      return Object.values(all ?? {})
+        .map((raw) => decodeCron(raw))
+        .map((c) => ({
+          ...c,
+          nextRunAt: new Date(c.nextRunAt),
+          lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+
+    async removeCron(name) {
+      const removed = await client.hdel(keys.crons, name);
+      await client.zrem(keys.cronsDue, name);
+      return removed > 0;
+    },
+
     async dueCronCount(now, names) {
       const wanted = names && new Set(names);
       if (!wanted) return client.zcount(keys.cronsDue, "-inf", now.getTime());
