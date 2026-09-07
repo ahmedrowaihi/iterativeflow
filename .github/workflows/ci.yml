@@ -66,6 +66,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
 
+      # Both paths below need a committer identity: the version PR commits, and `changeset publish`
+      # creates ANNOTATED tags (`git tag -m`), which fail without one. A runner has no global
+      # identity, so setting it inside a path-specific step silently loses every release tag.
+      - name: git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: detect pending changesets
         id: changesets
         run: |
@@ -89,8 +97,6 @@ jobs:
       - name: open version PR
         if: steps.changesets.outputs.hasChangesets == 'true'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B changeset-release/main
           pnpm changeset version
           pnpm install --lockfile-only
@@ -104,12 +110,43 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # `published` gates the tag/release steps below: this path also runs on an ordinary main push
+      # with nothing pending, where `changeset publish` is a no-op and there is nothing to tag.
       - name: publish via oidc
+        id: publish
         if: steps.changesets.outputs.hasChangesets == 'false'
-        run: pnpm changeset publish
+        run: |
+          set -eo pipefail
+          pnpm changeset publish | tee "$RUNNER_TEMP/publish.log"
+          if grep -q "New tag:" "$RUNNER_TEMP/publish.log"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
         env:
           NPM_CONFIG_PROVENANCE: "true"
 
-      - name: push tags
-        if: steps.changesets.outputs.hasChangesets == 'false'
-        run: git push --tags
+      # Push exactly the per-package tags this publish created — `--tags` would also re-offer every
+      # historical tag and fail the job on the first one whose local value differs from the remote.
+      - name: push package tags
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          tags=$(git tag --points-at HEAD)
+          [ -n "$tags" ] || { echo "publish reported tags but none exist on HEAD"; exit 1; }
+          echo "$tags" | sed 's|^|refs/tags/|' | xargs git push origin
+
+      # One Release per version — `fixed` bumps every package together, so 12 per-package releases
+      # would say the same thing 12 times. It is anchored on core's own tag rather than a bare
+      # `vX.Y.Z`: the `v*` namespace belongs to the pre-monorepo library, which reached v5.6.0, so a
+      # `v2.3.0` tag both collides with that line and sorts below it.
+      - name: github release
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          version=$(node -p "require('./packages/core/package.json').version")
+          tag="@iterativeflow/core@$version"
+          notes=$(awk -v v="## $version" '$0 == v {f=1; next} f && /^## / {exit} f' packages/core/CHANGELOG.md)
+          # Guarded so re-running a release job is a no-op rather than a failure.
+          gh release view "$tag" >/dev/null 2>&1 \
+            || printf '%s\n' "$notes" | gh release create "$tag" --title "v$version" --verify-tag --notes-file -
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
