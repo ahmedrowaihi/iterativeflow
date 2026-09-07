@@ -1,7 +1,7 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { QueueDepth } from "#ports/queue";
-import type { Page, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
+import type { Page, PurgeFilter, RunFilter, RunPage, RunSnapshot, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
 import {
@@ -24,6 +24,7 @@ import {
   type SweepResult,
   cancelRun,
   prune,
+  purge,
   reconcile,
   result,
   retryRun,
@@ -191,6 +192,13 @@ export interface Engine {
    * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
    */
   prune(olderThanMs: number, limit?: number): Promise<number>;
+  /**
+   * Targeted {@link Engine.prune}: delete terminal runs matching `filter` (age, flow name, flow
+   * version, terminal status), up to `limit` (default 1000). Live runs are never deletable, whatever
+   * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
+   * history. Repeat until it returns `< limit`.
+   */
+  purge(filter: PurgeFilter, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -285,6 +293,7 @@ export const createEngine = (
     reconcile: () => reconcile(backend, { limit: tickOpts.batchMax }),
     prune: (olderThanMs, limit = 1000) =>
       prune(backend, { before: new Date(clock().getTime() - olderThanMs), limit }),
+    purge: (filter, limit = 1000) => purge(backend, { filter, limit }),
     runCrons: () => runDueCrons(backend, clock),
     serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 

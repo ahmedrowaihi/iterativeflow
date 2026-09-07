@@ -83,6 +83,16 @@ no need to hand-roll a wrapper that re-throws as a terminal error. For Postgres,
 errors (bad data, bad SQL, not-null/check violations) and keeps retrying connection drops, statement
 timeouts, deadlocks, serialization failures, and foreign-key/unique races.
 
+**The two layers compose.** `retries` retries inside one claim; the retry policy's `maxAttempts`
+bounds claims. A step that always throws is invoked `(retries + 1) × maxAttempts` times — with
+`retries: 3` and the default `maxAttempts: 10`, that is 40 calls to something that was never going to
+answer. They do not know about each other: exhausting `retries` suspends the run as `retrying`, the
+one suspend that does **not** reset the run's attempt counter, so the next claim starts the step's
+budget over at a higher run attempt. `classify` is what keeps that off the permanent-failure path — a
+`permanent` verdict ends the step and the run at once, with no further claims. `maxAttempts` is not a
+retry budget: it is the dead-letter bound that stops a step which crashes the worker uncatchably
+(OOM, segfault) from re-claiming forever.
+
 When a step throws, the persisted `FlowError` captures `{ code, message, stack, cause }` — and `cause`
 is the flattened `.cause` chain, so a driver that wraps the real error (e.g. a `DrizzleQueryError`
 whose message is a generic `Failed query: rollback` with the pg detail on `.cause`) no longer loses

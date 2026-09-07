@@ -1,5 +1,6 @@
 import {
   type IdGen,
+  type PurgeFilter,
   type RunSpec,
   type RunStatus,
   type StartResult,
@@ -9,6 +10,7 @@ import {
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   orphanedRunsSql,
+  purgeWhereSql,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -22,6 +24,8 @@ const sqlTuple = (statuses: readonly string[]): string =>
 const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
+
+const PG_PURGE = { placeholder: (n: number) => `$${n}`, time: (at: Date) => at };
 
 /** @internal */
 export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
@@ -84,6 +88,31 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       ],
     );
     return { runId, created: true, status: "pending" };
+  };
+
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const q = purgeWhereSql(filter, PG_PURGE);
+    if (!q) return 0;
+    const params = [...q.params, limit];
+    return sql.tx(async (tx) => {
+      const ids = (
+        await tx.query<{ id: string }>(
+          `SELECT id FROM ${t.run}
+             WHERE ${q.where}
+             ORDER BY created_at LIMIT $${params.length}`,
+          params,
+        )
+      ).map((r) => r.id);
+      if (ids.length === 0) return 0;
+      // step/signal FK the run; event/job/timer don't — delete all before the run itself.
+      await tx.query(`DELETE FROM ${t.step} WHERE run_id = ANY($1)`, [ids]);
+      await tx.query(`DELETE FROM ${t.signal} WHERE run_id = ANY($1)`, [ids]);
+      await tx.query(`DELETE FROM ${t.event} WHERE run_id = ANY($1)`, [ids]);
+      await tx.query(`DELETE FROM ${t.job} WHERE run_id = ANY($1)`, [ids]);
+      await tx.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1)`, [ids]);
+      await tx.query(`DELETE FROM ${t.run} WHERE id = ANY($1)`, [ids]);
+      return ids.length;
+    });
   };
 
   return {
@@ -294,27 +323,9 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       return rows.map((r) => r.id);
     },
 
-    deleteRunsOlderThan(before, limit) {
-      return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query<{ id: string }>(
-            `SELECT id FROM ${t.run}
-             WHERE status IN ${TERMINAL} AND created_at < $1
-             ORDER BY created_at LIMIT $2`,
-            [before, limit],
-          )
-        ).map((r) => r.id);
-        if (ids.length === 0) return 0;
-        // step/signal FK the run; event/job/timer don't — delete all before the run itself.
-        await tx.query(`DELETE FROM ${t.step} WHERE run_id = ANY($1)`, [ids]);
-        await tx.query(`DELETE FROM ${t.signal} WHERE run_id = ANY($1)`, [ids]);
-        await tx.query(`DELETE FROM ${t.event} WHERE run_id = ANY($1)`, [ids]);
-        await tx.query(`DELETE FROM ${t.job} WHERE run_id = ANY($1)`, [ids]);
-        await tx.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1)`, [ids]);
-        await tx.query(`DELETE FROM ${t.run} WHERE id = ANY($1)`, [ids]);
-        return ids.length;
-      });
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     retryRun(runId) {
       return sql.tx(async (tx) => {

@@ -8,6 +8,7 @@ export type {
   DeliveredSignal,
   FlowError,
   Page,
+  PurgeFilter,
   RunFilter,
   RunPage,
   RunRow,
@@ -15,6 +16,7 @@ export type {
   RunStatus,
   StepOutcome,
   StepStatus,
+  TerminalStatus,
 } from "#types";
 export { RUN_STATUSES } from "#types";
 export { isRunStatus } from "#status";
@@ -60,6 +62,7 @@ export {
   result,
   reconcile,
   prune,
+  purge,
   drainTimers,
   tickOnce,
   serverlessTick,

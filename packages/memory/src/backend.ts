@@ -20,6 +20,7 @@ import {
   isOrphaned,
   isTerminal,
   newId,
+  purgeMatcher,
   queueDepthOf,
   statusList,
   zeroRunStats,
@@ -279,10 +280,10 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         .map((r) => r.id);
     },
 
-    async deleteRunsOlderThan(before, limit) {
-      const cutoff = before.getTime();
+    async deleteRuns(filter, limit) {
+      const matches = purgeMatcher(filter);
       const victims = [...runs.values()]
-        .filter((r) => isTerminal(r.status) && (r.createdAt?.getTime() ?? 0) < cutoff)
+        .filter(matches)
         .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
         .slice(0, limit)
         .map((r) => r.id);
@@ -301,6 +302,8 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       for (const k of signalIdem) if (gone.has(k.slice(0, k.indexOf(" ")))) signalIdem.delete(k);
       return victims.length;
     },
+
+    deleteRunsOlderThan: (before, limit) => store.deleteRuns({ before }, limit),
 
     async retryRun(runId) {
       const row = runs.get(runId);

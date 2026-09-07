@@ -246,6 +246,36 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.deleteRunsOlderThan(after, 1)).toBe(0);
     });
 
+    it("deleteRuns narrows by name/version/status, refuses live runs and an empty filter", async () => {
+      const s = await makeStore();
+      const old = new Date("2020-01-01T00:00:00.000Z");
+      const mk = async (name: string, version: number) =>
+        (await s.startRun({ name, version, input: {}, createdAt: old })).runId;
+      const doomed = await mk("f", 1);
+      const otherVersion = await mk("f", 2);
+      const otherStatus = await mk("f", 1);
+      const otherName = await mk("g", 1);
+      const live = await mk("f", 1);
+      await s.markTerminal(doomed, { status: "canceled" });
+      await s.markTerminal(otherVersion, { status: "canceled" });
+      await s.markTerminal(otherStatus, { status: "done", output: 1 });
+      await s.markTerminal(otherName, { status: "canceled" });
+
+      expect(await s.deleteRuns({ name: "f", version: 1, status: "canceled" }, 100)).toBe(1);
+      expect(await s.loadRunRow(doomed)).toBeUndefined();
+      for (const spared of [otherVersion, otherStatus, otherName, live]) {
+        expect(await s.loadRunRow(spared)).toBeDefined();
+      }
+
+      // an untyped caller asking for a live status deletes nothing — the terminal guard is unconditional
+      expect(
+        await s.deleteRuns({ status: "pending" as unknown as "done", before: new Date() }, 100),
+      ).toBe(0);
+      expect((await s.loadRunRow(live))?.status).toBe("pending");
+
+      await expect(s.deleteRuns({}, 100)).rejects.toThrow();
+    });
+
     it("checkpointStep on an unknown run is rejected (no orphan step)", async () => {
       const s = await makeStore();
       await expect(

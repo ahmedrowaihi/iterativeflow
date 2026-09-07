@@ -18,6 +18,8 @@ export type {
   RunSpec,
   RunStatus,
   RunFilter,
+  PurgeFilter,
+  TerminalStatus,
   Page,
   RunPage,
   StepStatus,
@@ -47,6 +49,8 @@ export {
 } from "#status";
 export { newId } from "#id";
 export type { IdGen } from "#id";
+export { purgeStatuses, purgeMatcher, purgeWhereSql } from "#purge";
+export type { PurgeRun, PurgeSqlOpts } from "#purge";
 export { isOrphaned, orphanedRunsSql } from "#orphan";
 export type { OrphanView, OrphanRun, OrphanSqlOpts } from "#orphan";
 export { assertSqlIdentifier } from "#sql-name";

@@ -2,7 +2,7 @@ import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { EnqueueOpts } from "#ports/queue";
 import { isTerminal } from "#status";
-import type { FlowError, RunStatus } from "#types";
+import type { FlowError, PurgeFilter, RunStatus } from "#types";
 import { type Clock, systemClock } from "#engine/context";
 import { type DriftPolicy, type RetryPolicy, type TickResult, runTick } from "#engine/executor";
 import {
@@ -207,6 +207,17 @@ export const prune = async (
   backend: Backend,
   opts: { before: Date; limit: number },
 ): Promise<number> => backend.store.deleteRunsOlderThan(opts.before, opts.limit);
+
+/**
+ * Targeted retention: the same sweep as {@link prune}, but narrowed by flow name, flow version and
+ * terminal status as well as age — for clearing a specific pile of history (the runs a mass cancel
+ * left behind) instead of waiting for the window. Terminal runs only, whatever the filter says.
+ * Returns how many were deleted; call repeatedly until it returns `< limit`.
+ */
+export const purge = async (
+  backend: Backend,
+  opts: { filter: PurgeFilter; limit: number },
+): Promise<number> => backend.store.deleteRuns(opts.filter, opts.limit);
 
 export interface TickOnceOpts {
   batchMax: number;

@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { A as EnqueueOpts, B as Page, C as Outbox, D as Timer, E as Wakeup, F as CronRow, G as RunSnapshot, H as RunFilter, I as CronSpec, J as StepCheckpoint, K as RunSpec, L as DeliveredSignal, M as Queue, N as QueueDepth, O as TimerDueOpts, P as queueDepthOf, Q as TerminalOutcome, S as EnqueueRequest, T as TimerRequest, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, Z as SuspendStatus, a as RECONCILABLE_STATUSES, b as Store, c as isTerminal, f as EventSink, i as NON_SUCCESS_TERMINAL_STATUSES, j as Lease, k as ClaimOpts, l as statusList, m as FlowEvent, n as newId, o as TERMINAL_STATUSES, p as EventType, q as RunStatus, r as ACTIVE_STATUSES, s as isRunStatus, t as IdGen, u as zeroRunStats, w as SpawnRequest, x as Backend, y as StartResult, z as FlowError } from "./id-<hash>.mjs";
+import { $ as TerminalOutcome, A as Lease, B as PurgeFilter, C as SpawnRequest, D as TimerDueOpts, E as Timer, F as CronSpec, G as RunSnapshot, H as RunFilter, I as DeliveredSignal, J as StepCheckpoint, K as RunSpec, M as QueueDepth, N as queueDepthOf, O as ClaimOpts, P as CronRow, Q as TERMINAL_STATUSES, R as FlowError, S as Outbox, T as Wakeup, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, Z as SuspendStatus, a as RECONCILABLE_STATUSES, b as Backend, c as statusList, d as EventSink, et as TerminalStatus, f as EventType, i as NON_SUCCESS_TERMINAL_STATUSES, j as Queue, k as EnqueueOpts, l as zeroRunStats, n as newId, o as isRunStatus, p as FlowEvent, q as RunStatus, r as ACTIVE_STATUSES, s as isTerminal, t as IdGen, v as StartResult, w as TimerRequest, x as EnqueueRequest, y as Store, z as Page } from "./id-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -16,6 +16,47 @@ import { A as EnqueueOpts, B as Page, C as Outbox, D as Timer, E as Wakeup, F as
  * the store every tick regardless.
  */
 declare const createLocalWakeup: () => Wakeup;
+//#endregion
+//#region src/purge.d.ts
+/**
+ * The statuses a {@link Store.deleteRuns} sweep may delete: `filter.status` intersected with the
+ * terminal set, or every terminal state when unset. The intersection is what makes the terminal-only
+ * guard unconditional — an untyped caller asking for `running` gets it dropped rather than honoured.
+ * An empty result means the filter selects nothing, not everything.
+ *
+ * @throws {Error} when the filter carries no predicate — "delete all history" must be explicit.
+ */
+declare const purgeStatuses: (filter: PurgeFilter) => readonly TerminalStatus[];
+/** The minimal run shape a purge reads — satisfied by `RunRow` and by a backend's raw row. */
+interface PurgeRun {
+  name: string;
+  version: number;
+  status: RunStatus;
+  createdAt?: Date;
+}
+/**
+ * The row predicate for the scanning backends (memory/Redis/DynamoDB), built once per sweep so the
+ * status set and cutoff aren't recomputed per row. The SQL backends express the same predicate as
+ * {@link purgeWhereSql} — single source, so a new purge predicate lands on both sides at once.
+ */
+declare const purgeMatcher: (filter: PurgeFilter) => ((run: PurgeRun) => boolean);
+/** Dialect specifics for {@link purgeWhereSql}. */
+interface PurgeSqlOpts {
+  /** Renders the nth (1-based) bind placeholder: `` (n) => `$${n}` `` for Postgres, `() => "?"` else. */
+  placeholder: (n: number) => string;
+  /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
+  time: (at: Date) => unknown;
+}
+/**
+ * The SQL form of {@link purgeMatcher}: the `WHERE` body and its binds for the run-selecting half of
+ * a purge. `undefined` when the filter selects no terminal status at all — the caller deletes nothing
+ * rather than emitting an empty `IN ()`. Binds are numbered from 1, so a trailing `LIMIT` takes
+ * `placeholder(params.length + 1)`.
+ */
+declare const purgeWhereSql: (filter: PurgeFilter, o: PurgeSqlOpts) => {
+  where: string;
+  params: unknown[];
+} | undefined;
 //#endregion
 //#region src/orphan.d.ts
 /** The minimal run shape the orphan check reads — satisfied by both `RunRow` and a backend's raw row. */
@@ -72,7 +113,7 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
  */
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, queueDepthOf, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, statusList, zeroRunStats };
 ```
 
 ## id-<hash>.d.mts
@@ -82,6 +123,10 @@ export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronS
 /** The canonical run states, in lifecycle order. `RunStatus` is derived from this — one source. */
 declare const RUN_STATUSES: readonly ["pending", "running", "sleeping", "awaiting_signal", "awaiting_child", "retrying", "done", "failed", "canceled"];
 type RunStatus = (typeof RUN_STATUSES)[number];
+/** The terminal run states — the one place they're written; every subset derives from it. */
+declare const TERMINAL_STATUSES: readonly ["done", "failed", "canceled"];
+/** The settled states — a run in one of these never runs again. */
+type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
 /** The non-terminal states a running run can be parked in, each with its own wake path. */
 type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
 /** What a run does when its flow body drifted under it: park (recoverable) or fail (terminal). */
@@ -174,6 +219,17 @@ interface RunFilter {
   status?: RunStatus | readonly RunStatus[];
   name?: string;
   tag?: string;
+}
+/**
+ * Filter for {@link Store.deleteRuns}. At least one predicate must be set — an unfiltered purge
+ * is "delete all history" and has to be spelled out as `{ before: new Date() }`. `status` narrows
+ * within the terminal states and can never widen past them: a live run is not deletable.
+ */
+interface PurgeFilter {
+  before?: Date;
+  name?: string;
+  version?: number;
+  status?: TerminalStatus | readonly TerminalStatus[];
 }
 /** A page request — `cursor` is the opaque token returned by the previous page. */
 interface Page {
@@ -590,6 +646,13 @@ interface Store {
    */
   deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
   /**
+   * The same sweep, narrowed: delete up to `limit` TERMINAL runs matching `filter` (age, flow name,
+   * flow version, terminal status), with their steps, signals, and events. Clearing the wreckage of a
+   * mass cancel without waiting out the retention window is what this is for. The terminal guard holds
+   * whatever the filter says, so live runs stay untouchable. Throws on a filter with no predicate.
+   */
+  deleteRuns(filter: PurgeFilter, limit: number): Promise<number>;
+  /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no
    * pending timer (stranded by a crash between a state write and its enqueue, or by a lost
    * wakeup). The reconciler re-enqueues them. Returns up to `limit`, oldest first.
@@ -677,12 +740,10 @@ interface ObserveOpts {
 }
 //#endregion
 //#region src/status.d.ts
-/** The terminal run states — the one place they're written; every subset derives from it. */
-declare const TERMINAL_STATUSES: readonly RunStatus[];
 /** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
 declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];
 /** Whether a run has settled and must never be resurrected. Narrows to the terminal subset. */
-declare const isTerminal: (status: RunStatus) => status is "done" | "failed" | "canceled";
+declare const isTerminal: (status: RunStatus) => status is TerminalStatus;
 /** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */
 declare const ACTIVE_STATUSES: readonly RunStatus[];
 /**
@@ -705,13 +766,13 @@ type IdGen = () => string;
  *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { EnqueueOpts as A, Page as B, Outbox as C, Timer as D, Wakeup as E, CronRow as F, RunSnapshot as G, RunFilter as H, CronSpec as I, StepCheckpoint as J, RunSpec as K, DeliveredSignal as L, Queue as M, QueueDepth as N, TimerDueOpts as O, queueDepthOf as P, TerminalOutcome as Q, DriftPolicy as R, EnqueueRequest as S, TimerRequest as T, RunPage as U, RUN_STATUSES as V, RunRow as W, StepStatus as X, StepOutcome as Y, SuspendStatus as Z, Span as _, RECONCILABLE_STATUSES as a, Store as b, isTerminal as c, EventLevel as d, EventSink as f, ObserveOpts as g, Metrics as h, NON_SUCCESS_TERMINAL_STATUSES as i, Lease as j, ClaimOpts as k, statusList as l, FlowEvent as m, newId as n, TERMINAL_STATUSES as o, EventType as p, RunStatus as q, ACTIVE_STATUSES as r, isRunStatus as s, IdGen as t, zeroRunStats as u, Tracer as v, SpawnRequest as w, Backend as x, StartResult as y, FlowError as z };
+export { TerminalOutcome as $, Lease as A, PurgeFilter as B, SpawnRequest as C, TimerDueOpts as D, Timer as E, CronSpec as F, RunSnapshot as G, RunFilter as H, DeliveredSignal as I, StepCheckpoint as J, RunSpec as K, DriftPolicy as L, QueueDepth as M, queueDepthOf as N, ClaimOpts as O, CronRow as P, TERMINAL_STATUSES as Q, FlowError as R, Outbox as S, Wakeup as T, RunPage as U, RUN_STATUSES as V, RunRow as W, StepStatus as X, StepOutcome as Y, SuspendStatus as Z, Tracer as _, RECONCILABLE_STATUSES as a, Backend as b, statusList as c, EventSink as d, TerminalStatus as et, EventType as f, Span as g, ObserveOpts as h, NON_SUCCESS_TERMINAL_STATUSES as i, Queue as j, EnqueueOpts as k, zeroRunStats as l, Metrics as m, newId as n, isRunStatus as o, FlowEvent as p, RunStatus as q, ACTIVE_STATUSES as r, isTerminal as s, IdGen as t, EventLevel as u, StartResult as v, TimerRequest as w, EnqueueRequest as x, Store as y, Page as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { A as EnqueueOpts, B as Page, G as RunSnapshot, H as RunFilter, L as DeliveredSignal, N as QueueDepth, R as DriftPolicy, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, _ as Span, d as EventLevel, f as EventSink, g as ObserveOpts, h as Metrics, j as Lease, m as FlowEvent, n as newId, p as EventType, q as RunStatus, s as isRunStatus, t as IdGen, v as Tracer, x as Backend, z as FlowError } from "./id-<hash>.mjs";
+import { A as Lease, B as PurgeFilter, G as RunSnapshot, H as RunFilter, I as DeliveredSignal, L as DriftPolicy, M as QueueDepth, R as FlowError, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, _ as Tracer, b as Backend, d as EventSink, et as TerminalStatus, f as EventType, g as Span, h as ObserveOpts, k as EnqueueOpts, m as Metrics, n as newId, o as isRunStatus, p as FlowEvent, q as RunStatus, t as IdGen, u as EventLevel, z as Page } from "./id-<hash>.mjs";
 //#region src/engine/signals.d.ts
 /**
  * Control-flow signals thrown by the context to unwind a flow invocation without it being
@@ -1192,6 +1253,16 @@ declare const prune: (backend: Backend, opts: {
   before: Date;
   limit: number;
 }) => Promise<number>;
+/**
+ * Targeted retention: the same sweep as {@link prune}, but narrowed by flow name, flow version and
+ * terminal status as well as age — for clearing a specific pile of history (the runs a mass cancel
+ * left behind) instead of waiting for the window. Terminal runs only, whatever the filter says.
+ * Returns how many were deleted; call repeatedly until it returns `< limit`.
+ */
+declare const purge: (backend: Backend, opts: {
+  filter: PurgeFilter;
+  limit: number;
+}) => Promise<number>;
 interface TickOnceOpts {
   batchMax: number;
   leaseMs: number;
@@ -1363,6 +1434,13 @@ interface Engine {
    * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
    */
   prune(olderThanMs: number, limit?: number): Promise<number>;
+  /**
+   * Targeted {@link Engine.prune}: delete terminal runs matching `filter` (age, flow name, flow
+   * version, terminal status), up to `limit` (default 1000). Live runs are never deletable, whatever
+   * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
+   * history. Repeat until it returns `< limit`.
+   */
+  purge(filter: PurgeFilter, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -1386,5 +1464,5 @@ declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?:
 declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, PollTimeoutError, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```

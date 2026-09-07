@@ -13,6 +13,16 @@ export const RUN_STATUSES = [
 
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+/** The terminal run states — the one place they're written; every subset derives from it. */
+export const TERMINAL_STATUSES = [
+  "done",
+  "failed",
+  "canceled",
+] as const satisfies readonly RunStatus[];
+
+/** The settled states — a run in one of these never runs again. */
+export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
+
 /** The non-terminal states a running run can be parked in, each with its own wake path. */
 export type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
 
@@ -116,6 +126,18 @@ export interface RunFilter {
   status?: RunStatus | readonly RunStatus[];
   name?: string;
   tag?: string;
+}
+
+/**
+ * Filter for {@link Store.deleteRuns}. At least one predicate must be set — an unfiltered purge
+ * is "delete all history" and has to be spelled out as `{ before: new Date() }`. `status` narrows
+ * within the terminal states and can never widen past them: a live run is not deletable.
+ */
+export interface PurgeFilter {
+  before?: Date;
+  name?: string;
+  version?: number;
+  status?: TerminalStatus | readonly TerminalStatus[];
 }
 
 /** A page request — `cursor` is the opaque token returned by the previous page. */

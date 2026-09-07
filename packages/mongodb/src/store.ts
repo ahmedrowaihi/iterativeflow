@@ -3,14 +3,15 @@ import {
   type IdGen,
   type Outbox,
   type OrphanView,
+  type PurgeFilter,
   type RunSpec,
   type StartResult,
   type StepOutcome,
   type Store,
   type SuspendStatus,
-  TERMINAL_STATUSES,
   isOrphaned,
   isTerminal,
+  purgeStatuses,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -133,6 +134,26 @@ export const createMongoStore = (
         throw new Error(`startRun: idempotency collision without a matching run`, { cause: e });
       return { runId: existing._id, created: false, status: existing.status };
     }
+  };
+
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const q: Filter<RunDoc> = {
+      status: { $in: [...purgeStatuses(filter)] },
+      ...(filter.before !== undefined && { created_at: { $lt: filter.before.getTime() } }),
+      ...(filter.name !== undefined && { name: filter.name }),
+      ...(filter.version !== undefined && { version: filter.version }),
+    };
+    const victims = await runs.find(q).sort({ ord: 1 }).limit(limit).toArray();
+    if (victims.length === 0) return 0;
+    const ids = victims.map((r) => r._id);
+    await Promise.all([
+      steps.deleteMany({ run_id: { $in: ids } }),
+      signals.deleteMany({ run_id: { $in: ids } }),
+      jobs.deleteMany({ _id: { $in: ids } }),
+      timers.deleteMany({ _id: { $in: ids } }),
+      runs.deleteMany({ _id: { $in: ids } }),
+    ]);
+    return victims.length;
   };
 
   return {
@@ -315,23 +336,9 @@ export const createMongoStore = (
       return stats;
     },
 
-    async deleteRunsOlderThan(before, limit) {
-      const victims = await runs
-        .find({ status: { $in: [...TERMINAL_STATUSES] }, created_at: { $lt: before.getTime() } })
-        .sort({ ord: 1 })
-        .limit(limit)
-        .toArray();
-      if (victims.length === 0) return 0;
-      const ids = victims.map((r) => r._id);
-      await Promise.all([
-        steps.deleteMany({ run_id: { $in: ids } }),
-        signals.deleteMany({ run_id: { $in: ids } }),
-        jobs.deleteMany({ _id: { $in: ids } }),
-        timers.deleteMany({ _id: { $in: ids } }),
-        runs.deleteMany({ _id: { $in: ids } }),
-      ]);
-      return victims.length;
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async orphanedRuns(limit) {
       const runDocs = await runs.find({}).sort({ ord: 1 }).toArray();

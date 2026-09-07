@@ -20,10 +20,12 @@ import {
   type StartResult,
   type StepOutcome,
   type OrphanView,
+  type PurgeFilter,
   type Store,
   type SuspendStatus,
   TERMINAL_STATUSES,
   isOrphaned,
+  purgeMatcher,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -165,6 +167,49 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         });
       return recover(marker.Item.runId);
     }
+  };
+
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const matches = purgeMatcher(filter);
+    const runs = (await scanType<RunItem>("run"))
+      .filter((r) =>
+        matches({
+          name: r.name,
+          version: r.version,
+          status: r.status,
+          createdAt: r.createdAt ? new Date(r.createdAt) : undefined,
+        }),
+      )
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, limit);
+    if (runs.length === 0) return 0;
+    // A DeleteRequest for a missing key is a no-op, so JOB#/TIMER# can be pushed unconditionally.
+    const partitions = await Promise.all(
+      runs.map((r) =>
+        queryAll<{ pk: string; sk: string }>({
+          TableName: table,
+          KeyConditionExpression: "pk = :pk",
+          ExpressionAttributeValues: { ":pk": key.runPk(r.id) },
+        }),
+      ),
+    );
+    const keys: { pk: string; sk: string }[] = [];
+    runs.forEach((r, i) => {
+      for (const it of partitions[i]) keys.push({ pk: it.pk, sk: it.sk });
+      keys.push(key.job(r.id), key.timer(r.id));
+    });
+    // BatchWriteItem caps at 25/call and may return UnprocessedItems under throttle — drain them.
+    let pending = keys.map((Key) => ({ DeleteRequest: { Key } }));
+    while (pending.length > 0) {
+      const batch = pending.slice(0, 25);
+      pending = pending.slice(25);
+      const res = await send<{ UnprocessedItems?: Record<string, typeof batch> }>(
+        new BatchWriteCommand({ RequestItems: { [table]: batch } }),
+      );
+      const left = res.UnprocessedItems?.[table];
+      if (left?.length) pending.push(...left);
+    }
+    return runs.length;
   };
 
   return {
@@ -619,41 +664,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         .map((r) => r.id);
     },
 
-    async deleteRunsOlderThan(before, limit) {
-      const cutoff = before.toISOString();
-      const runs = (await scanType<RunItem>("run"))
-        .filter((r) => TERMINAL_STATUSES.includes(r.status) && (r.createdAt ?? "") < cutoff)
-        .sort((a, b) => a.seq - b.seq)
-        .slice(0, limit);
-      if (runs.length === 0) return 0;
-      // A DeleteRequest for a missing key is a no-op, so JOB#/TIMER# can be pushed unconditionally.
-      const partitions = await Promise.all(
-        runs.map((r) =>
-          queryAll<{ pk: string; sk: string }>({
-            TableName: table,
-            KeyConditionExpression: "pk = :pk",
-            ExpressionAttributeValues: { ":pk": key.runPk(r.id) },
-          }),
-        ),
-      );
-      const keys: { pk: string; sk: string }[] = [];
-      runs.forEach((r, i) => {
-        for (const it of partitions[i]) keys.push({ pk: it.pk, sk: it.sk });
-        keys.push(key.job(r.id), key.timer(r.id));
-      });
-      // BatchWriteItem caps at 25/call and may return UnprocessedItems under throttle — drain them.
-      let pending = keys.map((Key) => ({ DeleteRequest: { Key } }));
-      while (pending.length > 0) {
-        const batch = pending.slice(0, 25);
-        pending = pending.slice(25);
-        const res = await send<{ UnprocessedItems?: Record<string, typeof batch> }>(
-          new BatchWriteCommand({ RequestItems: { [table]: batch } }),
-        );
-        const left = res.UnprocessedItems?.[table];
-        if (left?.length) pending.push(...left);
-      }
-      return runs.length;
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async retryRun(runId) {
       try {

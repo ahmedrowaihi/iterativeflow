@@ -2,6 +2,7 @@ import type {
   CronRow,
   CronSpec,
   Page,
+  PurgeFilter,
   RunFilter,
   RunPage,
   RunRow,
@@ -146,6 +147,14 @@ export interface Store {
    * children's `parentRunId` dangling, which is harmless — `childrenOf` simply stops finding the parent.
    */
   deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
+
+  /**
+   * The same sweep, narrowed: delete up to `limit` TERMINAL runs matching `filter` (age, flow name,
+   * flow version, terminal status), with their steps, signals, and events. Clearing the wreckage of a
+   * mass cancel without waiting out the retention window is what this is for. The terminal guard holds
+   * whatever the filter says, so live runs stay untouchable. Throws on a filter with no predicate.
+   */
+  deleteRuns(filter: PurgeFilter, limit: number): Promise<number>;
 
   /**
    * Runs that should be on the queue but aren't — non-terminal runs with no live job and no

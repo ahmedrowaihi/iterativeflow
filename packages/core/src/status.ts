@@ -1,7 +1,6 @@
-import { RUN_STATUSES, type RunStatus } from "#types";
+import { RUN_STATUSES, TERMINAL_STATUSES, type RunStatus, type TerminalStatus } from "#types";
 
-/** The terminal run states — the one place they're written; every subset derives from it. */
-export const TERMINAL_STATUSES: readonly RunStatus[] = ["done", "failed", "canceled"];
+export { TERMINAL_STATUSES };
 
 /** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
 export const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[] = TERMINAL_STATUSES.filter(
@@ -9,7 +8,7 @@ export const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[] = TERMINAL_STAT
 );
 
 /** Whether a run has settled and must never be resurrected. Narrows to the terminal subset. */
-export const isTerminal = (status: RunStatus): status is "done" | "failed" | "canceled" =>
+export const isTerminal = (status: RunStatus): status is TerminalStatus =>
   (TERMINAL_STATUSES as readonly string[]).includes(status);
 
 /** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */

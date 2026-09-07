@@ -1,5 +1,6 @@
 import {
   type IdGen,
+  type PurgeFilter,
   type RunSpec,
   type RunStatus,
   type StartResult,
@@ -8,7 +9,9 @@ import {
   NON_SUCCESS_TERMINAL_STATUSES,
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
+  isTerminal,
   orphanedRunsSql,
+  purgeWhereSql,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -32,6 +35,8 @@ const sqlTuple = (statuses: readonly string[]): string =>
 const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
+
+const MS_PURGE = { placeholder: () => "?", time: (at: Date) => at.getTime() };
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
 
@@ -91,6 +96,31 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       ],
     );
     return { runId, created: true, status: "pending" };
+  };
+
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const q = purgeWhereSql(filter, MS_PURGE);
+    if (!q) return 0;
+    const params = [...q.params, limit];
+    return sql.tx(async (tx) => {
+      const ids = (
+        await tx.query<{ id: string }>(
+          `SELECT id FROM ${t.run}
+             WHERE ${q.where}
+             ORDER BY seq LIMIT ?`,
+          params,
+        )
+      ).map((r) => r.id);
+      if (ids.length === 0) return 0;
+      const inIds = inList(ids.length);
+      // step/signal reference the run — delete them before the run itself.
+      await tx.exec(`DELETE FROM ${t.step} WHERE run_id IN ${inIds}`, ids);
+      await tx.exec(`DELETE FROM ${t.signal} WHERE run_id IN ${inIds}`, ids);
+      await tx.exec(`DELETE FROM ${t.job} WHERE run_id IN ${inIds}`, ids);
+      await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
+      await tx.exec(`DELETE FROM ${t.run} WHERE id IN ${inIds}`, ids);
+      return ids.length;
+    });
   };
 
   return {
@@ -177,7 +207,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         );
         if (!cur[0]) throw new Error(`markRunning: run ${runId} not found`);
         const attempts = Number(cur[0].attempts);
-        if (TERMINAL_STATUSES.includes(cur[0].status)) return attempts;
+        if (isTerminal(cur[0].status)) return attempts;
         await tx.exec(
           `UPDATE ${t.run} SET status = 'running', attempts = attempts + 1 WHERE id = ?`,
           [runId],
@@ -304,27 +334,9 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       return rows.map((r) => r.id);
     },
 
-    deleteRunsOlderThan(before, limit) {
-      return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query<{ id: string }>(
-            `SELECT id FROM ${t.run}
-             WHERE status IN ${TERMINAL} AND created_at < ?
-             ORDER BY seq LIMIT ?`,
-            [before.getTime(), limit],
-          )
-        ).map((r) => r.id);
-        if (ids.length === 0) return 0;
-        const inIds = inList(ids.length);
-        // step/signal reference the run — delete them before the run itself.
-        await tx.exec(`DELETE FROM ${t.step} WHERE run_id IN ${inIds}`, ids);
-        await tx.exec(`DELETE FROM ${t.signal} WHERE run_id IN ${inIds}`, ids);
-        await tx.exec(`DELETE FROM ${t.job} WHERE run_id IN ${inIds}`, ids);
-        await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
-        await tx.exec(`DELETE FROM ${t.run} WHERE id IN ${inIds}`, ids);
-        return ids.length;
-      });
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     retryRun(runId) {
       return sql.tx(async (tx) => {

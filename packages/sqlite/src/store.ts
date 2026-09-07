@@ -1,5 +1,6 @@
 import {
   type IdGen,
+  type PurgeFilter,
   type RunSpec,
   type RunStatus,
   type StartResult,
@@ -9,6 +10,7 @@ import {
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   orphanedRunsSql,
+  purgeWhereSql,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -32,6 +34,8 @@ const sqlTuple = (statuses: readonly string[]): string =>
 const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
+
+const MS_PURGE = { placeholder: () => "?", time: (at: Date) => at.getTime() };
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
 
@@ -94,6 +98,31 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       ],
     );
     return { runId, created: true, status: "pending" };
+  };
+
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const q = purgeWhereSql(filter, MS_PURGE);
+    if (!q) return 0;
+    const params = [...q.params, limit];
+    return sql.tx(async (tx) => {
+      const ids = (
+        await tx.query<{ id: string }>(
+          `SELECT id FROM ${t.run}
+             WHERE ${q.where}
+             ORDER BY created_at LIMIT ?`,
+          params,
+        )
+      ).map((r) => r.id);
+      if (ids.length === 0) return 0;
+      const inIds = inList(ids.length);
+      // step/signal reference the run — delete them before the run itself.
+      await tx.query(`DELETE FROM ${t.step} WHERE run_id IN ${inIds}`, ids);
+      await tx.query(`DELETE FROM ${t.signal} WHERE run_id IN ${inIds}`, ids);
+      await tx.query(`DELETE FROM ${t.job} WHERE run_id IN ${inIds}`, ids);
+      await tx.query(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
+      await tx.query(`DELETE FROM ${t.run} WHERE id IN ${inIds}`, ids);
+      return ids.length;
+    });
   };
 
   return {
@@ -305,27 +334,9 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       return rows.map((r) => r.id);
     },
 
-    deleteRunsOlderThan(before, limit) {
-      return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query<{ id: string }>(
-            `SELECT id FROM ${t.run}
-             WHERE status IN ${TERMINAL} AND created_at < ?
-             ORDER BY created_at LIMIT ?`,
-            [before.getTime(), limit],
-          )
-        ).map((r) => r.id);
-        if (ids.length === 0) return 0;
-        const inIds = inList(ids.length);
-        // step/signal reference the run — delete them before the run itself.
-        await tx.query(`DELETE FROM ${t.step} WHERE run_id IN ${inIds}`, ids);
-        await tx.query(`DELETE FROM ${t.signal} WHERE run_id IN ${inIds}`, ids);
-        await tx.query(`DELETE FROM ${t.job} WHERE run_id IN ${inIds}`, ids);
-        await tx.query(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
-        await tx.query(`DELETE FROM ${t.run} WHERE id IN ${inIds}`, ids);
-        return ids.length;
-      });
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     retryRun(runId) {
       return sql.tx(async (tx) => {

@@ -14,9 +14,10 @@ import {
   type TerminalOutcome,
   type OrphanView,
   type Page,
+  type PurgeFilter,
   TERMINAL_STATUSES,
   isOrphaned,
-  isTerminal,
+  purgeMatcher,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -292,6 +293,39 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     return { runId: existingId, created: false, status: row.status };
   };
 
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const matches = purgeMatcher(filter);
+    const ids = await client.zrange(keys.runIndex, 0, -1);
+    if (ids.length === 0) return 0;
+    const pipe = client.pipeline();
+    for (const runId of ids) pipe.hgetall(keys.run(runId));
+    const res = await pipe.exec();
+    const victims: RunRow[] = [];
+    for (let i = 0; i < ids.length && victims.length < limit; i++) {
+      const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+      if (row && matches(row)) victims.push(row);
+    }
+    if (victims.length === 0) return 0;
+    const del = client.pipeline();
+    for (const r of victims) {
+      del.del(
+        keys.run(r.id),
+        keys.steps(r.id),
+        keys.inbox(r.id),
+        keys.job(r.id),
+        keys.children(r.id),
+        keys.sigIdem(r.id),
+      );
+      del.zrem(keys.runIndex, r.id);
+      del.zrem(keys.timers, r.id);
+      if (r.idempotencyKey !== undefined) {
+        del.hdel(keys.idem, idemIdentity(r.name, r.version, r.idempotencyKey));
+      }
+    }
+    await del.exec();
+    return victims.length;
+  };
+
   return {
     startRun: startOne,
 
@@ -516,40 +550,9 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         .map((r) => r.id);
     },
 
-    async deleteRunsOlderThan(before, limit) {
-      const cutoff = before.getTime();
-      const ids = await client.zrange(keys.runIndex, 0, -1);
-      if (ids.length === 0) return 0;
-      const pipe = client.pipeline();
-      for (const runId of ids) pipe.hgetall(keys.run(runId));
-      const res = await pipe.exec();
-      const victims: RunRow[] = [];
-      for (let i = 0; i < ids.length && victims.length < limit; i++) {
-        const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
-        if (row && isTerminal(row.status) && (row.createdAt?.getTime() ?? 0) < cutoff) {
-          victims.push(row);
-        }
-      }
-      if (victims.length === 0) return 0;
-      const del = client.pipeline();
-      for (const r of victims) {
-        del.del(
-          keys.run(r.id),
-          keys.steps(r.id),
-          keys.inbox(r.id),
-          keys.job(r.id),
-          keys.children(r.id),
-          keys.sigIdem(r.id),
-        );
-        del.zrem(keys.runIndex, r.id);
-        del.zrem(keys.timers, r.id);
-        if (r.idempotencyKey !== undefined) {
-          del.hdel(keys.idem, idemIdentity(r.name, r.version, r.idempotencyKey));
-        }
-      }
-      await del.exec();
-      return victims.length;
-    },
+    deleteRuns,
+
+    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async retryRun(runId) {
       const res = await evalLua<number>(
