@@ -4,9 +4,12 @@
 // fails until the snapshot is updated, so the moved contract is visible in review. Run after
 // `npm run build`.
 //
-// Every dist `.d.mts` is included — entry files AND the shared internal chunk (`id-<hash>.d.mts`),
-// because interfaces like `Store` are defined in that chunk, not the entry. Content-hash in chunk
-// names / imports is normalized so a chunk rename alone doesn't churn the snapshot.
+// Every dist `.d.mts` is included — entry files AND the shared internal chunks (`id-<hash>.d.mts`
+// and friends), because interfaces like `Store` are defined in a chunk, not the entry. Content
+// hashes in chunk names / imports are normalized so a rehash alone doesn't churn the snapshot —
+// they change whenever chunk content does, which would otherwise fail CI's `git diff` on `etc`
+// for an entirely private edit. tsdown emits one chunk per shared module group, so the set of
+// chunk basenames grows with the entry list.
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +17,13 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES = ["core", "memory", "postgres", "dynamodb", "redis", "sqlite", "mysql", "mongodb", "durable-objects", "webhooks", "conformance", "dashboard"];
 
-// Neutralize the content-hash in chunk names/imports (any extension): `id-BcSPNTfG.mjs` → `id-<hash>`.
-const normalize = (src) => src.replace(/id-[A-Za-z0-9_-]{6,}/g, "id-<hash>");
+// Neutralize the content hash on any chunk basename, in both filenames and import specifiers:
+// `engine-DWIgM-d7.d.mts` → `engine-<hash>.d.mts`, `from "./id-BcSPNTfG.mjs"` → `from "./id-<hash>.mjs"`.
+// Anchored to a `./`-relative specifier or a whole filename so it can't rewrite ordinary identifiers.
+const CHUNK_IN_IMPORT = /(\.\/)([A-Za-z0-9_$]+)-[A-Za-z0-9_-]{6,}(\.(?:mjs|d\.mts))/g;
+const CHUNK_AS_FILENAME = /^([A-Za-z0-9_$]+)-[A-Za-z0-9_-]{6,}(\.d\.mts)$/;
+const normalize = (src) => src.replace(CHUNK_IN_IMPORT, "$1$2-<hash>$3");
+const normalizeName = (f) => f.replace(CHUNK_AS_FILENAME, "$1-<hash>$2");
 
 const etc = resolve(root, "etc");
 if (!existsSync(etc)) mkdirSync(etc);
@@ -24,7 +32,7 @@ for (const pkg of PACKAGES) {
   const dist = resolve(root, "packages", pkg, "dist");
   const files = readdirSync(dist)
     .filter((f) => f.endsWith(".d.mts"))
-    .map((f) => ({ f, header: normalize(f) }))
+    .map((f) => ({ f, header: normalizeName(f) }))
     .sort((a, b) => a.header.localeCompare(b.header));
   const sections = files.map(
     ({ f, header }) => `## ${header}\n\n\`\`\`ts\n${normalize(readFileSync(resolve(dist, f), "utf8").trim())}\n\`\`\``,

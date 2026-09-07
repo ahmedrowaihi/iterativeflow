@@ -166,6 +166,29 @@ const onboard = builder<{ userId: string }>("onboard", 1)
   .output((acc) => ({ score: acc.survey.score }));
 ```
 
+## Testing a flow that sleeps for days
+
+`@iterativeflow/core/testing` runs the real engine on a virtual clock, so the three-day sleep above
+resolves in a millisecond. Time moves only when you move it, and every jump lands exactly on the next
+durable deadline — no polling, no fake timers, no guessing how far to advance.
+
+```ts
+import { createTestHarness } from "@iterativeflow/core/testing";
+import { createMemoryBackend } from "@iterativeflow/memory";
+
+const t = createTestHarness(createMemoryBackend(), [onboard]);
+
+const handle = await t.engine.submit(onboard, { userId: "u_1" });
+await t.advanceToNextWake(); // runs up to the sleep, then jumps the 3 days
+await t.engine.signal(handle, "survey", { score: 9 });
+
+expect(await t.settle(handle)).toMatchObject({ status: "done", output: { score: 9 } });
+```
+
+`settle` drives a run to its terminal outcome, jumping every sleep and retry backoff on the way; if
+the run parks on something nothing will deliver, it throws naming what it waited on rather than
+hanging. The harness takes any `Backend`, so the same test can run against a real database.
+
 ## Docs
 
 - [Backends](patterns/backends) — per-backend setup, production tuning, and gotchas.

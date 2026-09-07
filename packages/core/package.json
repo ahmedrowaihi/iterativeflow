@@ -23,6 +23,10 @@
     "./backend": {
       "types": "./dist/backend.d.mts",
       "default": "./dist/backend.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "default": "./dist/testing.mjs"
     }
   },
   "publishConfig": {

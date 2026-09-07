@@ -7,11 +7,16 @@ const pkg = (name: string): string => resolve(__dirname, `packages/${name}/src/i
 
 export default defineConfig({
   resolve: {
-    // Ordered: the `/backend` subpath must match before the bare `@iterativeflow/core` prefix.
+    // Ordered: the `/backend` and `/testing` subpaths must match before the bare
+    // `@iterativeflow/core` prefix.
     alias: [
       {
         find: "@iterativeflow/core/backend",
         replacement: resolve(__dirname, "packages/core/src/backend.ts"),
+      },
+      {
+        find: "@iterativeflow/core/testing",
+        replacement: resolve(__dirname, "packages/core/src/testing.ts"),
       },
       { find: "@iterativeflow/core", replacement: pkg("core") },
       { find: "@iterativeflow/conformance", replacement: pkg("conformance") },

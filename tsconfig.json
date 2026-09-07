@@ -18,6 +18,7 @@
     "paths": {
       "@iterativeflow/core": ["./packages/core/src/index.ts"],
       "@iterativeflow/core/backend": ["./packages/core/src/backend.ts"],
+      "@iterativeflow/core/testing": ["./packages/core/src/testing.ts"],
       "@iterativeflow/conformance": ["./packages/conformance/src/index.ts"],
       "@iterativeflow/memory": ["./packages/memory/src/index.ts"],
       "@iterativeflow/postgres": ["./packages/postgres/src/index.ts"],

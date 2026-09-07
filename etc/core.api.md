@@ -5,7 +5,8 @@
 ## backend.d.mts
 
 ```ts
-import { $ as TerminalOutcome, A as Lease, B as PurgeFilter, C as SpawnRequest, D as TimerDueOpts, E as Timer, F as CronSpec, G as RunSnapshot, H as RunFilter, I as DeliveredSignal, J as StepCheckpoint, K as RunSpec, M as QueueDepth, N as queueDepthOf, O as ClaimOpts, P as CronRow, Q as TERMINAL_STATUSES, R as FlowError, S as Outbox, T as Wakeup, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, Z as SuspendStatus, a as RECONCILABLE_STATUSES, b as Backend, c as statusList, d as EventSink, et as TerminalStatus, f as EventType, i as NON_SUCCESS_TERMINAL_STATUSES, j as Queue, k as EnqueueOpts, l as zeroRunStats, n as newId, o as isRunStatus, p as FlowEvent, q as RunStatus, r as ACTIVE_STATUSES, s as isTerminal, t as IdGen, v as StartResult, w as TimerRequest, x as EnqueueRequest, y as Store, z as Page } from "./id-<hash>.mjs";
+import { B as RunStatus, C as Lease, D as CronRow, E as queueDepthOf, F as RunFilter, G as TERMINAL_STATUSES, H as StepOutcome, I as RunPage, K as TerminalOutcome, L as RunRow, M as Page, N as PurgeFilter, O as CronSpec, P as RUN_STATUSES, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, U as StepStatus, V as StepCheckpoint, W as SuspendStatus, _ as TimerRequest, a as EventType, b as TimerDueOpts, d as StartResult, f as Store, g as SpawnRequest, h as Outbox, i as EventSink, j as FlowError, k as DeliveredSignal, m as EnqueueRequest, n as newId, o as FlowEvent, p as Backend, q as TerminalStatus, t as IdGen, v as Wakeup, w as Queue, x as ClaimOpts, y as Timer, z as RunSpec } from "./id-<hash>.mjs";
+import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, o as statusList, r as RECONCILABLE_STATUSES, s as zeroRunStats, t as ACTIVE_STATUSES } from "./status-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -114,6 +115,591 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
 export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, statusList, zeroRunStats };
+```
+
+## engine-<hash>.d.mts
+
+```ts
+import { A as DriftPolicy, B as RunStatus, C as Lease, F as RunFilter, I as RunPage, M as Page, N as PurgeFilter, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, c as ObserveOpts, j as FlowError, p as Backend, t as IdGen } from "./id-<hash>.mjs";
+//#region src/engine/context.d.ts
+/** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
+interface StepArg {
+  /** Aborts when the step times out or its final in-invocation attempt fails. Wire into fetch/etc. */
+  signal: AbortSignal;
+  /** 1-indexed in-invocation attempt number. */
+  attempt: number;
+}
+/** Per-step execution policy. Retries and timeout are within-invocation (fast transient recovery). */
+interface StepPolicy {
+  /** Extra in-invocation attempts on throw before the step's error propagates. Default 0. */
+  retries?: number;
+  /** Delay between those in-invocation retries. Blocks the worker, so keep it small; for long
+   *  durable backoff, let the step throw and use run-level retry. Default 0. */
+  retryDelayMs?: number;
+  /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default. */
+  timeoutMs?: number;
+  /**
+   * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
+   * run) immediately — no in-invocation retries, no run-level retry. `transient` (the default)
+   * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
+   * 4xx/validation errors and retry 5xx/timeouts.
+   */
+  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
+}
+/** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
+type SignalOutcome<T> = {
+  received: true;
+  payload: T;
+} | {
+  received: false;
+};
+/**
+ * The durable context handed to a flow body. Every method is a memoized checkpoint: on the
+ * first invocation it runs and persists; on every replay it returns the persisted result
+ * without re-running. Cursor keys are POSITIONAL (`s0`, `s1`, …) — the deterministic-replay
+ * contract is that a flow issues the same ctx calls in the same order each invocation.
+ */
+interface Ctx<S extends SignalMap = SignalMap> {
+  /** This run's id. */
+  readonly runId: string;
+  /** 1-indexed attempt number of the current invocation (survives crashes). */
+  readonly attempt: number;
+  /**
+   * Run `fn` once and memoize its result. On replay the stored result is returned and `fn`
+   * is NOT re-run. `fn` is at-least-once across a crash BEFORE the checkpoint commits, so
+   * keep its side-effects idempotent; the memo is exactly-once. `policy` adds in-invocation
+   * retries, a timeout, and error classification; `fn` receives an {@link StepArg} (abort
+   * signal + attempt). Durable long backoff is still the run-level retry.
+   */
+  step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, policy?: StepPolicy): Promise<T>;
+  /** Durably park the run for `ms`, releasing the worker. Resumes after the deadline. */
+  sleep(ms: number): Promise<void>;
+  /** Durably park until `date`. */
+  sleepUntil(date: Date): Promise<void>;
+  /**
+   * Spawn `flow(input)` as a child run and return its output. The child is created exactly
+   * once (recorded in the step memo); the parent parks until the child completes, then
+   * resumes with the child's output. A child failure surfaces as a thrown error.
+   */
+  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
+  /**
+   * Fan out: spawn every child in parallel and join, resolving with the outputs in order. Fast-fail
+   * — if any child fails (or is canceled), the parent fails and its still-running siblings are
+   * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
+   */
+  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }): Promise<FlowOutputs<F>>;
+  /**
+   * Durably wait for an external signal named `name` and return its payload. If a matching
+   * signal is already in the inbox it is consumed immediately; otherwise the run parks until
+   * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
+   * payload without re-waiting.
+   *
+   * When the flow declares a `signals` map, only those names compile and each returns its declared
+   * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
+   */
+  signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
+  /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
+   *  `timeoutMs`, else `{ received: false }`. A signal delivered before the timeout commits always
+   *  wins — the deadline decision is consistent with the durable inbox. */
+  signal<K extends SignalName<S>>(name: K, opts: {
+    timeoutMs: number;
+  }): Promise<SignalOutcome<SignalPayload<S, K>>>;
+  /**
+   * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
+   * run. Fire-and-forget and NOT memoized: it is suppressed while the flow replays its already-durable
+   * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
+   * no sink is wired or the observe `level` is `lifecycle`/`off`.
+   */
+  log(message: string, data?: unknown): void;
+}
+/** The clock the executor threads in — injectable for deterministic tests. */
+type Clock = () => Date;
+/** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
+declare const systemClock: Clock;
+//#endregion
+//#region src/engine/flow.d.ts
+/** The Standard Schema calling surface (spec v1) — zod/valibot/arktype schemas all satisfy it. */
+interface InputSchema<I> {
+  readonly "~standard": {
+    readonly version: 1;
+    readonly vendor: string;
+    readonly validate: (value: unknown) => {
+      value: I;
+      issues?: undefined;
+    } | {
+      issues: ReadonlyArray<{
+        message: string;
+      }>;
+    } | Promise<{
+      value: I;
+      issues?: undefined;
+    } | {
+      issues: ReadonlyArray<{
+        message: string;
+      }>;
+    }>;
+  };
+}
+/** A flow's signal contract: signal name → payload type. Threads typed send + await. */
+type SignalMap = Record<string, unknown>;
+/** No declared signals — the default. `ctx.signal(name)` then takes any name, payload `unknown`. */
+type NoSignals = Record<never, never>;
+/**
+ * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
+ * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
+ * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
+ * it. Use {@link signalType} when you want the type without runtime validation.
+ */
+type SignalSchema<T> = InputSchema<T>;
+/**
+ * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: signalType<{ by: string }>() }`.
+ * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
+ * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
+ */
+declare const signalType: <T>() => SignalSchema<T>;
+/** The `signals` field's shape for a given map — one Standard-Schema validator per name. */
+type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalSchema<S[K]>; };
+/** Validate a signal payload against its declared schema. Throws with the collected issues. */
+declare const validateSignal: <T>(schema: SignalSchema<T>, name: string, payload: unknown) => Promise<T>;
+/** Valid signal names for a map: the declared keys, or any string when none are declared. */
+type SignalName<S extends SignalMap> = [keyof S] extends [never] ? string : keyof S & string;
+/** The payload type for signal `K` in map `S` — the declared type, or `unknown` when undeclared. */
+type SignalPayload<S extends SignalMap, K> = K extends keyof S ? S[K] : unknown;
+/**
+ * A durable flow: a named, versioned function whose body is deterministic between the
+ * `ctx` calls (steps, sleeps, invokes). The executor may re-invoke it any number of times
+ * (crash recovery, wake-from-sleep); memoized `ctx` calls short-circuit so only un-run work
+ * executes. Non-determinism BETWEEN ctx calls (Date.now, random, branching on wall-clock)
+ * is the one footgun — do that work inside `ctx.step` so its result is memoized.
+ */
+interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
+  name: string;
+  version: number;
+  run: (ctx: Ctx<S>, input: I) => Promise<O>;
+  /** Optional Standard-Schema validator for the input, checked at submit time. */
+  input?: InputSchema<I>;
+  /**
+   * Declares the signals this flow awaits (name → payload type). Type-only: it drives typed
+   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link signalType}.
+   */
+  signals?: SignalSchemas<S>;
+  /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
+  policy?: FlowPolicy;
+}
+/** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
+interface FlowPolicy {
+  drift?: DriftPolicy;
+  maxFanOut?: number;
+  maxDepth?: number;
+}
+/** Validate `input` against a flow's (or contract's) schema (if any). Throws with the collected issues. */
+declare const validateInput: <I>(flow: {
+  name: string;
+  input?: InputSchema<I>;
+}, input: I) => Promise<I>;
+/** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
+declare const defineFlow: <I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>) => Flow<I, O, S>;
+/**
+ * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
+ * signals, WITHOUT the run body. A caller that doesn't own the implementation (another service, or a
+ * Go worker sharing the database) can `submit`/`result`/`signal` against it with full type-safety;
+ * `submit` accepts a {@link Flow} or a `Contract` interchangeably. The declaring worker still owns
+ * execution and the authoritative input validation.
+ */
+interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
+  name: string;
+  version: number;
+  input?: InputSchema<I>;
+  signals?: SignalSchemas<S>;
+  /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */
+  readonly __out?: O;
+}
+/**
+ * Declare a flow's {@link Contract} for cross-service typed submits. The output type is explicit
+ * (there is no body to infer it from): `defineContract<Input, Output, Signals>({ name, version })`.
+ */
+declare const defineContract: <I = unknown, O = unknown, S extends SignalMap = NoSignals>(contract: Contract<I, O, S>) => Contract<I, O, S>;
+/** A flow of any shape — the registry and executor dispatch flows type-erased. */
+type AnyFlow = Flow<any, any, any>;
+/** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
+interface InvokeSpec<CI = any, CO = any> {
+  flow: Flow<CI, CO, any>;
+  input: CI;
+}
+/**
+ * The `{ flow, input }` shape a fan-out spec must have, with `input` bound to `F`'s OWN input type.
+ * Mapping it over an inferred flow tuple is what lets `ctx.invoke([{ flow: a, input }, ...])`
+ * type-check each input against its own flow instead of accepting `any`.
+ */
+type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? {
+  flow: F;
+  input: CI;
+} : never;
+/** The tuple of child outputs a fan-out over flows `F` resolves to — each flow's output, in order. */
+type FlowOutputs<F extends readonly AnyFlow[]> = { readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never; };
+/** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
+type FlowRegistry = ReadonlyMap<string, AnyFlow>;
+/** Build a {@link FlowRegistry} from a list of flows. */
+declare const registry: (flows: readonly AnyFlow[]) => FlowRegistry;
+//#endregion
+//#region src/engine/executor.d.ts
+/** How a run retries after a (non-terminal) throw. All tunable per deployment. */
+interface RetryPolicy {
+  /** Max invocations before the run is failed terminally. */
+  maxAttempts: number;
+  /** First backoff delay; doubles each attempt up to `maxDelayMs`. */
+  baseDelayMs: number;
+  /** Ceiling for the exponential backoff. */
+  maxDelayMs: number;
+}
+/** The retry policy applied when a deployment injects none. */
+declare const defaultRetry: RetryPolicy;
+/** The outcome status of one tick on a run. */
+type TickStatus = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled";
+/**
+ * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
+ * (and, for a drift, the cursor key it drifted at), so a driver (e.g. a serverless `SweepResult`
+ * consumer) can log or route WHY a run failed / is retrying / drifted without reading the store.
+ */
+interface TickResult {
+  runId: string;
+  status: TickStatus;
+  error?: FlowError;
+  cursorKey?: string;
+}
+interface TickOpts {
+  now?: Clock;
+  retry?: RetryPolicy;
+  id?: IdGen;
+  observe?: ObserveOpts;
+  driftPolicy?: DriftPolicy;
+  leaseMs?: number;
+}
+/**
+ * Execute one claimed run to its next durable boundary (completion, suspend, or retry) and
+ * release the lease. Idempotent across crashes: a re-claim re-invokes the flow and memoized
+ * ctx calls short-circuit, so only un-run work executes again.
+ */
+declare const runTick: (backend: Backend, flows: FlowRegistry, lease: Lease, opts?: TickOpts) => Promise<TickResult>;
+//#endregion
+//#region src/engine/schedule.d.ts
+/** The tag every cron-spawned run carries, so `listRuns({ tag })` finds a cron's history. */
+declare const cronTag: (name: string) => string;
+/** A recurring schedule: fire `flow(input)` on the cron `schedule` (5-field, UTC). */
+interface CronDef<I> {
+  name: string;
+  schedule: string;
+  flow: Flow<I, unknown>;
+  input: I;
+  /** `skip` won't start a new run while a prior run of this cron is still active. Default `allow`. */
+  overlap?: "allow" | "skip";
+}
+/**
+ * Register (or update) a cron. Validates the expression and computes the first fire from `now`.
+ * Re-registering keeps the existing schedule timing (the store preserves `nextRunAt`).
+ */
+declare const registerCron: <I>(backend: Backend, def: CronDef<I>, now?: () => Date) => Promise<void>;
+/**
+ * Fire every due cron once. Each occurrence's run is deduped across a fleet by the occurrence-scoped
+ * idempotency key (`cron:name:fireTime`), and the schedule is advanced by the `advanceCron` CAS so
+ * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
+ * many occurrences this worker advanced.
+ */
+declare const runDueCrons: (backend: Backend, now?: () => Date) => Promise<number>;
+//#endregion
+//#region src/engine/worker.d.ts
+/**
+ * A run id, branded with the flow's output type `O` and signal map `S`. It IS a string at runtime;
+ * the phantom brand lets {@link result} recover the output type and {@link signalRun} type the
+ * signal name + payload. Pass it wherever a `runId` string is expected.
+ */
+type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
+  readonly __out?: O;
+  readonly __sig?: S;
+};
+/** How a `submit` with an existing `idempotencyKey` behaves: reuse the existing run, or throw. */
+type OnDuplicate = "reuse" | "error";
+/** Everything `submit`/`engine.submit` accepts — dedup/tag options plus the enqueue schedule
+ *  ({@link EnqueueOpts}'s `runAt`/`priority`). */
+interface SubmitOpts extends EnqueueOpts {
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
+  onDuplicate?: OnDuplicate;
+}
+/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle.
+ *  Accepts a {@link Flow} or a {@link Contract} — the latter for a caller that doesn't own the body. */
+declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts, now?: Clock) => Promise<RunHandle<O, S>>;
+/** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
+interface SubmitSpec<I = unknown> {
+  flow: Flow<I, any, any>;
+  input: I;
+  idempotencyKey?: string;
+  tags?: readonly string[];
+  runAt?: Date;
+  priority?: number;
+}
+/**
+ * Submit many runs in one atomic batch (the runs are created together via `startManyRuns`),
+ * then enqueue the freshly-created ones. Returns their ids, aligned with `items`. Idempotent
+ * items that already existed are returned but not re-enqueued.
+ */
+declare const submitMany: <I>(backend: Backend, items: readonly SubmitSpec<I>[], now?: Clock) => Promise<string[]>;
+/**
+ * Deliver an external signal to a run and wake it. The delivery + re-enqueue are atomic
+ * (durable); the wakeup is a best-effort latency nudge. Idempotent on `idempotencyKey`.
+ * Returns `false` if the signal was an idempotent duplicate.
+ */
+declare const signalRun: <O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(backend: Backend, handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
+  idempotencyKey?: string;
+}) => Promise<boolean>;
+/** The settled outcome of a run, as returned by {@link result}. `O` is the flow's output type. */
+interface RunResult<O = unknown> {
+  status: Extract<RunStatus, "done" | "failed" | "canceled">;
+  output?: O;
+  error?: FlowError;
+}
+/**
+ * Re-drive a `failed` run, keeping its completed step memos so only the work after the
+ * failure re-runs. A no-op on a run that isn't `failed`. Returns whether it retried.
+ */
+declare const retryRun: (backend: Backend, runId: string) => Promise<boolean>;
+/**
+ * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
+ * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
+ * default — no `LISTEN` pinned. Throws on timeout.
+ */
+declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | string, opts?: {
+  timeoutMs?: number;
+  pollMs?: number;
+  now?: Clock;
+}) => Promise<RunResult<O>>;
+/** Move every due timer back onto the queue. Returns how many were re-enqueued. */
+declare const drainTimers: (backend: Backend, opts: {
+  limit: number;
+  now?: Date;
+}) => Promise<number>;
+/**
+ * Re-enqueue runs stranded off the queue (crash between a state write and its enqueue, or a
+ * lost parent-wake). Idempotent — re-enqueueing a run that is actually fine just makes it
+ * re-check and re-suspend. Run this on a slow interval (or as an internal cron). Returns how
+ * many were re-enqueued.
+ */
+declare const reconcile: (backend: Backend, opts: {
+  limit: number;
+}) => Promise<number>;
+/**
+ * Retention sweep: delete up to `limit` terminal runs (with their steps/signals/events) created
+ * before `before`. Live runs are untouched. Returns how many were deleted. Schedule it on a slow
+ * cadence (a cron, or your own timer) — the window is a deployment policy, so it is not wired into
+ * the worker loop. Call repeatedly until it returns `< limit` to drain a large backlog.
+ */
+declare const prune: (backend: Backend, opts: {
+  before: Date;
+  limit: number;
+}) => Promise<number>;
+/**
+ * Targeted retention: the same sweep as {@link prune}, but narrowed by flow name, flow version and
+ * terminal status as well as age — for clearing a specific pile of history (the runs a mass cancel
+ * left behind) instead of waiting for the window. Terminal runs only, whatever the filter says.
+ * Returns how many were deleted; call repeatedly until it returns `< limit`.
+ */
+declare const purge: (backend: Backend, opts: {
+  filter: PurgeFilter;
+  limit: number;
+}) => Promise<number>;
+interface TickOnceOpts {
+  batchMax: number;
+  leaseMs: number;
+  retry?: RetryPolicy;
+  now?: Clock;
+  id?: IdGen;
+  observe?: ObserveOpts;
+  driftPolicy?: DriftPolicy;
+  names?: readonly string[];
+  pollTimeoutMs?: number;
+}
+/**
+ * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
+ * A resident worker calls this on an interval; a serverless worker calls it per invocation.
+ * Returns the per-run tick results for metrics/tests.
+ */
+declare const tickOnce: (backend: Backend, flows: FlowRegistry, opts: TickOnceOpts) => Promise<TickResult[]>;
+/** What one {@link serverlessTick} advanced — for the invoking cron Lambda's logs/metrics. */
+interface SweepResult {
+  /** Cron occurrences fired. */
+  fired: number;
+  /** Crash-stranded / lost-wake runs re-enqueued. */
+  reconciled: number;
+  /** Runs claimed and advanced this cycle, by outcome. */
+  results: TickResult[];
+  /**
+   * The earliest pending timer due (sleep / retry / cron) after this cycle drained the due ones, or
+   * `null` when nothing is pending. A self-scheduling driver arms a one-shot for exactly this instant
+   * (EventBridge Scheduler / SQS delay / Step Functions wait) instead of polling on a fixed cadence.
+   * Signals and child-joins are NOT here — they wake by a push on submit/signal.
+   */
+  nextWakeAt: Date | null;
+}
+/**
+ * One full engine cycle for a scheduled (serverless) invocation: fire due crons, re-drive
+ * orphans, then drain due timers and claim + execute a batch. Designed to BE an EventBridge /
+ * cron Lambda — no resident loop, no daemon. Every waiting run advances on the next scheduled
+ * firing, so a durable `ctx.sleep` outlives any single invocation's timeout. Prefer
+ * {@link tickOnce} alone for a resident worker that already runs maintenance on its own cadence.
+ *
+ * Set `opts.leaseMs` no larger than the invocation's timeout: a claimed run whose invocation is
+ * killed mid-batch only becomes re-claimable once its lease expires, so an oversized lease strands
+ * the un-executed tail of the batch for that long. Size `opts.batchMax` to what one invocation can
+ * realistically drain within its budget. Crons that fire more occurrences than `batchMax` (or timers
+ * exceeding it) are durable and simply advance over the following invocations. Cron catch-up
+ * coalesces: an occurrence missed while nothing was invoking fires once on the next sweep, not once
+ * per missed slot.
+ */
+declare const serverlessTick: (backend: Backend, flows: FlowRegistry, opts: TickOnceOpts) => Promise<SweepResult>;
+//#endregion
+//#region src/engine/engine.d.ts
+/** A liveness snapshot: dispatch-queue health plus per-status run counts. */
+interface Liveness {
+  queue: QueueDepth;
+  runs: Record<RunStatus, number>;
+}
+/** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
+interface EngineOpts {
+  /** Max runs claimed per worker cycle. Default 20. */
+  batchMax?: number;
+  /**
+   * How long a claimed run's lease is held before another worker may re-claim it. There is no
+   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
+   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
+   * batch tail is stranded until the oversized lease expires. Default 30000.
+   *
+   * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
+   * pool must keep its clocks NTP-synced and size `leaseMs` to absorb the residual skew (≥ longest
+   * step + max skew): a fast-clocked worker that reclaims a peer's still-running run early only
+   * re-executes it (bounded by the exactly-once memo — never data loss), but wastes the work.
+   * Single-worker and `serverlessTick` deployments have no peer, so no skew applies.
+   */
+  leaseMs?: number;
+  /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
+  retry?: RetryPolicy;
+  /** Metrics callbacks + durable event-sink wiring. */
+  observe?: ObserveOpts;
+  /** Id generator for runs and lease tokens. Default {@link newId}. */
+  id?: IdGen;
+  /** Injectable clock for deterministic tests. Defaults to the wall clock. */
+  now?: Clock;
+  /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
+  maxPayloadBytes?: number;
+  /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
+  driftPolicy?: DriftPolicy;
+  /**
+   * Wall-clock bound (ms) on each cycle's DB poll (drain + claim), so a black-holed connection
+   * can't silently freeze the resident loop on a dead socket — it rejects, gets logged, and
+   * re-polls on a fresh pooled connection. Bounds the poll only, never step execution. Default
+   * 30000; set `0` to disable (e.g. an in-memory backend that never hangs).
+   */
+  pollTimeoutMs?: number;
+}
+/** Options for the resident worker loop. */
+interface RunLoopOpts {
+  /** Claim-cycle cadence (ms) when there's work — the busy/floor interval. Default 200. */
+  tickMs?: number;
+  /**
+   * Idle backoff ceiling (ms). With no work, the claim interval grows geometrically from `tickMs`
+   * toward this, so an idle worker stops hammering the DB; it snaps back to `tickMs` the moment a
+   * claim returns work (and a full batch re-claims immediately). Default `tickMs × 8`. A push notify
+   * interrupts the wait regardless, so raising this is free when a listener is wired.
+   */
+  maxIdleTickMs?: number;
+  /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
+  maintenanceMs?: number;
+  /**
+   * Override the dispatch-push waiter. By default the loop uses the backend's
+   * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
+   * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
+   */
+  waitForWork?: (timeoutMs: number) => Promise<void>;
+}
+/**
+ * The cohesive engine: one object bundling submission, run control, queries, cron, and the
+ * worker loop over a single {@link Backend} + flow registry. This is the public surface most
+ * apps use; the free functions it wraps stay available for fine-grained control.
+ */
+interface Engine {
+  readonly backend: Backend;
+  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
+  submitMany<I>(items: readonly SubmitSpec<I>[]): Promise<string[]>;
+  signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
+    idempotencyKey?: string;
+  }): Promise<boolean>;
+  cancel(runId: string): Promise<void>;
+  retry(runId: string): Promise<boolean>;
+  result<O = unknown>(runId: RunHandle<O> | string, opts?: {
+    timeoutMs?: number;
+    pollMs?: number;
+  }): Promise<RunResult<O>>;
+  /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
+  status(runId: string): Promise<RunSnapshot | undefined>;
+  listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
+  /** Count of runs per status — the overview/health snapshot. */
+  health(): Promise<Record<RunStatus, number>>;
+  /**
+   * Liveness probe for a k8s/readiness check: the dispatch backlog + oldest-claimable age (rising ⇒
+   * workers can't keep up or are down) alongside the per-status run counts. Read-only.
+   */
+  liveness(): Promise<Liveness>;
+  /**
+   * Probe the backend; throw a clear error if the schema is missing or unreachable (unapplied
+   * `applySchema`, or the wrong database). Call it at startup to fail a readiness probe cleanly
+   * instead of looping on query errors. Checks that the schema responds, not that it matches a version.
+   */
+  check(): Promise<void>;
+  /**
+   * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
+   * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
+   * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
+   */
+  nextWakeAt(): Promise<Date | null>;
+  /**
+   * The autoscaling backlog as of now — claimable jobs + due timers + due crons — as one count.
+   * The number a KEDA `metrics-api` scaler (or a self-terminating serverless loop) reads: counting
+   * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
+   * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
+   */
+  pendingWork(names?: readonly string[]): Promise<number>;
+  registerCron<I>(def: CronDef<I>): Promise<void>;
+  /** One worker cycle: drain due timers, then claim + execute a batch. */
+  tick(): Promise<TickResult[]>;
+  /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
+  reconcile(): Promise<number>;
+  /**
+   * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
+   * (default 1000). Returns how many were deleted. Schedule this yourself — retention window is a
+   * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
+   */
+  prune(olderThanMs: number, limit?: number): Promise<number>;
+  /**
+   * Targeted {@link Engine.prune}: delete terminal runs matching `filter` (age, flow name, flow
+   * version, terminal status), up to `limit` (default 1000). Live runs are never deletable, whatever
+   * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
+   * history. Repeat until it returns `< limit`.
+   */
+  purge(filter: PurgeFilter, limit?: number): Promise<number>;
+  /** Fire every due cron once. */
+  runCrons(): Promise<number>;
+  /**
+   * One full cycle for a scheduled invocation (crons + reconcile + drain + claim) — call this
+   * from an EventBridge / cron Lambda. No resident process; every waiting run advances on the
+   * next firing, so a durable `ctx.sleep` outlives any invocation timeout.
+   */
+  serverlessTick(): Promise<SweepResult>;
+  /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
+  run(opts?: RunLoopOpts): () => Promise<void>;
+}
+declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?: EngineOpts) => Engine;
+//#endregion
+export { Clock as $, TickResult as A, InputSchema as B, tickOnce as C, runDueCrons as D, registerCron as E, Contract as F, SignalSchema as G, InvokeSpecFor as H, Flow as I, defineFlow as J, SignalSchemas as K, FlowOutputs as L, defaultRetry as M, runTick as N, RetryPolicy as O, AnyFlow as P, validateSignal as Q, FlowPolicy as R, submitMany as S, cronTag as T, NoSignals as U, InvokeSpec as V, SignalMap as W, signalType as X, registry as Y, validateInput as Z, result as _, createEngine as a, signalRun as b, RunResult as c, SweepResult as d, Ctx as et, TickOnceOpts as f, reconcile as g, purge as h, RunLoopOpts as i, TickStatus as j, TickOpts as k, SubmitOpts as l, prune as m, EngineOpts as n, StepPolicy as nt, OnDuplicate as o, drainTimers as p, defineContract as q, Liveness as r, systemClock as rt, RunHandle as s, Engine as t, StepArg as tt, SubmitSpec as u, retryRun as v, CronDef as w, submit as x, serverlessTick as y, FlowRegistry as z };
 ```
 
 ## id-<hash>.d.mts
@@ -743,26 +1329,6 @@ interface ObserveOpts {
   tracer?: Tracer;
 }
 //#endregion
-//#region src/status.d.ts
-/** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
-declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];
-/** Whether a run has settled and must never be resurrected. Narrows to the terminal subset. */
-declare const isTerminal: (status: RunStatus) => status is TerminalStatus;
-/** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */
-declare const ACTIVE_STATUSES: readonly RunStatus[];
-/**
- * States the reconciler re-drives when a run is off the queue with no timer: the actively
- * progressing ones. DERIVED = active minus the states that legitimately wait on an external
- * event (a signal or a child), which have no queue/timer of their own.
- */
-declare const RECONCILABLE_STATUSES: readonly RunStatus[];
-/** Type guard for an untrusted string (query params, external input). */
-declare const isRunStatus: (s: string) => s is RunStatus;
-/** A fresh all-zero per-status counter — completeness is enforced by `Record<RunStatus, …>`. */
-declare const zeroRunStats: () => Record<RunStatus, number>;
-/** Normalize a `RunFilter.status` (one, several, or none) to an array — or `undefined`. */
-declare const statusList: (status?: RunStatus | readonly RunStatus[]) => RunStatus[] | undefined;
-//#endregion
 //#region src/id.d.ts
 /** Generates a fresh run/child id. Injectable so the runtime can supply ULIDs, KSUIDs, etc. */
 type IdGen = () => string;
@@ -770,13 +1336,15 @@ type IdGen = () => string;
  *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { TerminalOutcome as $, Lease as A, PurgeFilter as B, SpawnRequest as C, TimerDueOpts as D, Timer as E, CronSpec as F, RunSnapshot as G, RunFilter as H, DeliveredSignal as I, StepCheckpoint as J, RunSpec as K, DriftPolicy as L, QueueDepth as M, queueDepthOf as N, ClaimOpts as O, CronRow as P, TERMINAL_STATUSES as Q, FlowError as R, Outbox as S, Wakeup as T, RunPage as U, RUN_STATUSES as V, RunRow as W, StepStatus as X, StepOutcome as Y, SuspendStatus as Z, Tracer as _, RECONCILABLE_STATUSES as a, Backend as b, statusList as c, EventSink as d, TerminalStatus as et, EventType as f, Span as g, ObserveOpts as h, NON_SUCCESS_TERMINAL_STATUSES as i, Queue as j, EnqueueOpts as k, zeroRunStats as l, Metrics as m, newId as n, isRunStatus as o, FlowEvent as p, RunStatus as q, ACTIVE_STATUSES as r, isTerminal as s, IdGen as t, EventLevel as u, StartResult as v, TimerRequest as w, EnqueueRequest as x, Store as y, Page as z };
+export { DriftPolicy as A, RunStatus as B, Lease as C, CronRow as D, queueDepthOf as E, RunFilter as F, TERMINAL_STATUSES as G, StepOutcome as H, RunPage as I, TerminalOutcome as K, RunRow as L, Page as M, PurgeFilter as N, CronSpec as O, RUN_STATUSES as P, RunSnapshot as R, EnqueueOpts as S, QueueDepth as T, StepStatus as U, StepCheckpoint as V, SuspendStatus as W, TimerRequest as _, EventType as a, TimerDueOpts as b, ObserveOpts as c, StartResult as d, Store as f, SpawnRequest as g, Outbox as h, EventSink as i, FlowError as j, DeliveredSignal as k, Span as l, EnqueueRequest as m, newId as n, FlowEvent as o, Backend as p, TerminalStatus as q, EventLevel as r, Metrics as s, IdGen as t, Tracer as u, Wakeup as v, Queue as w, ClaimOpts as x, Timer as y, RunSpec as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { A as Lease, B as PurgeFilter, G as RunSnapshot, H as RunFilter, I as DeliveredSignal, L as DriftPolicy, M as QueueDepth, R as FlowError, U as RunPage, V as RUN_STATUSES, W as RunRow, X as StepStatus, Y as StepOutcome, _ as Tracer, b as Backend, d as EventSink, et as TerminalStatus, f as EventType, g as Span, h as ObserveOpts, k as EnqueueOpts, m as Metrics, n as newId, o as isRunStatus, p as FlowEvent, q as RunStatus, t as IdGen, u as EventLevel, z as Page } from "./id-<hash>.mjs";
+import { A as DriftPolicy, B as RunStatus, F as RunFilter, H as StepOutcome, I as RunPage, L as RunRow, M as Page, N as PurgeFilter, P as RUN_STATUSES, R as RunSnapshot, T as QueueDepth, U as StepStatus, a as EventType, c as ObserveOpts, i as EventSink, j as FlowError, k as DeliveredSignal, l as Span, n as newId, o as FlowEvent, p as Backend, q as TerminalStatus, r as EventLevel, s as Metrics, t as IdGen, u as Tracer } from "./id-<hash>.mjs";
+import { i as isRunStatus } from "./status-<hash>.mjs";
+import { $ as Clock, A as TickResult, B as InputSchema, C as tickOnce, D as runDueCrons, E as registerCron, F as Contract, G as SignalSchema, H as InvokeSpecFor, I as Flow, J as defineFlow, K as SignalSchemas, L as FlowOutputs, M as defaultRetry, N as runTick, O as RetryPolicy, P as AnyFlow, Q as validateSignal, R as FlowPolicy, S as submitMany, T as cronTag, U as NoSignals, V as InvokeSpec, W as SignalMap, X as signalType, Y as registry, Z as validateInput, _ as result, a as createEngine, b as signalRun, c as RunResult, d as SweepResult, et as Ctx, f as TickOnceOpts, g as reconcile, h as purge, i as RunLoopOpts, j as TickStatus, k as TickOpts, l as SubmitOpts, m as prune, n as EngineOpts, nt as StepPolicy, o as OnDuplicate, p as drainTimers, q as defineContract, r as Liveness, rt as systemClock, s as RunHandle, t as Engine, tt as StepArg, u as SubmitSpec, v as retryRun, w as CronDef, x as submit, y as serverlessTick, z as FlowRegistry } from "./engine-<hash>.mjs";
 //#region src/engine/signals.d.ts
 /**
  * Control-flow signals thrown by the context to unwind a flow invocation without it being
@@ -843,227 +1411,6 @@ declare class PollTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-//#region src/engine/context.d.ts
-/** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
-interface StepArg {
-  /** Aborts when the step times out or its final in-invocation attempt fails. Wire into fetch/etc. */
-  signal: AbortSignal;
-  /** 1-indexed in-invocation attempt number. */
-  attempt: number;
-}
-/** Per-step execution policy. Retries and timeout are within-invocation (fast transient recovery). */
-interface StepPolicy {
-  /** Extra in-invocation attempts on throw before the step's error propagates. Default 0. */
-  retries?: number;
-  /** Delay between those in-invocation retries. Blocks the worker, so keep it small; for long
-   *  durable backoff, let the step throw and use run-level retry. Default 0. */
-  retryDelayMs?: number;
-  /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default. */
-  timeoutMs?: number;
-  /**
-   * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
-   * run) immediately — no in-invocation retries, no run-level retry. `transient` (the default)
-   * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
-   * 4xx/validation errors and retry 5xx/timeouts.
-   */
-  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
-}
-/** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
-type SignalOutcome<T> = {
-  received: true;
-  payload: T;
-} | {
-  received: false;
-};
-/**
- * The durable context handed to a flow body. Every method is a memoized checkpoint: on the
- * first invocation it runs and persists; on every replay it returns the persisted result
- * without re-running. Cursor keys are POSITIONAL (`s0`, `s1`, …) — the deterministic-replay
- * contract is that a flow issues the same ctx calls in the same order each invocation.
- */
-interface Ctx<S extends SignalMap = SignalMap> {
-  /** This run's id. */
-  readonly runId: string;
-  /** 1-indexed attempt number of the current invocation (survives crashes). */
-  readonly attempt: number;
-  /**
-   * Run `fn` once and memoize its result. On replay the stored result is returned and `fn`
-   * is NOT re-run. `fn` is at-least-once across a crash BEFORE the checkpoint commits, so
-   * keep its side-effects idempotent; the memo is exactly-once. `policy` adds in-invocation
-   * retries, a timeout, and error classification; `fn` receives an {@link StepArg} (abort
-   * signal + attempt). Durable long backoff is still the run-level retry.
-   */
-  step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, policy?: StepPolicy): Promise<T>;
-  /** Durably park the run for `ms`, releasing the worker. Resumes after the deadline. */
-  sleep(ms: number): Promise<void>;
-  /** Durably park until `date`. */
-  sleepUntil(date: Date): Promise<void>;
-  /**
-   * Spawn `flow(input)` as a child run and return its output. The child is created exactly
-   * once (recorded in the step memo); the parent parks until the child completes, then
-   * resumes with the child's output. A child failure surfaces as a thrown error.
-   */
-  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
-  /**
-   * Fan out: spawn every child in parallel and join, resolving with the outputs in order. Fast-fail
-   * — if any child fails (or is canceled), the parent fails and its still-running siblings are
-   * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
-   */
-  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }): Promise<FlowOutputs<F>>;
-  /**
-   * Durably wait for an external signal named `name` and return its payload. If a matching
-   * signal is already in the inbox it is consumed immediately; otherwise the run parks until
-   * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
-   * payload without re-waiting.
-   *
-   * When the flow declares a `signals` map, only those names compile and each returns its declared
-   * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
-   */
-  signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
-  /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
-   *  `timeoutMs`, else `{ received: false }`. A signal delivered before the timeout commits always
-   *  wins — the deadline decision is consistent with the durable inbox. */
-  signal<K extends SignalName<S>>(name: K, opts: {
-    timeoutMs: number;
-  }): Promise<SignalOutcome<SignalPayload<S, K>>>;
-  /**
-   * Emit a durable log line to the event sink (visible on the dashboard timeline), tagged to this
-   * run. Fire-and-forget and NOT memoized: it is suppressed while the flow replays its already-durable
-   * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
-   * no sink is wired or the observe `level` is `lifecycle`/`off`.
-   */
-  log(message: string, data?: unknown): void;
-}
-/** The clock the executor threads in — injectable for deterministic tests. */
-type Clock = () => Date;
-/** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
-declare const systemClock: Clock;
-//#endregion
-//#region src/engine/flow.d.ts
-/** The Standard Schema calling surface (spec v1) — zod/valibot/arktype schemas all satisfy it. */
-interface InputSchema<I> {
-  readonly "~standard": {
-    readonly version: 1;
-    readonly vendor: string;
-    readonly validate: (value: unknown) => {
-      value: I;
-      issues?: undefined;
-    } | {
-      issues: ReadonlyArray<{
-        message: string;
-      }>;
-    } | Promise<{
-      value: I;
-      issues?: undefined;
-    } | {
-      issues: ReadonlyArray<{
-        message: string;
-      }>;
-    }>;
-  };
-}
-/** A flow's signal contract: signal name → payload type. Threads typed send + await. */
-type SignalMap = Record<string, unknown>;
-/** No declared signals — the default. `ctx.signal(name)` then takes any name, payload `unknown`. */
-type NoSignals = Record<never, never>;
-/**
- * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
- * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
- * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
- * it. Use {@link signalType} when you want the type without runtime validation.
- */
-type SignalSchema<T> = InputSchema<T>;
-/**
- * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: signalType<{ by: string }>() }`.
- * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
- * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
- */
-declare const signalType: <T>() => SignalSchema<T>;
-/** The `signals` field's shape for a given map — one Standard-Schema validator per name. */
-type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalSchema<S[K]>; };
-/** Validate a signal payload against its declared schema. Throws with the collected issues. */
-declare const validateSignal: <T>(schema: SignalSchema<T>, name: string, payload: unknown) => Promise<T>;
-/** Valid signal names for a map: the declared keys, or any string when none are declared. */
-type SignalName<S extends SignalMap> = [keyof S] extends [never] ? string : keyof S & string;
-/** The payload type for signal `K` in map `S` — the declared type, or `unknown` when undeclared. */
-type SignalPayload<S extends SignalMap, K> = K extends keyof S ? S[K] : unknown;
-/**
- * A durable flow: a named, versioned function whose body is deterministic between the
- * `ctx` calls (steps, sleeps, invokes). The executor may re-invoke it any number of times
- * (crash recovery, wake-from-sleep); memoized `ctx` calls short-circuit so only un-run work
- * executes. Non-determinism BETWEEN ctx calls (Date.now, random, branching on wall-clock)
- * is the one footgun — do that work inside `ctx.step` so its result is memoized.
- */
-interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
-  name: string;
-  version: number;
-  run: (ctx: Ctx<S>, input: I) => Promise<O>;
-  /** Optional Standard-Schema validator for the input, checked at submit time. */
-  input?: InputSchema<I>;
-  /**
-   * Declares the signals this flow awaits (name → payload type). Type-only: it drives typed
-   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link signalType}.
-   */
-  signals?: SignalSchemas<S>;
-  /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
-  policy?: FlowPolicy;
-}
-/** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
-interface FlowPolicy {
-  drift?: DriftPolicy;
-  maxFanOut?: number;
-  maxDepth?: number;
-}
-/** Validate `input` against a flow's (or contract's) schema (if any). Throws with the collected issues. */
-declare const validateInput: <I>(flow: {
-  name: string;
-  input?: InputSchema<I>;
-}, input: I) => Promise<I>;
-/** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
-declare const defineFlow: <I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>) => Flow<I, O, S>;
-/**
- * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
- * signals, WITHOUT the run body. A caller that doesn't own the implementation (another service, or a
- * Go worker sharing the database) can `submit`/`result`/`signal` against it with full type-safety;
- * `submit` accepts a {@link Flow} or a `Contract` interchangeably. The declaring worker still owns
- * execution and the authoritative input validation.
- */
-interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
-  name: string;
-  version: number;
-  input?: InputSchema<I>;
-  signals?: SignalSchemas<S>;
-  /** Phantom output type — carried for `submit`→`result` typing; never present at runtime. */
-  readonly __out?: O;
-}
-/**
- * Declare a flow's {@link Contract} for cross-service typed submits. The output type is explicit
- * (there is no body to infer it from): `defineContract<Input, Output, Signals>({ name, version })`.
- */
-declare const defineContract: <I = unknown, O = unknown, S extends SignalMap = NoSignals>(contract: Contract<I, O, S>) => Contract<I, O, S>;
-/** A flow of any shape — the registry and executor dispatch flows type-erased. */
-type AnyFlow = Flow<any, any, any>;
-/** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
-interface InvokeSpec<CI = any, CO = any> {
-  flow: Flow<CI, CO, any>;
-  input: CI;
-}
-/**
- * The `{ flow, input }` shape a fan-out spec must have, with `input` bound to `F`'s OWN input type.
- * Mapping it over an inferred flow tuple is what lets `ctx.invoke([{ flow: a, input }, ...])`
- * type-check each input against its own flow instead of accepting `any`.
- */
-type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? {
-  flow: F;
-  input: CI;
-} : never;
-/** The tuple of child outputs a fan-out over flows `F` resolves to — each flow's output, in order. */
-type FlowOutputs<F extends readonly AnyFlow[]> = { readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never; };
-/** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
-type FlowRegistry = ReadonlyMap<string, AnyFlow>;
-/** Build a {@link FlowRegistry} from a list of flows. */
-declare const registry: (flows: readonly AnyFlow[]) => FlowRegistry;
-//#endregion
 //#region src/engine/builder.d.ts
 type Acc<I> = {
   input: I;
@@ -1093,71 +1440,6 @@ declare class FlowBuilder<I, A extends Acc<I>> {
 /** Start a typed flow builder. Reserve the accumulator key `input` — it holds the run input. */
 declare const builder: <I>(name: string, version: number) => FlowBuilder<I, Acc<I>>;
 //#endregion
-//#region src/engine/executor.d.ts
-/** How a run retries after a (non-terminal) throw. All tunable per deployment. */
-interface RetryPolicy {
-  /** Max invocations before the run is failed terminally. */
-  maxAttempts: number;
-  /** First backoff delay; doubles each attempt up to `maxDelayMs`. */
-  baseDelayMs: number;
-  /** Ceiling for the exponential backoff. */
-  maxDelayMs: number;
-}
-/** The retry policy applied when a deployment injects none. */
-declare const defaultRetry: RetryPolicy;
-/** The outcome status of one tick on a run. */
-type TickStatus = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled";
-/**
- * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
- * (and, for a drift, the cursor key it drifted at), so a driver (e.g. a serverless `SweepResult`
- * consumer) can log or route WHY a run failed / is retrying / drifted without reading the store.
- */
-interface TickResult {
-  runId: string;
-  status: TickStatus;
-  error?: FlowError;
-  cursorKey?: string;
-}
-interface TickOpts {
-  now?: Clock;
-  retry?: RetryPolicy;
-  id?: IdGen;
-  observe?: ObserveOpts;
-  driftPolicy?: DriftPolicy;
-  leaseMs?: number;
-}
-/**
- * Execute one claimed run to its next durable boundary (completion, suspend, or retry) and
- * release the lease. Idempotent across crashes: a re-claim re-invokes the flow and memoized
- * ctx calls short-circuit, so only un-run work executes again.
- */
-declare const runTick: (backend: Backend, flows: FlowRegistry, lease: Lease, opts?: TickOpts) => Promise<TickResult>;
-//#endregion
-//#region src/engine/schedule.d.ts
-/** The tag every cron-spawned run carries, so `listRuns({ tag })` finds a cron's history. */
-declare const cronTag: (name: string) => string;
-/** A recurring schedule: fire `flow(input)` on the cron `schedule` (5-field, UTC). */
-interface CronDef<I> {
-  name: string;
-  schedule: string;
-  flow: Flow<I, unknown>;
-  input: I;
-  /** `skip` won't start a new run while a prior run of this cron is still active. Default `allow`. */
-  overlap?: "allow" | "skip";
-}
-/**
- * Register (or update) a cron. Validates the expression and computes the first fire from `now`.
- * Re-registering keeps the existing schedule timing (the store preserves `nextRunAt`).
- */
-declare const registerCron: <I>(backend: Backend, def: CronDef<I>, now?: () => Date) => Promise<void>;
-/**
- * Fire every due cron once. Each occurrence's run is deduped across a fleet by the occurrence-scoped
- * idempotency key (`cron:name:fireTime`), and the schedule is advanced by the `advanceCron` CAS so
- * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
- * many occurrences this worker advanced.
- */
-declare const runDueCrons: (backend: Backend, now?: () => Date) => Promise<number>;
-//#endregion
 //#region src/engine/cancel.d.ts
 /**
  * Cancel a run and cascade to its non-terminal descendants. Cancel is sticky and clears the run's
@@ -1165,298 +1447,6 @@ declare const runDueCrons: (backend: Backend, now?: () => Date) => Promise<numbe
  * cancel) — the run's markRunning guard stops the NEXT dispatch, not the one already executing.
  */
 declare const cancelRun: (backend: Backend, runId: string) => Promise<void>;
-//#endregion
-//#region src/engine/worker.d.ts
-/**
- * A run id, branded with the flow's output type `O` and signal map `S`. It IS a string at runtime;
- * the phantom brand lets {@link result} recover the output type and {@link signalRun} type the
- * signal name + payload. Pass it wherever a `runId` string is expected.
- */
-type RunHandle<O = unknown, S extends SignalMap = NoSignals> = string & {
-  readonly __out?: O;
-  readonly __sig?: S;
-};
-/** How a `submit` with an existing `idempotencyKey` behaves: reuse the existing run, or throw. */
-type OnDuplicate = "reuse" | "error";
-/** Everything `submit`/`engine.submit` accepts — dedup/tag options plus the enqueue schedule
- *  ({@link EnqueueOpts}'s `runAt`/`priority`). */
-interface SubmitOpts extends EnqueueOpts {
-  idempotencyKey?: string;
-  tags?: readonly string[];
-  /** On an `idempotencyKey` hit: `"reuse"` (default) returns the existing handle; `"error"` throws. */
-  onDuplicate?: OnDuplicate;
-}
-/** Submit a run: create it (idempotent) and enqueue it if freshly created. Returns a typed handle.
- *  Accepts a {@link Flow} or a {@link Contract} — the latter for a caller that doesn't own the body. */
-declare const submit: <I, O, S extends SignalMap = NoSignals>(backend: Backend, flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts, now?: Clock) => Promise<RunHandle<O, S>>;
-/** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
-interface SubmitSpec<I = unknown> {
-  flow: Flow<I, any, any>;
-  input: I;
-  idempotencyKey?: string;
-  tags?: readonly string[];
-  runAt?: Date;
-  priority?: number;
-}
-/**
- * Submit many runs in one atomic batch (the runs are created together via `startManyRuns`),
- * then enqueue the freshly-created ones. Returns their ids, aligned with `items`. Idempotent
- * items that already existed are returned but not re-enqueued.
- */
-declare const submitMany: <I>(backend: Backend, items: readonly SubmitSpec<I>[], now?: Clock) => Promise<string[]>;
-/**
- * Deliver an external signal to a run and wake it. The delivery + re-enqueue are atomic
- * (durable); the wakeup is a best-effort latency nudge. Idempotent on `idempotencyKey`.
- * Returns `false` if the signal was an idempotent duplicate.
- */
-declare const signalRun: <O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(backend: Backend, handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
-  idempotencyKey?: string;
-}) => Promise<boolean>;
-/** The settled outcome of a run, as returned by {@link result}. `O` is the flow's output type. */
-interface RunResult<O = unknown> {
-  status: Extract<RunStatus, "done" | "failed" | "canceled">;
-  output?: O;
-  error?: FlowError;
-}
-/**
- * Re-drive a `failed` run, keeping its completed step memos so only the work after the
- * failure re-runs. A no-op on a run that isn't `failed`. Returns whether it retried.
- */
-declare const retryRun: (backend: Backend, runId: string) => Promise<boolean>;
-/**
- * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
- * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
- * default — no `LISTEN` pinned. Throws on timeout.
- */
-declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | string, opts?: {
-  timeoutMs?: number;
-  pollMs?: number;
-  now?: Clock;
-}) => Promise<RunResult<O>>;
-/** Move every due timer back onto the queue. Returns how many were re-enqueued. */
-declare const drainTimers: (backend: Backend, opts: {
-  limit: number;
-  now?: Date;
-}) => Promise<number>;
-/**
- * Re-enqueue runs stranded off the queue (crash between a state write and its enqueue, or a
- * lost parent-wake). Idempotent — re-enqueueing a run that is actually fine just makes it
- * re-check and re-suspend. Run this on a slow interval (or as an internal cron). Returns how
- * many were re-enqueued.
- */
-declare const reconcile: (backend: Backend, opts: {
-  limit: number;
-}) => Promise<number>;
-/**
- * Retention sweep: delete up to `limit` terminal runs (with their steps/signals/events) created
- * before `before`. Live runs are untouched. Returns how many were deleted. Schedule it on a slow
- * cadence (a cron, or your own timer) — the window is a deployment policy, so it is not wired into
- * the worker loop. Call repeatedly until it returns `< limit` to drain a large backlog.
- */
-declare const prune: (backend: Backend, opts: {
-  before: Date;
-  limit: number;
-}) => Promise<number>;
-/**
- * Targeted retention: the same sweep as {@link prune}, but narrowed by flow name, flow version and
- * terminal status as well as age — for clearing a specific pile of history (the runs a mass cancel
- * left behind) instead of waiting for the window. Terminal runs only, whatever the filter says.
- * Returns how many were deleted; call repeatedly until it returns `< limit`.
- */
-declare const purge: (backend: Backend, opts: {
-  filter: PurgeFilter;
-  limit: number;
-}) => Promise<number>;
-interface TickOnceOpts {
-  batchMax: number;
-  leaseMs: number;
-  retry?: RetryPolicy;
-  now?: Clock;
-  id?: IdGen;
-  observe?: ObserveOpts;
-  driftPolicy?: DriftPolicy;
-  names?: readonly string[];
-  pollTimeoutMs?: number;
-}
-/**
- * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
- * A resident worker calls this on an interval; a serverless worker calls it per invocation.
- * Returns the per-run tick results for metrics/tests.
- */
-declare const tickOnce: (backend: Backend, flows: FlowRegistry, opts: TickOnceOpts) => Promise<TickResult[]>;
-/** What one {@link serverlessTick} advanced — for the invoking cron Lambda's logs/metrics. */
-interface SweepResult {
-  /** Cron occurrences fired. */
-  fired: number;
-  /** Crash-stranded / lost-wake runs re-enqueued. */
-  reconciled: number;
-  /** Runs claimed and advanced this cycle, by outcome. */
-  results: TickResult[];
-  /**
-   * The earliest pending timer due (sleep / retry / cron) after this cycle drained the due ones, or
-   * `null` when nothing is pending. A self-scheduling driver arms a one-shot for exactly this instant
-   * (EventBridge Scheduler / SQS delay / Step Functions wait) instead of polling on a fixed cadence.
-   * Signals and child-joins are NOT here — they wake by a push on submit/signal.
-   */
-  nextWakeAt: Date | null;
-}
-/**
- * One full engine cycle for a scheduled (serverless) invocation: fire due crons, re-drive
- * orphans, then drain due timers and claim + execute a batch. Designed to BE an EventBridge /
- * cron Lambda — no resident loop, no daemon. Every waiting run advances on the next scheduled
- * firing, so a durable `ctx.sleep` outlives any single invocation's timeout. Prefer
- * {@link tickOnce} alone for a resident worker that already runs maintenance on its own cadence.
- *
- * Set `opts.leaseMs` no larger than the invocation's timeout: a claimed run whose invocation is
- * killed mid-batch only becomes re-claimable once its lease expires, so an oversized lease strands
- * the un-executed tail of the batch for that long. Size `opts.batchMax` to what one invocation can
- * realistically drain within its budget. Crons that fire more occurrences than `batchMax` (or timers
- * exceeding it) are durable and simply advance over the following invocations. Cron catch-up
- * coalesces: an occurrence missed while nothing was invoking fires once on the next sweep, not once
- * per missed slot.
- */
-declare const serverlessTick: (backend: Backend, flows: FlowRegistry, opts: TickOnceOpts) => Promise<SweepResult>;
-//#endregion
-//#region src/engine/engine.d.ts
-/** A liveness snapshot: dispatch-queue health plus per-status run counts. */
-interface Liveness {
-  queue: QueueDepth;
-  runs: Record<RunStatus, number>;
-}
-/** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
-interface EngineOpts {
-  /** Max runs claimed per worker cycle. Default 20. */
-  batchMax?: number;
-  /**
-   * How long a claimed run's lease is held before another worker may re-claim it. There is no
-   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
-   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
-   * batch tail is stranded until the oversized lease expires. Default 30000.
-   *
-   * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
-   * pool must keep its clocks NTP-synced and size `leaseMs` to absorb the residual skew (≥ longest
-   * step + max skew): a fast-clocked worker that reclaims a peer's still-running run early only
-   * re-executes it (bounded by the exactly-once memo — never data loss), but wastes the work.
-   * Single-worker and `serverlessTick` deployments have no peer, so no skew applies.
-   */
-  leaseMs?: number;
-  /** Retry policy for a throwing (non-terminal) step. Defaults to {@link defaultRetry}. */
-  retry?: RetryPolicy;
-  /** Metrics callbacks + durable event-sink wiring. */
-  observe?: ObserveOpts;
-  /** Id generator for runs and lease tokens. Default {@link newId}. */
-  id?: IdGen;
-  /** Injectable clock for deterministic tests. Defaults to the wall clock. */
-  now?: Clock;
-  /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
-  maxPayloadBytes?: number;
-  /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
-  driftPolicy?: DriftPolicy;
-  /**
-   * Wall-clock bound (ms) on each cycle's DB poll (drain + claim), so a black-holed connection
-   * can't silently freeze the resident loop on a dead socket — it rejects, gets logged, and
-   * re-polls on a fresh pooled connection. Bounds the poll only, never step execution. Default
-   * 30000; set `0` to disable (e.g. an in-memory backend that never hangs).
-   */
-  pollTimeoutMs?: number;
-}
-/** Options for the resident worker loop. */
-interface RunLoopOpts {
-  /** Claim-cycle cadence (ms) when there's work — the busy/floor interval. Default 200. */
-  tickMs?: number;
-  /**
-   * Idle backoff ceiling (ms). With no work, the claim interval grows geometrically from `tickMs`
-   * toward this, so an idle worker stops hammering the DB; it snaps back to `tickMs` the moment a
-   * claim returns work (and a full batch re-claims immediately). Default `tickMs × 8`. A push notify
-   * interrupts the wait regardless, so raising this is free when a listener is wired.
-   */
-  maxIdleTickMs?: number;
-  /** Reconcile + cron cadence (ms) — the slower maintenance sweep. Default 5000. */
-  maintenanceMs?: number;
-  /**
-   * Override the dispatch-push waiter. By default the loop uses the backend's
-   * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
-   * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
-   */
-  waitForWork?: (timeoutMs: number) => Promise<void>;
-}
-/**
- * The cohesive engine: one object bundling submission, run control, queries, cron, and the
- * worker loop over a single {@link Backend} + flow registry. This is the public surface most
- * apps use; the free functions it wraps stay available for fine-grained control.
- */
-interface Engine {
-  readonly backend: Backend;
-  submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
-  submitMany<I>(items: readonly SubmitSpec<I>[]): Promise<string[]>;
-  signal<O = unknown, S extends SignalMap = NoSignals, K extends SignalName<S> = SignalName<S>>(handle: RunHandle<O, S> | string, name: K, payload: SignalPayload<S, K>, opts?: {
-    idempotencyKey?: string;
-  }): Promise<boolean>;
-  cancel(runId: string): Promise<void>;
-  retry(runId: string): Promise<boolean>;
-  result<O = unknown>(runId: RunHandle<O> | string, opts?: {
-    timeoutMs?: number;
-    pollMs?: number;
-  }): Promise<RunResult<O>>;
-  /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
-  status(runId: string): Promise<RunSnapshot | undefined>;
-  listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
-  /** Count of runs per status — the overview/health snapshot. */
-  health(): Promise<Record<RunStatus, number>>;
-  /**
-   * Liveness probe for a k8s/readiness check: the dispatch backlog + oldest-claimable age (rising ⇒
-   * workers can't keep up or are down) alongside the per-status run counts. Read-only.
-   */
-  liveness(): Promise<Liveness>;
-  /**
-   * Probe the backend; throw a clear error if the schema is missing or unreachable (unapplied
-   * `applySchema`, or the wrong database). Call it at startup to fail a readiness probe cleanly
-   * instead of looping on query errors. Checks that the schema responds, not that it matches a version.
-   */
-  check(): Promise<void>;
-  /**
-   * The earliest pending timer due (sleep / retry / cron), or `null` when none — the serverless
-   * wake horizon. A self-scheduling driver arms a one-shot for this instant instead of polling on a
-   * fixed cadence. Signals/child-joins wake by a push on submit/signal, so they are NOT covered.
-   */
-  nextWakeAt(): Promise<Date | null>;
-  /**
-   * The autoscaling backlog as of now — claimable jobs + due timers + due crons — as one count.
-   * The number a KEDA `metrics-api` scaler (or a self-terminating serverless loop) reads: counting
-   * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
-   * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
-   */
-  pendingWork(names?: readonly string[]): Promise<number>;
-  registerCron<I>(def: CronDef<I>): Promise<void>;
-  /** One worker cycle: drain due timers, then claim + execute a batch. */
-  tick(): Promise<TickResult[]>;
-  /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
-  reconcile(): Promise<number>;
-  /**
-   * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
-   * (default 1000). Returns how many were deleted. Schedule this yourself — retention window is a
-   * deployment policy, so it is not part of the worker loop. Repeat until it returns `< limit`.
-   */
-  prune(olderThanMs: number, limit?: number): Promise<number>;
-  /**
-   * Targeted {@link Engine.prune}: delete terminal runs matching `filter` (age, flow name, flow
-   * version, terminal status), up to `limit` (default 1000). Live runs are never deletable, whatever
-   * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
-   * history. Repeat until it returns `< limit`.
-   */
-  purge(filter: PurgeFilter, limit?: number): Promise<number>;
-  /** Fire every due cron once. */
-  runCrons(): Promise<number>;
-  /**
-   * One full cycle for a scheduled invocation (crons + reconcile + drain + claim) — call this
-   * from an EventBridge / cron Lambda. No resident process; every waiting run advances on the
-   * next firing, so a durable `ctx.sleep` outlives any invocation timeout.
-   */
-  serverlessTick(): Promise<SweepResult>;
-  /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
-  run(opts?: RunLoopOpts): () => Promise<void>;
-}
-declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?: EngineOpts) => Engine;
 //#endregion
 //#region src/engine/cron.d.ts
 /**
@@ -1469,4 +1459,86 @@ declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
 export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+```
+
+## status-<hash>.d.mts
+
+```ts
+import { B as RunStatus, q as TerminalStatus } from "./id-<hash>.mjs";
+//#region src/status.d.ts
+/** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
+declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];
+/** Whether a run has settled and must never be resurrected. Narrows to the terminal subset. */
+declare const isTerminal: (status: RunStatus) => status is TerminalStatus;
+/** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */
+declare const ACTIVE_STATUSES: readonly RunStatus[];
+/**
+ * States the reconciler re-drives when a run is off the queue with no timer: the actively
+ * progressing ones. DERIVED = active minus the states that legitimately wait on an external
+ * event (a signal or a child), which have no queue/timer of their own.
+ */
+declare const RECONCILABLE_STATUSES: readonly RunStatus[];
+/** Type guard for an untrusted string (query params, external input). */
+declare const isRunStatus: (s: string) => s is RunStatus;
+/** A fresh all-zero per-status counter — completeness is enforced by `Record<RunStatus, …>`. */
+declare const zeroRunStats: () => Record<RunStatus, number>;
+/** Normalize a `RunFilter.status` (one, several, or none) to an array — or `undefined`. */
+declare const statusList: (status?: RunStatus | readonly RunStatus[]) => RunStatus[] | undefined;
+//#endregion
+export { isTerminal as a, isRunStatus as i, NON_SUCCESS_TERMINAL_STATUSES as n, statusList as o, RECONCILABLE_STATUSES as r, zeroRunStats as s, ACTIVE_STATUSES as t };
+```
+
+## testing.d.mts
+
+```ts
+import { p as Backend } from "./id-<hash>.mjs";
+import { P as AnyFlow, c as RunResult, n as EngineOpts, s as RunHandle, t as Engine } from "./engine-<hash>.mjs";
+//#region src/testing.d.ts
+/** A virtual-time engine plus the controls to move its clock. Build one with {@link createTestHarness}. */
+interface TestHarness {
+  /** The engine under test — submit, signal, cancel and query it exactly as in production. */
+  readonly engine: Engine;
+  /** The current virtual instant. Only {@link TestHarness.advance} and
+   *  {@link TestHarness.advanceToNextWake} move it. */
+  now(): Date;
+  /** Run ticks until a tick claims nothing, without moving the clock. Returns how many runs executed. */
+  drain(): Promise<number>;
+  /** Move the clock forward by `ms`, then drain. Returns how many runs executed. */
+  advance(ms: number): Promise<number>;
+  /**
+   * Drain, then jump to the next durable deadline — the earliest pending sleep, retry backoff or
+   * cron — and drain again. Draining first is what makes the deadline knowable: a freshly submitted
+   * run has no timer until it executes far enough to park. `false` when nothing is scheduled after
+   * that, which means no amount of waiting would advance the engine. The clock never moves
+   * backwards, so a deadline already in the past just drains.
+   */
+  advanceToNextWake(): Promise<boolean>;
+  /**
+   * Drive `handle` to its terminal outcome, jumping across every sleep and backoff on the way.
+   *
+   * @throws {Error} if the run parks with no deadline to jump to — waiting on a signal or a child
+   * that nothing will deliver. The message names what it is waiting on, because that is nearly
+   * always a missing `engine.signal(...)` in the test rather than a bug in the flow.
+   */
+  settle<O>(handle: RunHandle<O> | string): Promise<RunResult<O>>;
+}
+/**
+ * Build a {@link TestHarness} over `backend`, running `flows` on a clock that starts at `startAt`
+ * (default `2030-01-01T00:00:00Z` — a fixed instant, so snapshots and log lines are stable).
+ *
+ * `opts` takes the usual {@link EngineOpts} minus `now`, which the harness owns.
+ *
+ * ```ts
+ * const t = createTestHarness(createMemoryBackend(), [onboard]);
+ * const handle = await t.engine.submit(onboard, { userId: "u_1" });
+ * await t.advanceToNextWake();                          // the 3-day sleep
+ * await t.engine.signal(handle, "survey", { score: 9 });
+ * expect(await t.settle(handle)).toMatchObject({ status: "done" });
+ * ```
+ */
+declare const createTestHarness: (backend: Backend, flows: readonly AnyFlow[], opts?: Omit<EngineOpts, "now"> & {
+  startAt?: Date;
+}) => TestHarness;
+//#endregion
+export { TestHarness, createTestHarness };
 ```
