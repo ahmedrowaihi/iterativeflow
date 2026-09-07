@@ -9,9 +9,11 @@ import {
   type StepOutcome,
   type Store,
   type SuspendStatus,
+  ACTIVE_STATUSES,
   isOrphaned,
   isTerminal,
   purgeStatuses,
+  runSetStatuses,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -349,6 +351,46 @@ export const createMongoStore = (
       const last = docs[docs.length - 1];
       const cursor = docs.length === page.limit && last ? last.ord.toHexString() : undefined;
       return { runs: docs.map(mapRun), cursor };
+    },
+
+    async cancelRuns(filter, limit) {
+      const statuses = runSetStatuses(filter, ACTIVE_STATUSES, "cancelRuns");
+      if (statuses.length === 0) return 0;
+      const q: Filter<RunDoc> = {
+        status: { $in: [...statuses] },
+        ...(filter.name !== undefined && { name: filter.name }),
+        ...(filter.version !== undefined && { version: filter.version }),
+        ...(filter.tag !== undefined && { tags: filter.tag }),
+      };
+      const victims = await runs.find(q).limit(limit).project({ _id: 1 }).toArray();
+      if (victims.length === 0) return 0;
+      const ids = victims.map((r) => r._id);
+      await timers.deleteMany({ _id: { $in: ids } });
+      const res = await runs.updateMany({ _id: { $in: ids } }, { $set: { status: "canceled" } });
+      return res.modifiedCount;
+    },
+
+    async retryRuns(filter, limit) {
+      const statuses = runSetStatuses(filter, ["failed"], "retryRuns");
+      if (statuses.length === 0) return 0;
+      const q: Filter<RunDoc> = {
+        status: { $in: [...statuses] },
+        ...(filter.name !== undefined && { name: filter.name }),
+        ...(filter.version !== undefined && { version: filter.version }),
+        ...(filter.tag !== undefined && { tags: filter.tag }),
+      };
+      const victims = await runs.find(q).limit(limit).project({ _id: 1 }).toArray();
+      if (victims.length === 0) return 0;
+      const ids = victims.map((r) => r._id);
+      return inTx(async (session) => {
+        await runs.updateMany(
+          { _id: { $in: ids } },
+          { $set: { status: "pending", attempts: 0 }, $unset: { error: "" } },
+          { session },
+        );
+        for (const runId of ids) await enqueue(runId, undefined, session);
+        return ids.length;
+      });
     },
 
     async childrenOf(runId) {

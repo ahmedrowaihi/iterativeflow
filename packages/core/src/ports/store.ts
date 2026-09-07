@@ -134,6 +134,23 @@ export interface Store {
   /** List runs newest-first, filtered and paged. The ops/dashboard read surface. */
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
 
+  /**
+   * Cancel up to `limit` LIVE runs matching `filter` — the bulk form of a `cancelRun` sweep, for an
+   * operator abandoning a queue rather than a run. Terminal runs are never touched, whatever the
+   * filter says. Descendants are NOT walked here: a child whose parent went non-success cancels
+   * itself on its next dispatch, and reconcile re-enqueues exactly those children, so the cascade
+   * still completes — one maintenance interval later instead of inline. Returns how many were
+   * canceled, so a caller batches until `< limit`. Throws on a filter with no predicate.
+   */
+  cancelRuns(filter: RunFilter, limit: number): Promise<number>;
+
+  /**
+   * Re-drive up to `limit` `failed` runs matching `filter` — the bulk form of {@link retryRun}, with
+   * the same semantics per row: completed step memos are kept, `attempts` is zeroed, and each run is
+   * re-enqueued. Returns how many were retried. Throws on a filter with no predicate.
+   */
+  retryRuns(filter: RunFilter, limit: number): Promise<number>;
+
   /** The direct children of a run (spawned via `ctx.invoke`) — powers the cancel cascade. */
   childrenOf(runId: string): Promise<readonly RunRow[]>;
 

@@ -28,6 +28,15 @@ declare const createLocalWakeup: () => Wakeup;
  * @throws {Error} when the filter carries no predicate — "delete all history" must be explicit.
  */
 declare const purgeStatuses: (filter: PurgeFilter) => readonly TerminalStatus[];
+/**
+ * The statuses a bulk control operation may touch: `filter.status` intersected with `allowed`, or all
+ * of `allowed` when unset. Same shape as {@link purgeStatuses} — the filter narrows within the set
+ * the operation is defined on and can never widen past it.
+ *
+ * @throws {Error} when the filter carries no predicate — a set operation over everything must be
+ * spelled out, not defaulted into.
+ */
+declare const runSetStatuses: (filter: RunFilter, allowed: readonly RunStatus[], op: string) => readonly RunStatus[];
 /** The minimal run shape a purge reads — satisfied by `RunRow` and by a backend's raw row. */
 interface PurgeRun {
   name: string;
@@ -41,6 +50,15 @@ interface PurgeRun {
  * {@link purgeWhereSql} — single source, so a new purge predicate lands on both sides at once.
  */
 declare const purgeMatcher: (filter: PurgeFilter) => ((run: PurgeRun) => boolean);
+/**
+ * The `WHERE` body and binds selecting the rows a bulk cancel/retry acts on. `undefined` when the
+ * filter intersects to no usable status — the caller then touches nothing rather than emitting an
+ * empty `IN ()`. Statuses render as literals for the same reason as {@link purgeWhereSql}.
+ */
+declare const runSetWhereSql: (filter: RunFilter, allowed: readonly RunStatus[], op: string, o: PurgeSqlOpts) => {
+  where: string;
+  params: unknown[];
+} | undefined;
 /** Dialect specifics for {@link purgeWhereSql}. */
 interface PurgeSqlOpts {
   /** Renders the nth (1-based) bind placeholder: `` (n) => `$${n}` `` for Postgres, `() => "?"` else. */
@@ -118,7 +136,7 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
  */
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
 ```
 
 ## engine-<hash>.d.mts
@@ -649,6 +667,15 @@ interface Engine {
   }): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
+  /**
+   * Cancel every live run matching `filter`, up to `limit` (default 1000) — one round trip instead of
+   * N. Descendants cancel themselves on their next dispatch, so the cascade completes a maintenance
+   * interval later rather than inline. Returns how many were canceled; repeat until `< limit`.
+   */
+  cancelMany(filter: RunFilter, limit?: number): Promise<number>;
+  /** Re-drive every `failed` run matching `filter`, up to `limit` (default 1000). Same per-run
+   *  semantics as {@link Engine.retry}. Returns how many were retried; repeat until `< limit`. */
+  retryMany(filter: RunFilter, limit?: number): Promise<number>;
   result<O = unknown>(runId: RunHandle<O> | string, opts?: {
     timeoutMs?: number;
     pollMs?: number;
@@ -819,10 +846,12 @@ interface RunSnapshot {
   /** Signals delivered but not yet consumed — a `ctx.signal(name)` wait drains a matching one. */
   signals: readonly DeliveredSignal[];
 }
-/** Filter for {@link Store.listRuns}. `status` accepts one or several states. */
+/** Filter for {@link Store.listRuns}, and for the set operations {@link Store.cancelRuns} and
+ *  {@link Store.retryRuns}. `status` accepts one or several states. */
 interface RunFilter {
   status?: RunStatus | readonly RunStatus[];
   name?: string;
+  version?: number;
   tag?: string;
 }
 /**
@@ -1239,6 +1268,21 @@ interface Store {
   markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<void>;
   /** List runs newest-first, filtered and paged. The ops/dashboard read surface. */
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
+  /**
+   * Cancel up to `limit` LIVE runs matching `filter` — the bulk form of a `cancelRun` sweep, for an
+   * operator abandoning a queue rather than a run. Terminal runs are never touched, whatever the
+   * filter says. Descendants are NOT walked here: a child whose parent went non-success cancels
+   * itself on its next dispatch, and reconcile re-enqueues exactly those children, so the cascade
+   * still completes — one maintenance interval later instead of inline. Returns how many were
+   * canceled, so a caller batches until `< limit`. Throws on a filter with no predicate.
+   */
+  cancelRuns(filter: RunFilter, limit: number): Promise<number>;
+  /**
+   * Re-drive up to `limit` `failed` runs matching `filter` — the bulk form of {@link retryRun}, with
+   * the same semantics per row: completed step memos are kept, `attempts` is zeroed, and each run is
+   * re-enqueued. Returns how many were retried. Throws on a filter with no predicate.
+   */
+  retryRuns(filter: RunFilter, limit: number): Promise<number>;
   /** The direct children of a run (spawned via `ctx.invoke`) — powers the cancel cascade. */
   childrenOf(runId: string): Promise<readonly RunRow[]>;
   /** Count of runs per status — the health / overview snapshot. */

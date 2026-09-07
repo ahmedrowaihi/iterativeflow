@@ -17,10 +17,12 @@ import {
   type TerminalOutcome,
   type TimerDueOpts,
   createLocalWakeup,
+  ACTIVE_STATUSES,
   isOrphaned,
   isTerminal,
   newId,
   purgeMatcher,
+  runSetStatuses,
   queueDepthOf,
   statusList,
   zeroRunStats,
@@ -260,6 +262,44 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       const last = rows[rows.length - 1];
       const cursor = rows.length === page.limit && last ? String(runSeq.get(last.id)) : undefined;
       return { runs: rows.map((r) => structuredClone(r)), cursor };
+    },
+
+    async cancelRuns(filter, limit) {
+      const allowed = new Set<string>(runSetStatuses(filter, ACTIVE_STATUSES, "cancelRuns"));
+      const victims = [...runs.values()]
+        .filter(
+          (r) =>
+            allowed.has(r.status) &&
+            (filter.name === undefined || r.name === filter.name) &&
+            (filter.version === undefined || r.version === filter.version) &&
+            (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
+        )
+        .slice(0, limit);
+      for (const r of victims) {
+        r.status = "canceled";
+        deadlines.delete(r.id);
+      }
+      return victims.length;
+    },
+
+    async retryRuns(filter, limit) {
+      const allowed = new Set<string>(runSetStatuses(filter, ["failed"], "retryRuns"));
+      const victims = [...runs.values()]
+        .filter(
+          (r) =>
+            allowed.has(r.status) &&
+            (filter.name === undefined || r.name === filter.name) &&
+            (filter.version === undefined || r.version === filter.version) &&
+            (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
+        )
+        .slice(0, limit);
+      for (const r of victims) {
+        r.status = "pending";
+        r.error = undefined;
+        r.attempts = 0;
+        enqueueCore(r.id);
+      }
+      return victims.length;
     },
 
     async childrenOf(runId) {

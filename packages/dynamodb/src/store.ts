@@ -22,11 +22,14 @@ import {
   type StepOutcome,
   type OrphanView,
   type PurgeFilter,
+  type RunFilter,
   type Store,
   type SuspendStatus,
   TERMINAL_STATUSES,
+  ACTIVE_STATUSES,
   isOrphaned,
   purgeMatcher,
+  runSetStatuses,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -132,6 +135,26 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
+  const matchingRuns = async (
+    filter: RunFilter,
+    allowed: readonly RunStatus[],
+    op: string,
+    limit: number,
+  ): Promise<RunItem[]> => {
+    const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
+    if (statuses.size === 0) return [];
+    return (await scanType<RunItem>("run"))
+      .filter(
+        (r) =>
+          statuses.has(r.status) &&
+          (filter.name === undefined || r.name === filter.name) &&
+          (filter.version === undefined || r.version === filter.version) &&
+          (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
+      )
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, limit);
+  };
+
   const scanType = <T>(type: string, consistent = false): Promise<T[]> =>
     scanAll(
       {
@@ -224,7 +247,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     return runs.length;
   };
 
-  return {
+  const store: Store = {
     startRun: startOne,
 
     async startManyRuns(specs) {
@@ -626,6 +649,21 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       return { runs: rows.map(mapRun), cursor };
     },
 
+    async cancelRuns(filter, limit) {
+      const victims = await matchingRuns(filter, ACTIVE_STATUSES, "cancelRuns", limit);
+      for (const r of victims) {
+        await store.markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] });
+      }
+      return victims.length;
+    },
+
+    async retryRuns(filter, limit) {
+      const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
+      let n = 0;
+      for (const r of victims) if ((await store.retryRun(r.id)).retried) n += 1;
+      return n;
+    },
+
     async childrenOf(runId) {
       // gsi1 parent-partition Query (eventually consistent). The cancel cascade tolerates GSI lag:
       // a just-spawned child the cascade misses self-cancels on dispatch and is re-driven by
@@ -823,4 +861,5 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       }
     },
   };
+  return store;
 };

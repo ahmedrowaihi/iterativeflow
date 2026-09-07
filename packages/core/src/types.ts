@@ -121,10 +121,12 @@ export interface RunSnapshot {
   signals: readonly DeliveredSignal[];
 }
 
-/** Filter for {@link Store.listRuns}. `status` accepts one or several states. */
+/** Filter for {@link Store.listRuns}, and for the set operations {@link Store.cancelRuns} and
+ *  {@link Store.retryRuns}. `status` accepts one or several states. */
 export interface RunFilter {
   status?: RunStatus | readonly RunStatus[];
   name?: string;
+  version?: number;
   tag?: string;
 }
 

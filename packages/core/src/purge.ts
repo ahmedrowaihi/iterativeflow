@@ -1,4 +1,10 @@
-import { TERMINAL_STATUSES, type PurgeFilter, type RunStatus, type TerminalStatus } from "#types";
+import {
+  TERMINAL_STATUSES,
+  type PurgeFilter,
+  type RunFilter,
+  type RunStatus,
+  type TerminalStatus,
+} from "#types";
 import { isTerminal, statusList } from "#status";
 
 /**
@@ -17,6 +23,27 @@ export const purgeStatuses = (filter: PurgeFilter): readonly TerminalStatus[] =>
   }
   const asked = statusList(filter.status);
   return asked ? asked.filter(isTerminal) : TERMINAL_STATUSES;
+};
+
+/**
+ * The statuses a bulk control operation may touch: `filter.status` intersected with `allowed`, or all
+ * of `allowed` when unset. Same shape as {@link purgeStatuses} — the filter narrows within the set
+ * the operation is defined on and can never widen past it.
+ *
+ * @throws {Error} when the filter carries no predicate — a set operation over everything must be
+ * spelled out, not defaulted into.
+ */
+export const runSetStatuses = (
+  filter: RunFilter,
+  allowed: readonly RunStatus[],
+  op: string,
+): readonly RunStatus[] => {
+  if (Object.values(filter).every((v) => v === undefined)) {
+    throw new Error(`${op}: filter needs at least one predicate`);
+  }
+  const asked = statusList(filter.status);
+  const set = new Set<string>(allowed);
+  return asked ? asked.filter((s) => set.has(s)) : allowed;
 };
 
 /** The minimal run shape a purge reads — satisfied by `RunRow` and by a backend's raw row. */
@@ -40,6 +67,30 @@ export const purgeMatcher = (filter: PurgeFilter): ((run: PurgeRun) => boolean) 
     (cutoff === undefined || (run.createdAt?.getTime() ?? 0) < cutoff) &&
     (filter.name === undefined || run.name === filter.name) &&
     (filter.version === undefined || run.version === filter.version);
+};
+
+/**
+ * The `WHERE` body and binds selecting the rows a bulk cancel/retry acts on. `undefined` when the
+ * filter intersects to no usable status — the caller then touches nothing rather than emitting an
+ * empty `IN ()`. Statuses render as literals for the same reason as {@link purgeWhereSql}.
+ */
+export const runSetWhereSql = (
+  filter: RunFilter,
+  allowed: readonly RunStatus[],
+  op: string,
+  o: PurgeSqlOpts,
+): { where: string; params: unknown[] } | undefined => {
+  const statuses = runSetStatuses(filter, allowed, op);
+  if (statuses.length === 0) return undefined;
+  const params: unknown[] = [];
+  const where = [`status IN ${o.statusTuple(statuses)}`];
+  const add = (column: string, value: unknown): void => {
+    params.push(value);
+    where.push(`${column} ${o.placeholder(params.length)}`);
+  };
+  if (filter.name !== undefined) add("name =", filter.name);
+  if (filter.version !== undefined) add("version =", filter.version);
+  return { where: where.join(" AND "), params };
 };
 
 /** Dialect specifics for {@link purgeWhereSql}. */

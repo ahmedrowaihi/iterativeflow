@@ -16,8 +16,10 @@ import {
   type Page,
   type PurgeFilter,
   TERMINAL_STATUSES,
+  ACTIVE_STATUSES,
   isOrphaned,
   purgeMatcher,
+  runSetStatuses,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -216,6 +218,37 @@ return 1`;
 export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): Store => {
   const evalLua = luaRunner(client);
 
+  // Redis has no secondary index over runs, so a set operation scans the run index once and filters
+  // in memory — same shape as deleteRuns here.
+  const matchingRuns = async (
+    filter: RunFilter,
+    allowed: readonly RunStatus[],
+    op: string,
+    limit: number,
+  ): Promise<RunRow[]> => {
+    const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
+    if (statuses.size === 0) return [];
+    const ids = await client.zrange(keys.runIndex, 0, -1);
+    if (ids.length === 0) return [];
+    const pipe = client.pipeline();
+    for (const runId of ids) pipe.hgetall(keys.run(runId));
+    const res = await pipe.exec();
+    const out: RunRow[] = [];
+    for (let i = 0; i < ids.length && out.length < limit; i++) {
+      const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+      if (
+        row &&
+        statuses.has(row.status) &&
+        (filter.name === undefined || row.name === filter.name) &&
+        (filter.version === undefined || row.version === filter.version) &&
+        (filter.tag === undefined || (row.tags ?? []).includes(filter.tag))
+      ) {
+        out.push(row);
+      }
+    }
+    return out;
+  };
+
   const flatFields = (spec: RunSpec, runId: string): string[] => {
     const f = runFields(spec, runId);
     const out: string[] = [];
@@ -329,7 +362,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     return victims.length;
   };
 
-  return {
+  const store: Store = {
     startRun: startOne,
 
     async startManyRuns(specs) {
@@ -496,6 +529,20 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       return { runs: rows, cursor: rows.length === page.limit ? cursor : undefined };
     },
 
+    async cancelRuns(filter, limit) {
+      const victims = await matchingRuns(filter, ACTIVE_STATUSES, "cancelRuns", limit);
+      for (const r of victims) {
+        await store.markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] });
+      }
+      return victims.length;
+    },
+
+    async retryRuns(filter, limit) {
+      const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
+      for (const r of victims) await store.retryRun(r.id);
+      return victims.length;
+    },
+
     async childrenOf(runId) {
       const ids = await client.smembers(keys.children(runId));
       const rows = await loadRunRows(ids);
@@ -651,4 +698,5 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       return res === 1;
     },
   };
+  return store;
 };

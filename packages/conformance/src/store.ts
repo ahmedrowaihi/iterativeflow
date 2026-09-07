@@ -400,6 +400,46 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.markRunning(runId)).toBe(1);
     });
 
+    it("cancelRuns cancels the live matched set and never a terminal run", async () => {
+      const s = await makeStore();
+      const mk = async (name: string) => (await s.startRun({ name, version: 1, input: {} })).runId;
+      const live1 = await mk("f");
+      const live2 = await mk("f");
+      const other = await mk("g");
+      const done = await mk("f");
+      await s.markTerminal(done, { status: "done", output: 1 });
+
+      expect(await s.cancelRuns({ name: "f" }, 100)).toBe(2);
+      expect((await s.loadRunRow(live1))?.status).toBe("canceled");
+      expect((await s.loadRunRow(live2))?.status).toBe("canceled");
+      expect((await s.loadRunRow(other))?.status).toBe("pending"); // other flow untouched
+      expect((await s.loadRunRow(done))?.status).toBe("done"); // terminal never overwritten
+      expect(await s.cancelRuns({ name: "f" }, 100)).toBe(0); // idempotent — nothing live left
+      await expect(s.cancelRuns({}, 100)).rejects.toThrow();
+    });
+
+    it("retryRuns re-drives the failed matched set, clearing the spent attempt budget", async () => {
+      const s = await makeStore();
+      const mk = async (name: string) => (await s.startRun({ name, version: 1, input: {} })).runId;
+      const a = await mk("f");
+      const b = await mk("f");
+      const live = await mk("f");
+      await s.markRunning(a);
+      await s.markTerminal(a, { status: "failed", error: { code: "X", message: "x" } });
+      await s.markTerminal(b, { status: "failed", error: { code: "X", message: "x" } });
+
+      expect(await s.retryRuns({ name: "f" }, 100)).toBe(2);
+      for (const id of [a, b]) {
+        const row = await s.loadRunRow(id);
+        expect(row?.status).toBe("pending");
+        expect(row?.error).toBeUndefined();
+        expect(row?.attempts).toBe(0); // else the dead-letter cap re-fails it without executing
+      }
+      expect((await s.loadRunRow(live))?.status).toBe("pending");
+      expect(await s.retryRuns({ name: "f" }, 100)).toBe(0); // nothing failed left
+      await expect(s.retryRuns({}, 100)).rejects.toThrow();
+    });
+
     it("runStats counts runs per status", async () => {
       const s = await makeStore();
       const a = await s.startRun({ name: "f", version: 1, input: {} });

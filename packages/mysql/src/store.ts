@@ -6,12 +6,14 @@ import {
   type StartResult,
   type Store,
   type SuspendStatus,
+  ACTIVE_STATUSES,
   NON_SUCCESS_TERMINAL_STATUSES,
   RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   isTerminal,
   orphanedRunsSql,
   purgeWhereSql,
+  runSetWhereSql,
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
@@ -306,6 +308,47 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       const last = rows[rows.length - 1];
       const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
       return { runs: rows.map((r) => mapRun(r)), cursor };
+    },
+
+    async cancelRuns(filter, limit) {
+      const q = runSetWhereSql(filter, ACTIVE_STATUSES, "cancelRuns", MS_PURGE);
+      if (!q) return 0;
+      const params = [...q.params, limit];
+      return sql.tx(async (tx) => {
+        const ids = (
+          await tx.query<{ id: string }>(
+            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`,
+            params,
+          )
+        ).map((r) => r.id);
+        if (ids.length === 0) return 0;
+        const inIds = inList(ids.length);
+        await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
+        await tx.exec(`UPDATE ${t.run} SET status = 'canceled' WHERE id IN ${inIds}`, ids);
+        return ids.length;
+      });
+    },
+
+    async retryRuns(filter, limit) {
+      const q = runSetWhereSql(filter, ["failed"], "retryRuns", MS_PURGE);
+      if (!q) return 0;
+      const params = [...q.params, limit];
+      return sql.tx(async (tx) => {
+        const ids = (
+          await tx.query<{ id: string }>(
+            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`,
+            params,
+          )
+        ).map((r) => r.id);
+        if (ids.length === 0) return 0;
+        const inIds = inList(ids.length);
+        await tx.exec(
+          `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0 WHERE id IN ${inIds}`,
+          ids,
+        );
+        for (const runId of ids) await enqueueStmt(tx, t, runId);
+        return ids.length;
+      });
     },
 
     async childrenOf(runId) {

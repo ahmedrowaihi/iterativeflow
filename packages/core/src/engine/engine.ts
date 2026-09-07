@@ -151,6 +151,15 @@ export interface Engine {
   ): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
+  /**
+   * Cancel every live run matching `filter`, up to `limit` (default 1000) — one round trip instead of
+   * N. Descendants cancel themselves on their next dispatch, so the cascade completes a maintenance
+   * interval later rather than inline. Returns how many were canceled; repeat until `< limit`.
+   */
+  cancelMany(filter: RunFilter, limit?: number): Promise<number>;
+  /** Re-drive every `failed` run matching `filter`, up to `limit` (default 1000). Same per-run
+   *  semantics as {@link Engine.retry}. Returns how many were retried; repeat until `< limit`. */
+  retryMany(filter: RunFilter, limit?: number): Promise<number>;
   result<O = unknown>(
     runId: RunHandle<O> | string,
     opts?: { timeoutMs?: number; pollMs?: number },
@@ -270,6 +279,8 @@ export const createEngine = (
     },
     cancel: (runId) => cancelRun(backend, runId),
     retry: (runId) => retryRun(backend, runId),
+    cancelMany: (filter, limit = 1000) => backend.store.cancelRuns(filter, limit),
+    retryMany: (filter, limit = 1000) => backend.store.retryRuns(filter, limit),
     result: (runId, o) => result(backend, runId, o),
 
     status: (runId) => backend.store.loadRun(runId),
