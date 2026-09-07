@@ -2,12 +2,11 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # changeset-release/** too: the version PR is opened with GITHUB_TOKEN, so its `pull_request`
+    # checks don't reliably run — without this, the one commit that rewrites all 12 manifests and the
+    # lockfile is the one commit nothing verifies.
+    branches: [main, changeset-release/**]
   pull_request:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,6 +18,9 @@ jobs:
   test:
     name: typecheck + tests (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-test-${{ github.ref }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +41,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm run lint
+      - run: pnpm run format:check
       - run: pnpm run test:coverage
       - run: pnpm run build
       # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface change fails
@@ -50,6 +53,11 @@ jobs:
     needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Never cancelled: `changeset publish` walks 12 packages sequentially and npm publishes are not
+    # revocable, so a cancel mid-loop would leave a half-published `fixed` version set.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write

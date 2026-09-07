@@ -5,6 +5,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint packages",
+    "format": "oxfmt packages scripts",
+    "format:check": "oxfmt --check packages scripts",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "build": "pnpm -r --if-present run build",
@@ -25,6 +27,7 @@
     "lefthook": "^2.1.10",
     "mongodb": "^7.5.0",
     "mysql2": "^3.23.1",
+    "oxfmt": "0.67.0",
     "oxlint": "^1.73.0",
     "pg": "^8.16.0",
     "testcontainers": "^12.0.1",

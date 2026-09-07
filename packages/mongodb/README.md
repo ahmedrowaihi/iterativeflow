@@ -14,9 +14,7 @@ import { createEngine } from "@iterativeflow/core";
 const client = new MongoClient(process.env.MONGO_URL); // a replica-set connection string
 await client.connect();
 await ensureIndexes(client.db("iterativeflow"));
-const engine = createEngine(createMongoBackend(client), [
-  /* your flows */
-]);
+const engine = createEngine(createMongoBackend(client), [/* your flows */]);
 ```
 
 ## Notes

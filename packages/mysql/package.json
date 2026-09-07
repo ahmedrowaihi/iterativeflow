@@ -5,7 +5,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ahmedrowaihi/iterativeflow.git",
-    "directory": "v2/packages/mysql"
+    "directory": "packages/mysql"
   },
   "files": [
     "dist",

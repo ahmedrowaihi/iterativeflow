@@ -15,9 +15,7 @@ import { createRedisBackend } from "@iterativeflow/redis";
 import { createEngine, defineFlow } from "@iterativeflow/core";
 
 const backend = createRedisBackend(new Redis(process.env.REDIS_URL));
-const engine = createEngine(backend, [
-  /* your flows */
-]);
+const engine = createEngine(backend, [/* your flows */]);
 ```
 
 ## Notes

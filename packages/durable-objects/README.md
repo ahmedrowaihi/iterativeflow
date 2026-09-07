@@ -13,9 +13,7 @@ export class WorkflowDO {
   #engine;
   constructor(ctx: DurableObjectState) {
     ctx.blockConcurrencyWhile(() => applySchema(ctx.storage.sql));
-    this.#engine = createEngine(createDurableObjectBackend(ctx.storage.sql), [
-      /* your flows */
-    ]);
+    this.#engine = createEngine(createDurableObjectBackend(ctx.storage.sql), [/* your flows */]);
   }
   // drive the engine from an alarm() handler or fetch()
 }

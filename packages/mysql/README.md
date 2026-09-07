@@ -13,9 +13,7 @@ import { createEngine } from "@iterativeflow/core";
 
 const sql = mysqlPool(createPool(process.env.MYSQL_URL));
 await applySchema(sql);
-const engine = createEngine(createMysqlBackend(sql), [
-  /* your flows */
-]);
+const engine = createEngine(createMysqlBackend(sql), [/* your flows */]);
 ```
 
 ## Notes

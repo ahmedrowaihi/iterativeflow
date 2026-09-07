@@ -6,7 +6,7 @@ pre-commit:
       exclude:
         - "dist/**"
         - "node_modules/**"
-      run: npx oxlint {staged_files}
+      run: pnpm exec oxlint {staged_files}
     - name: format
       glob: "*.{ts,tsx,js,jsx,md,json,yml,yaml}"
       exclude:
@@ -15,7 +15,7 @@ pre-commit:
         - "node_modules/**"
         - "etc/**"
         - "**/etc/**"
-      run: npx oxfmt {staged_files}
+      run: pnpm exec oxfmt {staged_files}
       stage_fixed: true
 
 pre-push:

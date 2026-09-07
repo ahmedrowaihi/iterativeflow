@@ -16,9 +16,7 @@ import { createEngine } from "@iterativeflow/core";
 
 const sql = libsqlDb(createClient({ url: "file:workflow.db" })); // or a Turso url
 await applySchema(sql);
-const engine = createEngine(createSqliteBackend(sql), [
-  /* your flows */
-]);
+const engine = createEngine(createSqliteBackend(sql), [/* your flows */]);
 ```
 
 ## Notes
