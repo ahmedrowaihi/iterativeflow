@@ -319,7 +319,9 @@ export interface SweepResult {
  *
  * Set `opts.leaseMs` no larger than the invocation's timeout: a claimed run whose invocation is
  * killed mid-batch only becomes re-claimable once its lease expires, so an oversized lease strands
- * the un-executed tail of the batch for that long. Size `opts.batchMax` to what one invocation can
+ * the un-executed tail of the batch for that long. A step declaring `timeoutMs` renews the lease as
+ * it runs, so budget that tail at up to twice `leaseMs` past the kill — the renewal can land just
+ * before the invocation dies. Size `opts.batchMax` to what one invocation can
  * realistically drain within its budget. Crons that fire more occurrences than `batchMax` (or timers
  * exceeding it) are durable and simply advance over the following invocations. Cron catch-up
  * coalesces: an occurrence missed while nothing was invoking fires once on the next sweep, not once

@@ -40,7 +40,9 @@ export interface StepPolicy {
   /** Delay between those in-invocation retries. Blocks the worker, so keep it small; for long
    *  durable backoff, let the step throw and use run-level retry. Default 0. */
   retryDelayMs?: number;
-  /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default. */
+  /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default.
+   *  Declaring it also holds the run's lease open while the step runs, so a step longer than
+   *  `leaseMs` is not re-claimed mid-flight. */
   timeoutMs?: number;
   /**
    * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
@@ -167,6 +169,22 @@ const withTimeout = async <T>(
   }
 };
 
+const withLeaseHeld = async <T>(
+  work: () => Promise<T>,
+  keepalive?: LeaseKeepalive,
+  timeoutMs?: number,
+): Promise<T> => {
+  // No declared timeout means no honest ceiling: renewing anyway would turn a hung step into a
+  // permanent stall, so leave it reclaimable.
+  if (!keepalive || !timeoutMs) return await work();
+  const timer = setInterval(() => void keepalive.renew(), keepalive.everyMs);
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
+};
+
 const runWithPolicy = async <T>(
   fn: (arg: StepArg) => Promise<T> | T,
   policy?: StepPolicy,
@@ -204,6 +222,12 @@ export interface SuspendHolder {
 }
 
 /** @internal */
+export interface LeaseKeepalive {
+  renew: () => Promise<void>;
+  everyMs: number;
+}
+
+/** @internal */
 export interface CtxDeps {
   backend: Backend;
   snap: RunSnapshot;
@@ -215,7 +239,7 @@ export interface CtxDeps {
   maxFanOut?: number;
   maxDepth?: number;
   suspend: SuspendHolder;
-  onStepCommit?: () => Promise<void>;
+  keepalive?: LeaseKeepalive;
   claimVersion: number;
 }
 
@@ -231,7 +255,7 @@ export const makeCtx = ({
   maxFanOut,
   maxDepth,
   suspend,
-  onStepCommit,
+  keepalive,
   claimVersion,
 }: CtxDeps): Ctx => {
   const runId = snap.run.id;
@@ -274,7 +298,7 @@ export const makeCtx = ({
     const spanId = obs.tracer ? spanIdOf(runId, key) : "";
     let result: T;
     try {
-      result = await runWithPolicy(fn, policy);
+      result = await withLeaseHeld(() => runWithPolicy(fn, policy), keepalive, policy?.timeoutMs);
     } catch (e) {
       obs.tracer?.span({
         runId,
@@ -295,7 +319,7 @@ export const makeCtx = ({
       attempts: attempt,
       shape,
     });
-    await onStepCommit?.();
+    await keepalive?.renew();
     obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
     obs.metrics.stepFinished?.(runId, key);
@@ -404,7 +428,7 @@ export const makeCtx = ({
         },
       );
       childIds.push(...(stored.result as string[]));
-      await onStepCommit?.();
+      await keepalive?.renew();
     }
     const joinShape = `invokeAllJoin:${specs.length}`;
     const { key: joinKey, memo: joinMemo } = memoAt(joinShape);

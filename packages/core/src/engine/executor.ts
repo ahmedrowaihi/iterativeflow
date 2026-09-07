@@ -38,6 +38,12 @@ export const defaultRetry: RetryPolicy = {
  *  multi-step run never loses the lease, rare enough that quick steps don't each cost a heartbeat. */
 const LEASE_RENEW_BELOW = 0.5;
 
+// renew() no-ops until the lease is half spent, so a quarter-lease tick always lands before expiry.
+// Clamped to half the lease as well, or the floor would outrun a very short lease and every renewal
+// would land after it had already gone.
+const LEASE_KEEPALIVE_FRACTION = 0.25;
+const MIN_KEEPALIVE_MS = 250;
+
 /** The outcome status of one tick on a run. */
 export type TickStatus =
   | "done"
@@ -143,12 +149,18 @@ export const runTick = async (
   // contract stand. `held` is the current lease, used to ack when the tick ends.
   let held = lease;
   const leaseMs = opts.leaseMs;
-  const renewLease =
+  const keepalive =
     leaseMs === undefined
       ? undefined
-      : async (): Promise<void> => {
-          if (now().getTime() < held.expiresAt.getTime() - leaseMs * LEASE_RENEW_BELOW) return;
-          held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
+      : {
+          everyMs: Math.min(
+            Math.max(MIN_KEEPALIVE_MS, Math.floor(leaseMs * LEASE_KEEPALIVE_FRACTION)),
+            Math.floor(leaseMs * LEASE_RENEW_BELOW),
+          ),
+          renew: async (): Promise<void> => {
+            if (now().getTime() < held.expiresAt.getTime() - leaseMs * LEASE_RENEW_BELOW) return;
+            held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
+          },
         };
 
   const finish = async (
@@ -257,7 +269,7 @@ export const runTick = async (
     maxFanOut: flow.policy?.maxFanOut,
     maxDepth: flow.policy?.maxDepth,
     suspend: suspendState,
-    onStepCommit: renewLease,
+    keepalive,
     claimVersion: lease.version,
   });
 

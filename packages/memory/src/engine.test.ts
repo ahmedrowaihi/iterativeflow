@@ -199,6 +199,68 @@ describe("engine — end to end on the memory backend", () => {
     expect(tick?.error?.message).toContain("upstream 503");
   });
 
+  // Real timers, not the injected clock: the keepalive ticks on wall time. A 2s lease renews every
+  // 500ms, so a slow CI runner has ~1s of slack before a missed tick would drop the lease.
+  const LEASE = 2_000;
+  const gated = (name: string, policy?: { timeoutMs: number }) => {
+    let entered = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const flow = defineFlow<Record<string, never>, string>({
+      name,
+      version: 1,
+      run: async (ctx) =>
+        ctx.step(
+          "work",
+          async () => {
+            entered += 1;
+            await gate;
+            return "done";
+          },
+          policy,
+        ),
+    });
+    return { flow, release, enteredCount: () => entered };
+  };
+
+  it("holds the lease across ONE long step, so a second worker cannot re-claim it", async () => {
+    const { flow, release, enteredCount } = gated("one-long-step", { timeoutMs: 60_000 });
+    const backend = createMemoryBackend();
+    const runId = await submit(backend, flow, {});
+
+    // deliberately not awaited — worker A stays inside the step
+    const workerA = tickOnce(backend, registry([flow]), { batchMax: 1, leaseMs: LEASE });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(enteredCount()).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 2_400));
+    expect(await backend.queue.claim({ limit: 1, leaseMs: LEASE, now: new Date() })).toEqual([]);
+    expect(enteredCount()).toBe(1);
+
+    release();
+    await workerA;
+    expect((await backend.store.loadRun(runId))?.run).toMatchObject({
+      status: "done",
+      output: "done",
+    });
+  });
+
+  it("a step with no declared timeout keeps the old behaviour — the lease still lapses", async () => {
+    const { flow, release } = gated("unbounded-step"); // no timeoutMs
+    const backend = createMemoryBackend();
+    await submit(backend, flow, {});
+
+    const workerA = tickOnce(backend, registry([flow]), { batchMax: 1, leaseMs: LEASE });
+    await new Promise((r) => setTimeout(r, 2_400));
+    const leased = await backend.queue.claim({ limit: 1, leaseMs: LEASE, now: new Date() });
+    expect(leased).toHaveLength(1);
+
+    release();
+    await workerA;
+  });
+
   it("renews the lease as a multi-step run commits steps (long-run safety)", async () => {
     const backend = createMemoryBackend();
     let heartbeats = 0;
