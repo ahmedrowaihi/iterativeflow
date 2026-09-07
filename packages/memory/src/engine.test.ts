@@ -5,6 +5,7 @@ import {
   type ObserveOpts,
   type Span,
   cancelRun,
+  createEngine,
   defineFlow,
   reconcile,
   registerCron,
@@ -1034,5 +1035,34 @@ describe("engine — end to end on the memory backend", () => {
     expect(settledCalls[0][1]).toBe("done");
     expect(settledCalls[0][2]).toEqual({ name: "labelled", version: 3 });
     expect((settledCalls[0][3] as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("pause stops the resident loop claiming; resume wakes it without a restart", async () => {
+    let ran = 0;
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "pausable",
+      version: 1,
+      run: async (ctx) =>
+        ctx.step("s", () => {
+          ran += 1;
+          return 1;
+        }),
+    });
+    const engine = createEngine(createMemoryBackend(), [flow], { batchMax: 5 });
+    engine.pause(); // before run(): pause lands on the next claim, so a tick already in flight drains
+    const stop = engine.run({ tickMs: 5, maintenanceMs: 50 });
+    try {
+      await engine.submit(flow, {});
+      await new Promise((r) => setTimeout(r, 120));
+      expect(ran).toBe(0);
+      expect(engine.isPaused()).toBe(true);
+
+      engine.resume();
+      await new Promise((r) => setTimeout(r, 200));
+      expect(ran).toBe(1); // the idle loop woke on resume rather than sitting out its backoff
+      expect(engine.isPaused()).toBe(false);
+    } finally {
+      await stop();
+    }
   });
 });

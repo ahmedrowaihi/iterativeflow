@@ -113,5 +113,5 @@ export interface Queue {
    * worker loop dispatches on enqueue instead of waiting out the poll tick; backends without one
    * omit it and the loop polls every `timeoutMs`. Never load-bearing — `timeoutMs` is the backstop.
    */
-  waitForWork?(timeoutMs: number): Promise<void>;
+  waitForWork?(timeoutMs: number, signal?: AbortSignal): Promise<void>;
 }

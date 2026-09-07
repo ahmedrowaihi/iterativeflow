@@ -49,6 +49,17 @@ export interface Liveness {
   runs: Record<RunStatus, number>;
 }
 
+const anySignal = (a: AbortSignal, b: AbortSignal): AbortSignal => {
+  const out = new AbortController();
+  const stop = (): void => out.abort();
+  if (a.aborted || b.aborted) out.abort();
+  else {
+    a.addEventListener("abort", stop, { once: true });
+    b.addEventListener("abort", stop, { once: true });
+  }
+  return out.signal;
+};
+
 /** Signal-aware sleep on the Web-standard `setTimeout` — resolves after `ms`, rejects if `signal`
  *  aborts. Removes its abort listener on resolve so a sustained drain doesn't leak one per tick. */
 const delay = (ms: number, opts?: { signal?: AbortSignal }): Promise<void> =>
@@ -225,6 +236,19 @@ export interface Engine {
 
   /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
   run(opts?: RunLoopOpts): () => Promise<void>;
+
+  /**
+   * Stop the {@link Engine.run} loop claiming new work, without stopping the worker: in-flight runs
+   * finish, reconcile and crons keep running, and an idle loop wakes at once rather than after its
+   * backoff. Takes effect on the next claim, so a batch already claimed is still drained. Idempotent,
+   * and safe to call before `run`. It gates only that loop — a caller driving {@link Engine.tick} or
+   * `serverlessTick` themselves pauses by not calling them.
+   */
+  pause(): void;
+  /** Resume claiming after {@link Engine.pause}, waking the loop at once. Idempotent. */
+  resume(): void;
+  /** Whether claiming is currently paused. */
+  isPaused(): boolean;
 }
 
 export const createEngine = (
@@ -245,6 +269,14 @@ export const createEngine = (
     pollTimeoutMs: opts.pollTimeoutMs ?? 30_000,
   };
   const clock: Clock = now ?? systemClock;
+  // Pausing is a push, not a poll: flipping it wakes any loop sitting in its idle backoff, so a
+  // stop/start command lands on the next claim instead of one backoff later.
+  let paused = false;
+  let gate = new AbortController();
+  const flipGate = (): void => {
+    gate.abort();
+    gate = new AbortController();
+  };
   const cap = opts.maxPayloadBytes;
   const guard = (what: string, payload: unknown): void => {
     if (cap !== undefined && byteSize(payload) > cap) {
@@ -318,6 +350,16 @@ export const createEngine = (
     runCrons: () => runDueCrons(backend, clock),
     serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 
+    pause() {
+      paused = true;
+      flipGate();
+    },
+    resume() {
+      paused = false;
+      flipGate();
+    },
+    isPaused: () => paused,
+
     run(loop) {
       const tickMs = loop?.tickMs ?? 200;
       const maxIdleMs = Math.max(tickMs, loop?.maxIdleTickMs ?? tickMs * 8);
@@ -336,6 +378,16 @@ export const createEngine = (
       const tickLoop = (async () => {
         let idleMs = tickMs;
         while (!signal.aborted) {
+          // `gate` is replaced on every pause/resume, so waiting on it alongside `signal` is what
+          // makes either land immediately instead of after the current backoff.
+          const idle = (ms: number): Promise<void> =>
+            waitForWork
+              ? waitForWork(ms, anySignal(signal, gate.signal)).catch(onTickError)
+              : delay(ms, { signal: anySignal(signal, gate.signal) }).catch(() => undefined);
+          if (paused) {
+            await idle(maxIdleMs);
+            continue;
+          }
           const results = await tickOnce(backend, reg, tickOpts).catch((e): TickResult[] => {
             onTickError(e);
             return [];
@@ -348,9 +400,7 @@ export const createEngine = (
             await delay(0, { signal }).catch(() => undefined);
             continue;
           }
-          await (waitForWork
-            ? waitForWork(idleMs).catch(onTickError)
-            : delay(idleMs, { signal }).catch(() => undefined));
+          await idle(idleMs);
         }
       })();
       const maintenance = setInterval(() => {

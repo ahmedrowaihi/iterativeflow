@@ -739,6 +739,18 @@ interface Engine {
   serverlessTick(): Promise<SweepResult>;
   /** Start a resident worker loop (ticks + maintenance). Returns a stop function. */
   run(opts?: RunLoopOpts): () => Promise<void>;
+  /**
+   * Stop the {@link Engine.run} loop claiming new work, without stopping the worker: in-flight runs
+   * finish, reconcile and crons keep running, and an idle loop wakes at once rather than after its
+   * backoff. Takes effect on the next claim, so a batch already claimed is still drained. Idempotent,
+   * and safe to call before `run`. It gates only that loop — a caller driving {@link Engine.tick} or
+   * `serverlessTick` themselves pauses by not calling them.
+   */
+  pause(): void;
+  /** Resume claiming after {@link Engine.pause}, waking the loop at once. Idempotent. */
+  resume(): void;
+  /** Whether claiming is currently paused. */
+  isPaused(): boolean;
 }
 declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?: EngineOpts) => Engine;
 //#endregion
@@ -1006,7 +1018,7 @@ interface Queue {
    * worker loop dispatches on enqueue instead of waiting out the poll tick; backends without one
    * omit it and the loop polls every `timeoutMs`. Never load-bearing — `timeoutMs` is the backstop.
    */
-  waitForWork?(timeoutMs: number): Promise<void>;
+  waitForWork?(timeoutMs: number, signal?: AbortSignal): Promise<void>;
 }
 //#endregion
 //#region src/ports/timer.d.ts
