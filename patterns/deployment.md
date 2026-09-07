@@ -116,7 +116,11 @@ nothing. It does, if you follow a few rules.
   retrying query errors.
 - **Schema changes are additive.** `applySchema` only adds tables and columns, never drops or renames, so
   an old pod keeps working against the new schema during the rollout, and an app rollback needs no schema
-  rollback.
+  rollback. It also creates indexes, and a plain `CREATE INDEX` takes a write lock for the duration of
+  the build — on a `run` table with millions of rows that stalls writes across every pod that boots. At
+  that size, run `applySchema` as a migration step rather than on boot, or pre-create the new index with
+  `CREATE INDEX CONCURRENTLY` (Postgres) before deploying; `IF NOT EXISTS` then makes the boot call a
+  no-op.
 
 Size `leaseMs` above your longest step plus the clock skew you expect — see [Clocks and
 leases](#clocks-and-leases).

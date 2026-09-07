@@ -124,6 +124,15 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(snap?.steps.get("a")).toMatchObject({ status: "ok", result: 42, attempts: 1 });
     });
 
+    it("a step memo round-trips through JSON — a Date comes back as a string on every backend", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
+      const at = new Date("2030-01-01T00:00:00.000Z");
+      await s.checkpointStep({ runId, cursorKey: "a", status: "ok", result: { at }, attempts: 1 });
+      const memo = (await s.loadRun(runId))?.steps.get("a")?.result as { at: unknown };
+      expect(memo.at).toBe("2030-01-01T00:00:00.000Z"); // not a Date — `T` describes fn, not replay
+    });
+
     it("checkpointStep round-trips the shape tag (drift-guard evidence)", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });

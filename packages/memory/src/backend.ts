@@ -37,6 +37,13 @@ interface Job {
   leaseExpiresMs?: number;
 }
 
+/**
+ * Clone a value the way a real backend stores it: through JSON. `structuredClone` would preserve a
+ * `Date`, `Map` or `Set` that every serializing backend turns into a string or a plain object — so a
+ * flow could pass in memory and break in production on the same code.
+ */
+const durable = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+
 const idemKey = (name: string, version: number, key: string): string =>
   JSON.stringify([name, version, key]);
 
@@ -72,7 +79,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       name: spec.name,
       version: spec.version,
       status: "pending",
-      input: structuredClone(spec.input),
+      input: durable(spec.input),
       attempts: 0,
       idempotencyKey: spec.idempotencyKey,
       tags: spec.tags ? [...spec.tags] : undefined,
@@ -193,7 +200,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         signalIdem.add(k);
       }
       const inbox = signals.get(runId) ?? [];
-      inbox.push({ id: id(), name, payload: structuredClone(payload) });
+      inbox.push({ id: id(), name, payload: durable(payload) });
       signals.set(runId, inbox);
       enqueueCore(runId); // wake the parked run atomically with the delivery
       return { delivered: true };
@@ -218,8 +225,8 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       }
       const outcome: StepOutcome = {
         status: c.status,
-        result: structuredClone(c.result),
-        error: c.error ? structuredClone(c.error) : undefined,
+        result: durable(c.result),
+        error: c.error ? durable(c.error) : undefined,
         attempts: c.attempts,
         shape: c.shape,
       };
@@ -371,7 +378,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         schedule: spec.schedule,
         flowName: spec.flowName,
         flowVersion: spec.flowVersion,
-        input: structuredClone(spec.input),
+        input: durable(spec.input),
         overlap: spec.overlap ?? "allow",
         nextRunAt:
           existing && existing.schedule === spec.schedule ? existing.nextRunAt : spec.nextRunAt,

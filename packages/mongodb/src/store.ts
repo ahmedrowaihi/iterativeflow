@@ -25,6 +25,7 @@ import {
   type SignalDoc,
   type StepDoc,
   buildRunDoc,
+  durable,
   mapCron,
   mapRun,
   mapSignal,
@@ -229,7 +230,7 @@ export const createMongoStore = (
         _id: id(),
         run_id: runId,
         name,
-        payload,
+        payload: durable(payload),
         ord: new ObjectId(),
         ...(opts?.idempotencyKey !== undefined && {
           idem_key: opts.idempotencyKey,
@@ -268,8 +269,8 @@ export const createMongoStore = (
         cursor_key: c.cursorKey,
         status: c.status,
         attempts: c.attempts,
-        ...(c.result !== undefined && { result: c.result }),
-        ...(c.error !== undefined && { error: c.error }),
+        ...(c.result !== undefined && { result: durable(c.result) }),
+        ...(c.error !== undefined && { error: durable(c.error) }),
         ...(c.shape !== undefined && { shape: c.shape }),
       };
       try {
@@ -324,8 +325,8 @@ export const createMongoStore = (
         const run = await runs.findOne({ _id: runId }, { session });
         if (!run) throw new Error(`markTerminal: run ${runId} not found`);
         if (run.status === "canceled") return; // cancel is sticky
-        const output = outcome.status === "done" ? outcome.output : undefined;
-        const error = outcome.status === "done" ? undefined : outcome.error;
+        const output = outcome.status === "done" ? durable(outcome.output) : undefined;
+        const error = outcome.status === "done" ? undefined : durable(outcome.error);
         const set: Record<string, unknown> = { status: outcome.status };
         const unset: Record<string, ""> = {};
         if (output === undefined) unset.output = "";

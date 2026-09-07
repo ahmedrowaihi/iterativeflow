@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommitTypeAll(chore)"],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "minimumReleaseAge": "1 day",
+  "packageRules": [
+    {
+      "description": "Non-major updates land as one reviewable PR; majors come separately because each needs judgement.",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "non-major dependencies"
+    },
+    {
+      "description": "tsdown decides what ships in dist, so its updates get their own PR and a look at the etc/ diff.",
+      "matchPackageNames": ["tsdown"],
+      "groupName": "tsdown"
+    },
+    {
+      "description": "Backend drivers are what the conformance suites run against — never grouped, never automerged.",
+      "matchPackageNames": [
+        "pg",
+        "mysql2",
+        "ioredis",
+        "mongodb",
+        "@libsql/client",
+        "@aws-sdk/{/,}**"
+      ],
+      "groupName": null
+    },
+    {
+      "description": "The workspace packages version together via changesets; Renovate must not touch them.",
+      "matchPackageNames": ["@iterativeflow/{/,}**"],
+      "enabled": false
+    }
+  ]
+}

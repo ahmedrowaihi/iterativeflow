@@ -27,6 +27,13 @@ export interface RunDoc {
   ord: ObjectId;
 }
 
+/**
+ * Normalize a value to what a JSON-storing backend would keep. BSON preserves a `Date` (and other
+ * rich types) that every other backend turns into a string, so without this the same flow gets a
+ * different runtime type on MongoDB than on Postgres — the memo contract has to be uniform.
+ */
+export const durable = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+
 export interface StepDoc {
   _id: string;
   run_id: string;
@@ -110,7 +117,7 @@ export const buildRunDoc = (spec: RunSpec, runId: string, ord: ObjectId): RunDoc
   name: spec.name,
   version: spec.version,
   status: "pending",
-  input: spec.input,
+  input: durable(spec.input),
   attempts: 0,
   depth: spec.depth ?? 0,
   created_at: spec.createdAt ? spec.createdAt.getTime() : Date.now(),

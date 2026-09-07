@@ -75,6 +75,11 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * keep its side-effects idempotent; the memo is exactly-once. `policy` adds in-invocation
    * retries, a timeout, and error classification; `fn` receives an {@link StepArg} (abort
    * signal + attempt). Durable long backoff is still the run-level retry.
+   *
+   * The memo round-trips through the backend's JSON, so `T` describes what `fn` returns, not
+   * necessarily what a replay hands back: a `Date` returns as an ISO string on every backend that
+   * serializes (the in-memory one keeps it, which is why this only shows up in production). Return
+   * JSON-native values, and parse at the boundary.
    */
   step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, policy?: StepPolicy): Promise<T>;
 

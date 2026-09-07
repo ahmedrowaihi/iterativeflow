@@ -44,6 +44,8 @@ jobs:
       - run: pnpm run format:check
       - run: pnpm run test:coverage
       - run: pnpm run build
+      # Packaging gate: exports/files/types must actually point at what the build emits.
+      - run: pnpm run publint
       # Public-API gate: regenerate the committed .d.ts snapshots; a public-surface change fails
       # here until etc/*.api.md is regenerated and committed.
       - run: pnpm run api:snapshot && git diff --exit-code etc
