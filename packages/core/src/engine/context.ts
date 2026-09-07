@@ -21,6 +21,7 @@ import {
   type ControlSignal,
   FlowDriftError,
   SleepSignal,
+  isControlSignal,
   StepFailedError,
   StepTimeoutError,
 } from "#engine/signals";
@@ -201,6 +202,9 @@ const runWithPolicy = async <T>(
       );
     } catch (e) {
       controller.abort();
+      // A suspend is not a failure: it must not reach `classify` (which would fail the run on a
+      // normal sleep) and must not burn a retry (which would re-run the body on every park).
+      if (isControlSignal(e)) throw e;
       // A permanent error fails the step (and the run) immediately — a StepFailedError is
       // non-retryable, so neither the in-invocation loop nor the run-level retry re-runs it.
       if (policy?.classify?.(e, attempt) === "permanent")
@@ -262,6 +266,11 @@ export const makeCtx = ({
   const depth = snap.run.depth ?? 0;
   const traceId = obs.tracer ? traceIdOf(runId) : "";
   let cursor = 0;
+  // A ctx.* call issued INSIDE a step body keys off that step rather than the flat cursor, so the
+  // body's calls can't shift the keys of everything after it. Without this the outer step's memo
+  // commits at a key the nested calls already advanced past, and the next replay — which returns
+  // that memo without re-running the body — lands the following call on the nested memo and drifts.
+  const scope: { prefix: string; n: number }[] = [];
 
   // Record a suspend's control signal in the shared holder and hand it back to `throw`, so every
   // suspend path records-then-throws through one idiom — the executor re-throws a recorded-but-
@@ -275,7 +284,8 @@ export const makeCtx = ({
     // and swallowed. Re-throw it (before advancing the cursor) so the suspend still reaches the
     // engine and the run parks — a `try/catch` around `ctx.*` can't strand a run.
     if (suspend.signal) throw suspend.signal;
-    const key = `s${cursor++}`;
+    const inner = scope[scope.length - 1];
+    const key = inner ? `${inner.prefix}.${inner.n++}` : `s${cursor++}`;
     const memo = snap.steps.get(key);
     if (memo?.shape !== undefined && memo.shape !== shape) {
       throw new FlowDriftError(key, memo.shape, shape);
@@ -298,7 +308,12 @@ export const makeCtx = ({
     const spanId = obs.tracer ? spanIdOf(runId, key) : "";
     let result: T;
     try {
-      result = await withLeaseHeld(() => runWithPolicy(fn, policy), keepalive, policy?.timeoutMs);
+      scope.push({ prefix: key, n: 0 });
+      try {
+        result = await withLeaseHeld(() => runWithPolicy(fn, policy), keepalive, policy?.timeoutMs);
+      } finally {
+        scope.pop();
+      }
     } catch (e) {
       obs.tracer?.span({
         runId,

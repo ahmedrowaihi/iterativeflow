@@ -225,6 +225,66 @@ describe("engine — end to end on the memory backend", () => {
     return { flow, release, enteredCount: () => entered };
   };
 
+  it("a suspend inside a step bypasses classify and does not burn a retry", async () => {
+    let bodyRuns = 0;
+    const classified: string[] = [];
+    const flow = defineFlow<Record<string, never>, string>({
+      name: "suspend-vs-policy",
+      version: 1,
+      run: async (ctx) =>
+        ctx.step(
+          "gate",
+          async () => {
+            bodyRuns += 1;
+            await ctx.sleep(1_000);
+            return "through";
+          },
+          {
+            retries: 3,
+            retryDelayMs: 1,
+            // the recipe the docs suggest: anything unrecognised is permanent
+            classify: (e) => {
+              classified.push(String((e as Error)?.name ?? e));
+              return "permanent";
+            },
+          },
+        ),
+    });
+    const backend = createMemoryBackend();
+    const settled = await driveToSettle(backend, registry([flow]), await submit(backend, flow, {}));
+
+    expect(settled).toMatchObject({ status: "done", output: "through" });
+    expect(classified).toEqual([]); // the SleepSignal never reached classify
+    expect(bodyRuns).toBe(2); // ran once, parked, resumed once — the retry budget was not spent
+  });
+
+  it("a ctx.* call nested inside a step body survives a later replay", async () => {
+    let napRuns = 0;
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "nested-ctx",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.step("a", () => 1);
+        await ctx.step("nap", async () => {
+          napRuns += 1;
+          await ctx.sleep(1_000); // nested suspend — the shape the builder docs use
+          return 2;
+        });
+        await ctx.sleep(1_000); // a further replay AFTER "nap" committed its memo
+        return await ctx.step("b", () => 3);
+      },
+    });
+    const backend = createMemoryBackend();
+    const flows = registry([flow]);
+    const runId = await submit(backend, flow, {});
+    const settled = await driveToSettle(backend, flows, runId);
+
+    // before the scoped cursor this drifted at "b" (its key collided with the nested sleep's memo),
+    // parked, and dead-lettered as RUN_ATTEMPTS_EXHAUSTED
+    expect(settled).toMatchObject({ status: "done", output: 3 });
+    expect(napRuns).toBe(2); // the body re-runs from the top on resume — nesting does not memoize it
+  });
+
   it("holds the lease across ONE long step, so a second worker cannot re-claim it", async () => {
     const { flow, release, enteredCount } = gated("one-long-step", { timeoutMs: 60_000 });
     const backend = createMemoryBackend();
