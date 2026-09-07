@@ -49,9 +49,12 @@ export const createMongoStore = (
   const steps = db.collection<StepDoc>(n.steps);
   const signals = db.collection<SignalDoc>(n.signals);
   const crons = db.collection<CronDoc>(n.crons);
-  const jobs = db.collection<{ _id: string; run_at: number; priority: number; version: number }>(
-    n.jobs,
-  );
+  const jobs = db.collection<{
+    _id: string;
+    run_at: number;
+    priority: number;
+    version: number;
+  }>(n.jobs);
   const timers = db.collection<{ _id: string; fire_at: number }>(n.timers);
 
   const inTx = async <T>(fn: (session: ClientSession) => Promise<T>): Promise<T> => {
@@ -68,7 +71,10 @@ export const createMongoStore = (
     jobs.updateOne(
       { _id: runId },
       {
-        $set: { run_at: opts?.runAt ? opts.runAt.getTime() : 0, priority: opts?.priority ?? 0 },
+        $set: {
+          run_at: opts?.runAt ? opts.runAt.getTime() : 0,
+          priority: opts?.priority ?? 0,
+        },
         $inc: { version: 1 },
       },
       { upsert: true, session },
@@ -80,7 +86,9 @@ export const createMongoStore = (
     session: ClientSession,
   ): Promise<void> => {
     try {
-      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), { session });
+      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), {
+        session,
+      });
     } catch (e) {
       if (!isDup(e)) throw e; // insert-by-id is first-writer-wins: replay re-issues the same spawn
     }
@@ -104,7 +112,11 @@ export const createMongoStore = (
       await timers.deleteMany({ _id: { $in: [...fx.cancelTimers] } }, { session });
     }
     if (fx.consumeSignals?.length) {
-      await signals.deleteMany({ _id: { $in: [...fx.consumeSignals] } }, { session });
+      await signals.updateMany(
+        { _id: { $in: [...fx.consumeSignals] } },
+        { $set: { consumed: true } },
+        { session },
+      );
     }
     if (fx.joinTarget) {
       await runs.updateOne(
@@ -118,7 +130,9 @@ export const createMongoStore = (
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     try {
-      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), { session: boundSession });
+      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), {
+        session: boundSession,
+      });
       return { runId, created: true, status: "pending" };
     } catch (e) {
       if (!isDup(e)) throw e;
@@ -139,7 +153,9 @@ export const createMongoStore = (
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const q: Filter<RunDoc> = {
       status: { $in: [...purgeStatuses(filter)] },
-      ...(filter.before !== undefined && { created_at: { $lt: filter.before.getTime() } }),
+      ...(filter.before !== undefined && {
+        created_at: { $lt: filter.before.getTime() },
+      }),
       ...(filter.name !== undefined && { name: filter.name }),
       ...(filter.version !== undefined && { version: filter.version }),
     };
@@ -168,11 +184,18 @@ export const createMongoStore = (
       if (!run) return undefined;
       const [stepDocs, signalDocs] = await Promise.all([
         steps.find({ run_id: runId }).toArray(),
-        signals.find({ run_id: runId }).sort({ ord: 1 }).toArray(),
+        signals
+          .find({ run_id: runId, consumed: { $ne: true } })
+          .sort({ ord: 1 })
+          .toArray(),
       ]);
       const stepMap = new Map<string, StepOutcome>();
       for (const s of stepDocs) stepMap.set(s.cursor_key, mapStep(s));
-      return { run: mapRun(run), steps: stepMap, signals: signalDocs.map(mapSignal) };
+      return {
+        run: mapRun(run),
+        steps: stepMap,
+        signals: signalDocs.map(mapSignal),
+      };
     },
 
     async loadRunRow(runId) {
@@ -206,7 +229,9 @@ export const createMongoStore = (
         name,
         payload,
         ord: new ObjectId(),
-        ...(opts?.idempotencyKey !== undefined && { idem_key: opts.idempotencyKey }),
+        ...(opts?.idempotencyKey !== undefined && {
+          idem_key: opts.idempotencyKey,
+        }),
       };
       try {
         return await inTx(async (session) => {
@@ -258,7 +283,11 @@ export const createMongoStore = (
               { session },
             );
             if (touched.matchedCount === 0) {
-              return { status: c.status, attempts: c.attempts, committed: false };
+              return {
+                status: c.status,
+                attempts: c.attempts,
+                committed: false,
+              };
             }
           }
           await steps.insertOne(stepDoc, { session });
@@ -269,7 +298,9 @@ export const createMongoStore = (
         if (!isDup(e)) throw e;
         const existing = await steps.findOne({ _id: stepDoc._id }); // first-writer-wins; skip outbox
         if (!existing)
-          throw new Error(`checkpointStep: step ${stepDoc._id} vanished`, { cause: e });
+          throw new Error(`checkpointStep: step ${stepDoc._id} vanished`, {
+            cause: e,
+          });
         return mapStep(existing);
       }
     },
@@ -328,9 +359,10 @@ export const createMongoStore = (
     async runStats() {
       const stats = zeroRunStats();
       const grouped = await runs
-        .aggregate<{ _id: keyof typeof stats; count: number }>([
-          { $group: { _id: "$status", count: { $sum: 1 } } },
-        ])
+        .aggregate<{
+          _id: keyof typeof stats;
+          count: number;
+        }>([{ $group: { _id: "$status", count: { $sum: 1 } } }])
         .toArray();
       for (const g of grouped) stats[g._id] = g.count;
       return stats;
@@ -401,7 +433,10 @@ export const createMongoStore = (
             overlap: spec.overlap ?? "allow",
           },
           // Keep the existing schedule timing when re-registering an already-known cron.
-          $setOnInsert: { next_run_at: spec.nextRunAt.getTime(), last_run_at: null },
+          $setOnInsert: {
+            next_run_at: spec.nextRunAt.getTime(),
+            last_run_at: null,
+          },
         },
         { upsert: true },
       );
@@ -427,7 +462,12 @@ export const createMongoStore = (
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       const res = await crons.updateOne(
         { _id: name, next_run_at: expectedNextRunAt.getTime() },
-        { $set: { next_run_at: nextRunAt.getTime(), last_run_at: lastRunAt.getTime() } },
+        {
+          $set: {
+            next_run_at: nextRunAt.getTime(),
+            last_run_at: lastRunAt.getTime(),
+          },
+        },
       );
       return res.modifiedCount === 1;
     },

@@ -56,7 +56,9 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
     await sql.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1::text[])`, [fx.cancelTimers]);
   }
   if (fx.consumeSignals?.length) {
-    await sql.query(`DELETE FROM ${t.signal} WHERE id = ANY($1::text[])`, [fx.consumeSignals]);
+    await sql.query(`UPDATE ${t.signal} SET consumed = true WHERE id = ANY($1::text[])`, [
+      fx.consumeSignals,
+    ]);
   }
   if (fx.joinTarget) {
     await sql.query(`UPDATE ${t.run} SET join_remaining = $2 WHERE id = $1`, [

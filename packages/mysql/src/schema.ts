@@ -89,6 +89,7 @@ export const ddl = (prefix = ""): string[] => {
       name     VARCHAR(191) NOT NULL,
       payload  LONGTEXT,
       idem_key VARCHAR(191),
+      consumed TINYINT(1) NOT NULL DEFAULT 0,
       KEY signal_inbox (run_id, seq),
       UNIQUE KEY signal_idem (run_id, idem_key)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -125,7 +126,19 @@ export const ddl = (prefix = ""): string[] => {
   ];
 };
 
+// MySQL has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
+const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
+  const cols = await sql.query<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'consumed'`,
+    [t.signal.replace(/`/g, "")],
+  );
+  if (Number(cols[0]?.n ?? 0) > 0) return;
+  await sql.query(`ALTER TABLE ${t.signal} ADD COLUMN consumed TINYINT(1) NOT NULL DEFAULT 0`);
+};
+
 /** Apply the schema DDL (idempotent). Run once before use. */
 export const applySchema = async (sql: Sql, prefix = ""): Promise<void> => {
   for (const stmt of ddl(prefix)) await sql.query(stmt);
+  await addSignalConsumed(sql, tables(prefix));
 };

@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS ${t.signal} (
   run_id   TEXT NOT NULL REFERENCES ${t.run}(id),
   name     TEXT NOT NULL,
   payload  TEXT,
-  idem_key TEXT
+  idem_key TEXT,
+  consumed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ${t.signal}_inbox ON ${t.signal} (run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ${t.signal}_idem
@@ -112,6 +113,13 @@ export interface ApplySchemaOpts {
  * Apply the schema DDL (idempotent). Splits on `;` because libsql runs one statement per call. On a
  * file store it also sets the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (see {@link ApplySchemaOpts}).
  */
+// SQLite has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
+const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
+  const cols = await sql.query<{ name: string }>(`PRAGMA table_info(${t.signal})`);
+  if (cols.some((c) => c.name === "consumed")) return;
+  await sql.query(`ALTER TABLE ${t.signal} ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0`);
+};
+
 export const applySchema = async (
   sql: Sql,
   prefix = "",
@@ -126,4 +134,5 @@ export const applySchema = async (
     const s = stmt.trim();
     if (s) await sql.query(s);
   }
+  await addSignalConsumed(sql, tables(prefix));
 };

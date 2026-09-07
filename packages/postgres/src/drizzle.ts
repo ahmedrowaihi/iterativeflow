@@ -113,6 +113,7 @@ const MODEL: TableModel[] = [
       t("payload", `jsonb("payload")`),
       t("seq", `bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity()`),
       t("idemKey", `text("idem_key")`),
+      t("consumed", `boolean("consumed").notNull().default(false)`),
     ],
     extras: [
       { name: "signal_inbox", on: ["runId", "seq"] },
@@ -153,6 +154,7 @@ const MODEL: TableModel[] = [
 
 const IMPORTS = [
   "bigint",
+  "boolean",
   "index",
   "integer",
   "jsonb",

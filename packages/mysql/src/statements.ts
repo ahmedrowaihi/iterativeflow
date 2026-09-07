@@ -58,7 +58,7 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
   }
   if (fx.consumeSignals?.length) {
     await sql.exec(
-      `DELETE FROM ${t.signal} WHERE id IN ${inList(fx.consumeSignals.length)}`,
+      `UPDATE ${t.signal} SET consumed = 1 WHERE id IN ${inList(fx.consumeSignals.length)}`,
       fx.consumeSignals,
     );
   }

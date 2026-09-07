@@ -93,8 +93,10 @@ CREATE TABLE IF NOT EXISTS ${t.signal} (
   name     text NOT NULL,
   payload  jsonb,
   seq      bigint GENERATED ALWAYS AS IDENTITY,
-  idem_key text
+  idem_key text,
+  consumed boolean NOT NULL DEFAULT false
 );
+ALTER TABLE ${t.signal} ADD COLUMN IF NOT EXISTS consumed boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS signal_inbox ON ${t.signal} (run_id, seq);
 CREATE UNIQUE INDEX IF NOT EXISTS signal_idem
   ON ${t.signal} (run_id, idem_key) WHERE idem_key IS NOT NULL;

@@ -35,6 +35,22 @@ export const signalConformance = (
       expect((await store.loadRun(runId))?.signals).toHaveLength(1);
     });
 
+    it("postSignal stays idempotent AFTER the signal is consumed — a late redelivery lands once", async () => {
+      const { store } = await makeBackend();
+      const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
+      await store.postSignal(runId, "approve", 1, { idempotencyKey: "evt-1" });
+      const delivered = (await store.loadRun(runId))?.signals ?? [];
+      await store.checkpointStep(
+        { runId, cursorKey: "wait", status: "ok", result: 1, attempts: 1 },
+        { consumeSignals: [delivered[0].id] },
+      );
+
+      // the provider redelivers the same event after the flow already consumed it
+      const again = await store.postSignal(runId, "approve", 1, { idempotencyKey: "evt-1" });
+      expect(again.delivered).toBe(false);
+      expect((await store.loadRun(runId))?.signals).toHaveLength(0);
+    });
+
     it("consumeSignals drains exactly the referenced signal, atomically with the checkpoint", async () => {
       const { store } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });

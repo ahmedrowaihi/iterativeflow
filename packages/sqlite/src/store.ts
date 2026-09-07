@@ -146,7 +146,7 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           [runId],
         ),
         sql.query<SignalRecord>(
-          `SELECT id, name, payload FROM ${t.signal} WHERE run_id = ? ORDER BY rowid`,
+          `SELECT id, name, payload FROM ${t.signal} WHERE run_id = ? AND consumed = 0 ORDER BY rowid`,
           [runId],
         ),
       ]);

@@ -51,10 +51,6 @@ interface ApplySchemaOpts {
    *  `true`; `false` for a Durable Object, whose storage manages durability and rejects `PRAGMA journal_mode`. */
   pragmas?: boolean;
 }
-/**
- * Apply the schema DDL (idempotent). Splits on `;` because libsql runs one statement per call. On a
- * file store it also sets the WAL / `busy_timeout` / `synchronous=NORMAL` PRAGMAs (see {@link ApplySchemaOpts}).
- */
 declare const applySchema: (sql: Sql, prefix?: string, opts?: ApplySchemaOpts) => Promise<void>;
 //#endregion
 //#region src/op-sqlite.d.ts

@@ -137,7 +137,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           [runId],
         ),
         sql.query<{ id: string; name: string; payload: unknown }>(
-          `SELECT id, name, payload FROM ${t.signal} WHERE run_id = $1 ORDER BY seq`,
+          `SELECT id, name, payload FROM ${t.signal} WHERE run_id = $1 AND NOT consumed ORDER BY seq`,
           [runId],
         ),
       ]);
