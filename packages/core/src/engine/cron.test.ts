@@ -23,4 +23,12 @@ describe("cron expression parser", () => {
     expect(() => parseCron("60 * * * *")).toThrow();
     expect(() => parseCron("* 25 * * *")).toThrow();
   });
+
+  it("treats `n/step` as a range from n to the field max, like Vixie cron", () => {
+    // was silently parsed as the single value {0} — i.e. hourly instead of every 15 minutes
+    const at = (iso: string) => nextCronAfter("0/15 * * * *", new Date(iso));
+    expect(at("2030-01-01T00:00:00Z")?.toISOString()).toBe("2030-01-01T00:15:00.000Z");
+    expect(at("2030-01-01T00:16:00Z")?.toISOString()).toBe("2030-01-01T00:30:00.000Z");
+    expect(at("2030-01-01T00:46:00Z")?.toISOString()).toBe("2030-01-01T01:00:00.000Z");
+  });
 });

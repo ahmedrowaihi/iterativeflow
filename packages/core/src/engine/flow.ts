@@ -167,5 +167,14 @@ export type FlowRegistry = ReadonlyMap<string, AnyFlow>;
 export const flowKey = (name: string, version: number): string => `${name}@${version}`;
 
 /** Build a {@link FlowRegistry} from a list of flows. */
-export const registry = (flows: readonly AnyFlow[]): FlowRegistry =>
-  new Map(flows.map((f) => [flowKey(f.name, f.version), f]));
+export const registry = (flows: readonly AnyFlow[]): FlowRegistry => {
+  const reg = new Map<string, AnyFlow>();
+  for (const f of flows) {
+    const key = flowKey(f.name, f.version);
+    // Silently keeping the last one would run the wrong body for every run of the first, and the
+    // drift guard can't catch it: the shape fingerprint is `kind:label`, not the body.
+    if (reg.has(key)) throw new Error(`registry: two flows registered as ${key}`);
+    reg.set(key, f);
+  }
+  return reg;
+};

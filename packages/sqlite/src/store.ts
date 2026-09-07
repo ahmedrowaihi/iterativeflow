@@ -361,7 +361,10 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
            flow_name = excluded.flow_name,
            flow_version = excluded.flow_version,
            input = excluded.input,
-           overlap = excluded.overlap`,
+           overlap = excluded.overlap,
+           -- a re-register keeps the existing timing, but a CHANGED schedule must take effect now
+           next_run_at = CASE WHEN ${t.cron}.schedule <> excluded.schedule
+                              THEN excluded.next_run_at ELSE ${t.cron}.next_run_at END`,
         [
           spec.name,
           spec.schedule,

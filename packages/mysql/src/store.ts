@@ -357,6 +357,9 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
            (name, schedule, flow_name, flow_version, input, overlap, next_run_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
+           -- MySQL applies these left to right, so compare the schedule BEFORE overwriting it: a
+           -- re-register keeps the existing timing, a CHANGED schedule takes effect now
+           next_run_at = IF(schedule <> VALUES(schedule), VALUES(next_run_at), next_run_at),
            schedule = VALUES(schedule),
            flow_name = VALUES(flow_name),
            flow_version = VALUES(flow_version),

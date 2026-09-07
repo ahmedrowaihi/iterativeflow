@@ -35,6 +35,16 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       expect(due[0].input).toEqual({ kind: "changed" }); // but payload updated
     });
 
+    it("a CHANGED schedule takes its new nextRunAt (the old one would outlive the deploy)", async () => {
+      const s = await makeStore();
+      await s.upsertCron({ ...spec, schedule: "0 3 * * *", nextRunAt: at(999999) });
+      // a deploy changes the schedule; the new timing must take effect now, not after the old fire
+      await s.upsertCron({ ...spec, schedule: "*/5 * * * *", nextRunAt: at(5000) });
+      const due = await s.dueCrons(at(5000), 10);
+      expect(due.map((c) => c.name)).toEqual(["nightly"]);
+      expect(due[0].schedule).toBe("*/5 * * * *");
+    });
+
     it("advanceCron is a CAS — only the worker matching the expected time wins", async () => {
       const s = await makeStore();
       await s.upsertCron({ ...spec, nextRunAt: at(1000) });

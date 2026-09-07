@@ -2,6 +2,7 @@ import {
   type Backend,
   type FlowEvent,
   type Metrics,
+  type ObserveOpts,
   type Span,
   cancelRun,
   defineFlow,
@@ -27,12 +28,13 @@ const driveToSettle = async (
   backend: Backend,
   flows: ReturnType<typeof registry>,
   runId: string,
+  extra?: { observe?: ObserveOpts },
 ): Promise<{ status: string; output: unknown; error: unknown }> => {
   let clock = new Date("2030-01-01T00:00:00Z");
   const now = (): Date => clock;
   for (let i = 0; i < 100; i++) {
     // leaseMs is huge so a slow tick never races a re-claim in these single-worker tests.
-    await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
+    await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now, ...extra });
     const run = (await backend.store.loadRun(runId))?.run;
     if (run && TERMINAL.has(run.status))
       return { status: run.status, output: run.output, error: run.error };
@@ -224,6 +226,38 @@ describe("engine — end to end on the memory backend", () => {
     });
     return { flow, release, enteredCount: () => entered };
   };
+
+  it("a throwing event sink cannot derail a run", async () => {
+    const errors: unknown[] = [];
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "sink-boom",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.step("a", () => 1);
+        return await ctx.step("b", () => 2);
+      },
+    });
+    const backend = createMemoryBackend();
+    const settled = await driveToSettle(
+      backend,
+      registry([flow]),
+      await submit(backend, flow, {}),
+      {
+        observe: {
+          level: "all",
+          sink: {
+            record: () => {
+              throw new Error("sink down");
+            },
+          },
+          metrics: { tickError: (e) => errors.push(e) },
+        },
+      },
+    );
+
+    expect(settled).toMatchObject({ status: "done", output: 2 });
+    expect(errors.length).toBeGreaterThan(0); // surfaced as a tick error, not as a flow failure
+  });
 
   it("a suspend inside a step bypasses classify and does not burn a retry", async () => {
     let bodyRuns = 0;

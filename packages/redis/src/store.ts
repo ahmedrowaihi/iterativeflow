@@ -188,11 +188,14 @@ local row, score = ARGV[2], ARGV[3]
 if existing ~= false then
   local prev = cjson.decode(existing)
   local obj = cjson.decode(ARGV[2])
-  obj.nextRunAt = prev.nextRunAt
   obj.lastRunAt = prev.lastRunAt
+  -- a re-register keeps the existing timing; a CHANGED schedule takes the new one
+  if prev.schedule == obj.schedule then
+    obj.nextRunAt = prev.nextRunAt
+    local zs = redis.call('ZSCORE', KEYS[2], ARGV[1])
+    if zs ~= false then score = zs end
+  end
   row = cjson.encode(obj)
-  local zs = redis.call('ZSCORE', KEYS[2], ARGV[1])
-  if zs ~= false then score = zs end
 end
 redis.call('HSET', KEYS[1], ARGV[1], row)
 redis.call('ZADD', KEYS[2], score, ARGV[1])`;

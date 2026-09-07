@@ -422,22 +422,31 @@ export const createMongoStore = (
     },
 
     async upsertCron(spec) {
+      // A pipeline update so the comparison is atomic: inside one $set every expression still sees
+      // the pre-update doc, so `$schedule` is the OLD schedule. A re-register keeps the existing
+      // timing; a CHANGED schedule takes the new one, or the old cadence outlives the deploy.
+      const at = spec.nextRunAt.getTime();
       await crons.updateOne(
         { _id: spec.name },
-        {
-          $set: {
-            schedule: spec.schedule,
-            flow_name: spec.flowName,
-            flow_version: spec.flowVersion,
-            input: spec.input,
-            overlap: spec.overlap ?? "allow",
+        [
+          {
+            $set: {
+              schedule: spec.schedule,
+              flow_name: spec.flowName,
+              flow_version: spec.flowVersion,
+              input: spec.input,
+              overlap: spec.overlap ?? "allow",
+              next_run_at: {
+                $cond: [
+                  { $eq: ["$schedule", spec.schedule] },
+                  { $ifNull: ["$next_run_at", at] },
+                  at,
+                ],
+              },
+              last_run_at: { $ifNull: ["$last_run_at", null] },
+            },
           },
-          // Keep the existing schedule timing when re-registering an already-known cron.
-          $setOnInsert: {
-            next_run_at: spec.nextRunAt.getTime(),
-            last_run_at: null,
-          },
-        },
+        ],
         { upsert: true },
       );
     },

@@ -699,6 +699,16 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async upsertCron(spec) {
+      // A re-register keeps the existing timing; a CHANGED schedule takes the new one, or the old
+      // cadence outlives the deploy. `if_not_exists` can't express that, so read the schedule first
+      // — this runs at registration, not on the hot path.
+      const prev = await send<{ Item?: CronItem }>(
+        new GetCommand({ TableName: table, Key: key.cron(spec.name) }),
+      );
+      const keepTiming = prev.Item !== undefined && prev.Item.schedule === spec.schedule;
+      const nextRunAt = keepTiming
+        ? (prev.Item?.nextRunAt ?? spec.nextRunAt.getTime())
+        : spec.nextRunAt.getTime();
       await send(
         new UpdateCommand({
           TableName: table,
@@ -706,8 +716,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           UpdateExpression:
             "SET #type = :type, cronName = :name, schedule = :schedule, flowName = :flowName, " +
             "flowVersion = :flowVersion, cronInput = :input, overlap = :overlap, gsi1pk = :gpk, " +
-            "nextRunAt = if_not_exists(nextRunAt, :nextRunAt), " +
-            "gsi1sk = if_not_exists(gsi1sk, :gsk)",
+            "nextRunAt = :nextRunAt, gsi1sk = :gsk",
           ExpressionAttributeNames: { "#type": "type" },
           ExpressionAttributeValues: {
             ":type": "cron",
@@ -717,9 +726,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ":flowVersion": spec.flowVersion,
             ":input": enc(spec.input) ?? null,
             ":overlap": spec.overlap ?? "allow",
-            ":nextRunAt": spec.nextRunAt.getTime(),
+            ":nextRunAt": nextRunAt,
             ":gpk": CRON_DUE_GSI_PK,
-            ":gsk": pad(spec.nextRunAt.getTime()),
+            ":gsk": pad(nextRunAt),
           },
         }),
       );

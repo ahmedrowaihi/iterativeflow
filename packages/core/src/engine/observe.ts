@@ -94,12 +94,29 @@ export const makeObserver = (opts?: ObserveOpts): Observer => {
   const sink = opts?.sink;
   const records = (type: EventType): boolean =>
     !!sink && level !== "off" && !(level === "lifecycle" && !LIFECYCLE.has(type));
+  const metrics = opts?.metrics ?? {};
+  const tracer = opts?.tracer;
   return {
     async event(type, runId, at, data) {
-      if (records(type)) await sink!.record({ runId, type, at, data });
+      // Observability is never load-bearing: a throwing sink must not reach the executor, where it
+      // would be caught as a flow error and skip the parent-wake and ack that follow a terminal write.
+      if (!records(type)) return;
+      try {
+        await sink!.record({ runId, type, at, data });
+      } catch (e) {
+        metrics.tickError?.(e);
+      }
     },
     records,
-    metrics: opts?.metrics ?? {},
-    tracer: opts?.tracer,
+    metrics,
+    tracer: tracer && {
+      span: (span) => {
+        try {
+          tracer.span(span);
+        } catch (e) {
+          metrics.tickError?.(e);
+        }
+      },
+    },
   };
 };

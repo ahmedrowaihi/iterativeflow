@@ -31,7 +31,8 @@ const expand = (spec: string, min: number, max: number): Set<number> => {
       hi = b;
     } else {
       lo = Number(range);
-      hi = Number(range);
+      // `n/step` is a range from n to the field max — a bare `n` is just itself.
+      hi = stepStr ? max : Number(range);
     }
     if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
       throw new Error(`cron: field "${part}" out of range ${min}-${max}`);
