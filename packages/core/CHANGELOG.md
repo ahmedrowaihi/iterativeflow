@@ -1,5 +1,58 @@
 # @iterativeflow/core
 
+## 2.2.0
+
+### Minor Changes
+
+- f765a77: Filtered retention: `Store.deleteRuns(filter, limit)` + `engine.purge(filter, limit)`.
+
+  `deleteRunsOlderThan` could only sweep by age, so the history a mass cancel leaves behind (thousands
+  of `canceled` runs of one flow) sat inflating every dashboard count until the retention window caught
+  up. `deleteRuns` narrows the same sweep by `before`, `name`, `version` and terminal `status`, in the
+  same single transaction and the same cascade order, returning the count deleted so callers batch
+  until `< limit`. `deleteRunsOlderThan` stays as the `{ before }` case — one delegating line per
+  backend — and `engine.prune` is unchanged.
+
+  The terminal-only guard is unconditional: the filter narrows within `done`/`failed`/`canceled` and
+  can never widen onto a live run, and a filter with no predicate at all is refused, since "delete all
+  history" should be spelled `{ before: new Date() }`.
+
+  New on the backend SPI, in `#purge` and shaped after the existing `isOrphaned` / `orphanedRunsSql`
+  pair: `purgeStatuses` (the terminal intersection + empty-filter refusal), `purgeMatcher` (the row
+  predicate the scanning backends filter with) and `purgeWhereSql` (the same predicate as a `WHERE`
+  body + binds for the SQL backends). `TERMINAL_STATUSES` moves next to `RUN_STATUSES` in `#types` so
+  the new `TerminalStatus` type derives from it rather than restating the list.
+
+  Implemented across all 7 backends and covered by a store conformance case.
+
+- ce5765c: Fix: a run-less row now passes every name filter consistently — `claim` and the backlog readers agreed
+  on nothing before.
+
+  2.1.1 made a name-filtered `Queue.claim` lease run-less jobs so `runTick`'s gone-path acks them and
+  they self-heal. The sibling readers were left on the old answer: `Queue.depth(now, names)`,
+  `Timer.dueCount(now, names)` and both `pending_work(flow_names, as_of)` SQL functions still excluded
+  them. So `engine.pendingWork(["a"])` reported 0 for a backlog its own workers would lease, and a
+  name-sharded fleet scaled to zero on that number never woke to drain it — the exact failure the claim
+  fix set out to close. Conformance pinned the contradiction rather than catching it: a run-less timer
+  was asserted _excluded_ under a name filter while a run-less job was asserted _included_.
+
+  One rule now, everywhere: a row whose run is gone is unownable, so it passes every name filter; an
+  empty `names` means "this worker handles nothing" and matches nothing at all, run-less rows included.
+  The empty-set case was itself divergent — sqlite/mysql/dynamodb short-circuited while
+  postgres/memory/mongodb/redis leased the orphan — and the conformance case had no orphan in it to
+  notice. Both invariants are now pinned for all 8 backends.
+
+  `Timer.dueCount(now, names)` and `Queue.depth(now, names)` therefore count run-less rows where they
+  did not before, so a sharded `engine.pendingWork(names)` can rise by the number of orphaned rows —
+  which is the point: that work is claimable.
+
+  Also: both `pending_work` functions drop their unconditional `LEFT JOIN run` for a `NOT EXISTS`, so
+  the unfiltered call (the common single-shard case) no longer does a run lookup per job and per timer;
+  the dead `?? ""` fallbacks in the dynamodb/mongodb/memory claim filters are gone; the mysql/mongodb
+  testcontainer bootstrap is shared by both test files per package; and four inaccurate claims in
+  `patterns/` are corrected — notably that MySQL's `applySchema` needs `CREATE ROUTINE`, and that KEDA's
+  mongo scaler cannot run `pendingWorkPipeline` directly.
+
 ## 2.1.1
 
 ## 2.1.0
