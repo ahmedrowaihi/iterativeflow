@@ -18,6 +18,9 @@ interface DashboardOpts {
  * A mountable dashboard as a single Web `fetch` handler — works in Node 18+, Bun, Deno, and
  * edge/workers, or behind a thin Express/Hono adapter. Serves a self-contained UI at the base
  * path and a JSON API under `/api` over the {@link Engine} query + control surface.
+ *
+ * The mutating routes (cancel, retry, signal) are UNAUTHENTICATED: mount this behind your own
+ * admin auth, and add CSRF protection — they take no custom header.
  */
 declare const createDashboard: (engine: Engine, opts?: DashboardOpts) => ((req: Request) => Promise<Response>);
 //#endregion

@@ -83,7 +83,8 @@ export interface EngineOpts {
   id?: IdGen;
   /** Injectable clock for deterministic tests. Defaults to the wall clock. */
   now?: Clock;
-  /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
+  /** Reject a submit input or a signal payload whose JSON exceeds this many bytes (a runaway-payload
+   *  guard). Both land in durable storage and are re-read on every replay of the run. */
   maxPayloadBytes?: number;
   /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
@@ -231,9 +232,9 @@ export const createEngine = (
   };
   const clock: Clock = now ?? systemClock;
   const cap = opts.maxPayloadBytes;
-  const guard = (input: unknown): void => {
-    if (cap !== undefined && byteSize(input) > cap) {
-      throw new Error(`submit: input exceeds maxPayloadBytes (${cap})`);
+  const guard = (what: string, payload: unknown): void => {
+    if (cap !== undefined && byteSize(payload) > cap) {
+      throw new Error(`${what}: payload exceeds maxPayloadBytes (${cap})`);
     }
   };
 
@@ -241,15 +242,19 @@ export const createEngine = (
     backend,
 
     submit: async (flow, input, o) => {
-      guard(input);
+      guard("submit", input);
       return submit(backend, flow, input, o, clock);
     },
     submitMany: async (items) => {
-      for (const it of items) guard(it.input);
+      for (const it of items) guard("submitMany", it.input);
       return submitMany(backend, items, clock);
     },
-    signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) =>
-      signalRun(backend, runId, name, payload, o),
+    signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) => {
+      // A signal payload lands in the durable inbox and is re-read on every subsequent loadRun, so
+      // the runaway-payload guard has to cover it too — webhooks and the dashboard both feed it.
+      guard("signal", payload);
+      return signalRun(backend, runId, name, payload, o);
+    },
     cancel: (runId) => cancelRun(backend, runId),
     retry: (runId) => retryRun(backend, runId),
     result: (runId, o) => result(backend, runId, o),

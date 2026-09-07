@@ -73,4 +73,35 @@ describe("dashboard fetch handler", () => {
     const res = await handler(new Request("http://x/api/runs/nope"));
     expect(res.status).toBe(404);
   });
+
+  it("clamps a hostile ?limit instead of passing it to the store", async () => {
+    const { engine } = buildEngine();
+    const seen: number[] = [];
+    const spy = {
+      ...engine,
+      listRuns: (filter: Parameters<typeof engine.listRuns>[0], page: { limit: number }) => {
+        seen.push(page.limit);
+        return engine.listRuns(filter, page);
+      },
+    } as typeof engine;
+    const app = createDashboard(spy);
+    // SQLite reads a negative LIMIT as "no limit", so a hostile value must never reach the store
+    for (const raw of ["-1", "abc", "0", "99999", "25"]) {
+      expect((await app(new Request(`http://x/api/runs?limit=${raw}`))).status).toBe(200);
+    }
+    expect(seen).toEqual([50, 50, 50, 200, 25]);
+  });
+
+  it("rejects a signal body with no name instead of passing it to the engine", async () => {
+    const { engine, flow } = buildEngine();
+    const app = createDashboard(engine);
+    const handle = await engine.submit(flow, { x: 1 });
+    const res = await app(
+      new Request(`http://x/api/runs/${handle}/signal`, {
+        method: "POST",
+        body: JSON.stringify({ payload: { a: 1 } }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
 });

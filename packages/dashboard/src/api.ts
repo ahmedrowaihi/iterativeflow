@@ -18,10 +18,20 @@ const json = (body: unknown, status = 200): Response =>
 const html = (body: string): Response =>
   new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 
+// A negative or non-numeric `limit` must not reach the store: SQLite reads a negative LIMIT as
+// "no limit", which would page the entire run table — inputs and outputs included — into one response.
+const pageLimit = (raw: string | null): number => {
+  const n = Number(raw ?? 50);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 50;
+};
+
 /**
  * A mountable dashboard as a single Web `fetch` handler — works in Node 18+, Bun, Deno, and
  * edge/workers, or behind a thin Express/Hono adapter. Serves a self-contained UI at the base
  * path and a JSON API under `/api` over the {@link Engine} query + control surface.
+ *
+ * The mutating routes (cancel, retry, signal) are UNAUTHENTICATED: mount this behind your own
+ * admin auth, and add CSRF protection — they take no custom header.
  */
 export const createDashboard = (
   engine: Engine,
@@ -54,7 +64,7 @@ export const createDashboard = (
         name: url.searchParams.get("name") ?? undefined,
       };
       const page = {
-        limit: Math.min(Number(url.searchParams.get("limit") ?? 50), 200),
+        limit: pageLimit(url.searchParams.get("limit")),
         cursor: url.searchParams.get("cursor") ?? undefined,
       };
       return json(await engine.listRuns(filter, page));
@@ -87,17 +97,21 @@ export const createDashboard = (
     const signal = path.match(/^\/api\/runs\/([^/]+)\/signal$/);
     if (signal && req.method === "POST") {
       const body = (await req.json()) as {
-        name: string;
+        name?: unknown;
         payload?: unknown;
-        idempotencyKey?: string;
+        idempotencyKey?: unknown;
       };
+      if (typeof body?.name !== "string" || body.name === "") {
+        return json({ error: "signal requires a non-empty `name`" }, 400);
+      }
+      if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== "string") {
+        return json({ error: "`idempotencyKey` must be a string" }, 400);
+      }
       const delivered = await engine.signal(
         decodeURIComponent(signal[1]),
         body.name,
         body.payload,
-        {
-          idempotencyKey: body.idempotencyKey,
-        },
+        { idempotencyKey: body.idempotencyKey },
       );
       return json({ delivered });
     }

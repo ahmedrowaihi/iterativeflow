@@ -593,7 +593,8 @@ interface EngineOpts {
   id?: IdGen;
   /** Injectable clock for deterministic tests. Defaults to the wall clock. */
   now?: Clock;
-  /** Reject a submit whose JSON input exceeds this many bytes (a runaway-payload guard). */
+  /** Reject a submit input or a signal payload whose JSON exceeds this many bytes (a runaway-payload
+   *  guard). Both land in durable storage and are re-read on every replay of the run. */
   maxPayloadBytes?: number;
   /** How a replay that detects flow-body drift resolves — `park` (default) or `fail`. */
   driftPolicy?: DriftPolicy;
