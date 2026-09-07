@@ -30,7 +30,7 @@ export class WorkflowDO {
   _caught, mid-write_ storage error is weaker here than in the SQL backends' explicit transactions.
   In practice storage writes to a local DO don't fail mid-outbox, so the happy path is atomic — and
   the real DO's invocation rollback is _stronger_ than the equivalence used to test this. It passes
-  the same nine conformance suites as every other backend (verified against Node's synchronous
+  the same conformance suites as every other backend (verified against Node's synchronous
   `node:sqlite`, which matches `ctx.storage.sql`'s shape); a `transactionSync` path to also cover a
   caught mid-outbox fault is a possible refinement.
 - **Wakeup** is in-process (the DO itself); wire completion latency to an `alarm()` cadence.

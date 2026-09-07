@@ -32,5 +32,8 @@
   },
   "peerDependencies": {
     "vitest": ">=3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

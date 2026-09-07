@@ -29,5 +29,8 @@
   },
   "dependencies": {
     "@iterativeflow/core": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

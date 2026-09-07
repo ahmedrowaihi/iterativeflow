@@ -30,6 +30,12 @@ level of a test file.
   behaviors built on the ports.
 - `engineConformance` — the composed engine (retry/dead-letter, signal resume,
   cancel cascade, fan-out, drift) end-to-end on your backend.
+- `claimFilterConformance`, `shardedClaimConformance` — flow-name-filtered claims,
+  and concurrent claims across a fleet. `shardedClaimConformance` is for backends
+  that support concurrent writers; single-writer backends (memory, sqlite,
+  durable-objects) skip it by design.
+- `pendingWorkConformance` — the autoscaling backlog reads (`Queue.depth`,
+  `Timer.dueCount`, `Store.dueCronCount`) that `engine.pendingWork` composes.
 
 Every suite takes `(label, makeBackend)` where `makeBackend` returns a fresh
 `Backend` (or a `Promise` of one) per case.

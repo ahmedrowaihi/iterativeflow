@@ -1,8 +1,7 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
-// Isolated from the v1 suite (root config only globs src/ + tests/). Path aliases mirror
-// tsconfig so cross-package imports resolve without a workspace install.
+// Path aliases mirror tsconfig so cross-package imports resolve without a workspace install.
 const pkg = (name: string): string => resolve(__dirname, `packages/${name}/src/index.ts`);
 
 export default defineConfig({

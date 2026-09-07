@@ -41,5 +41,8 @@
     "@op-engineering/op-sqlite": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

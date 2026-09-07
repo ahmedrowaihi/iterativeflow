@@ -48,4 +48,4 @@ const engine = createEngine(createDynamoBackend(docClient(low), { table: "iterat
 > );
 > ```
 
-See [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md).
+See [docs/v2/MIGRATION.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/MIGRATION.md).

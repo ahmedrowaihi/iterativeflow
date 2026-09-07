@@ -36,7 +36,7 @@ schema name with `createPgBackend(sql, { schema })` (match it in `applySchema`).
 npx iterativeflow-pg-drizzle src/db/iterativeflow.schema.ts --schema workflow
 ```
 
-See [docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md) for the drizzle route
+See [docs/v2/MIGRATION.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/MIGRATION.md) for the drizzle route
 and serverless notes.
 
 ## Transactional enqueue
@@ -63,8 +63,9 @@ Proxy want — not a pinned `LISTEN`.
 
 It closes the _enqueue_ window only: a worker dying mid-flow is still recovered by `engine.reconcile`,
 so keep running that on its usual cadence. `inTx` is a backend export, not part of core `submit`,
-because it needs a real caller transaction — `@iterativeflow/mysql` and `@iterativeflow/sqlite` expose
-the same helper; DynamoDB and Redis can't (no caller-joinable transaction).
+because it needs a real caller transaction — `@iterativeflow/mysql`, `@iterativeflow/sqlite` and
+`@iterativeflow/mongodb` expose the same helper; DynamoDB and Redis can't (no caller-joinable
+transaction).
 
 ## Low-latency push (opt-in `LISTEN/NOTIFY`)
 

@@ -83,7 +83,7 @@ const db = open({ name: "iterativeflow.db" });
 const sql = opSqliteDb(db);
 await applySchema(sql);
 
-const backend = createOpSqliteBackend(sql);
+const backend = createOpSqliteBackend(db);
 ```
 
 Don't fire writes with `Promise.all` on op-sqlite — parallel writes overwrite SQLite's global

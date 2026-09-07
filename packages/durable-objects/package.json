@@ -30,5 +30,8 @@
   "dependencies": {
     "@iterativeflow/core": "workspace:*",
     "@iterativeflow/sqlite": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

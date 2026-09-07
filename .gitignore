@@ -7,5 +7,8 @@ coverage
 .claude/
 yarn.lock
 
-# local-only working docs: design notes, field reports, ADR drafts, case studies, the docs plan
-docs/
+# local-only working docs: design notes, field reports, ADR drafts, case studies, the docs plan.
+# docs/v2/*.md is NOT local — the published package READMEs link to CONTRACTS/RECOVERY/MIGRATION.
+docs/adr/
+docs/v2/notes/
+docs/DOCS_PLAN.md

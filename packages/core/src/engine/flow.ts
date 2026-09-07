@@ -88,7 +88,11 @@ export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals>
   policy?: FlowPolicy;
 }
 
-/** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
+/**
+ * Per-flow overrides of the engine's operational policy, merged over the engine defaults.
+ * `maxFanOut` caps children per `ctx.invoke([...])` (default 10 000); `maxDepth` caps `ctx.invoke`
+ * nesting (default 32). Both throw when exceeded, so raise them here if a flow legitimately needs to.
+ */
 export interface FlowPolicy {
   drift?: DriftPolicy;
   maxFanOut?: number;

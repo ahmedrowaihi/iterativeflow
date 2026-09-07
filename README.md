@@ -33,7 +33,7 @@ const stop = engine.run(); // resident worker loop; returns a stop fn
 const handle = await engine.submit(onboard, { userId: "u_1" });
 // 3 days later, from a webhook:
 await engine.signal(handle, "survey", { score: 9 });
-const { output } = await engine.result(handle); // { score: 9 }
+const { output } = await engine.result(handle, { timeoutMs: 30_000 }); // { score: 9 }
 await stop();
 ```
 

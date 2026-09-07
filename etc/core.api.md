@@ -12,8 +12,8 @@ import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, 
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
  * every backend. `wait` is the inter-poll sleep the poll-first loop uses; `signal` wakes
  * current in-process waiters early. It pins nothing (no `LISTEN`, no stream), so it is safe
- * behind RDS Proxy / PgBouncer out of the box. Cross-process push (Postgres `NOTIFY`,
- * DynamoDB Streams) is a future opt-in; correctness never depends on it — the engine re-reads
+ * behind RDS Proxy / PgBouncer out of the box. Postgres ships an opt-in cross-process listener
+ * (`createPgListener`); other backends are poll-only. Correctness never depends on it — the engine re-reads
  * the store every tick regardless.
  */
 declare const createLocalWakeup: () => Wakeup;
@@ -292,7 +292,11 @@ interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
   /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
   policy?: FlowPolicy;
 }
-/** Per-flow overrides of the engine's operational policy, merged over the engine defaults. */
+/**
+ * Per-flow overrides of the engine's operational policy, merged over the engine defaults.
+ * `maxFanOut` caps children per `ctx.invoke([...])` (default 10 000); `maxDepth` caps `ctx.invoke`
+ * nesting (default 32). Both throw when exceeded, so raise them here if a flow legitimately needs to.
+ */
 interface FlowPolicy {
   drift?: DriftPolicy;
   maxFanOut?: number;
@@ -473,7 +477,8 @@ declare const retryRun: (backend: Backend, runId: string) => Promise<boolean>;
 /**
  * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
  * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
- * default — no `LISTEN` pinned. Throws on timeout.
+ * default — no `LISTEN` pinned. With no `timeoutMs` it waits INDEFINITELY, polling every `pollMs`
+ * (default 500) — pass one in a request handler. Throws on timeout.
  */
 declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | string, opts?: {
   timeoutMs?: number;

@@ -150,7 +150,8 @@ export const retryRun = async (backend: Backend, runId: string): Promise<boolean
 /**
  * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
  * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
- * default — no `LISTEN` pinned. Throws on timeout.
+ * default — no `LISTEN` pinned. With no `timeoutMs` it waits INDEFINITELY, polling every `pollMs`
+ * (default 500) — pass one in a request handler. Throws on timeout.
  */
 export const result = async <O = unknown>(
   backend: Backend,

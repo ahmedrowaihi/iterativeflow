@@ -40,5 +40,8 @@
   },
   "peerDependencies": {
     "pg": ">=8.10.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

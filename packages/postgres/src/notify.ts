@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { type Wakeup, createLocalWakeup } from "@iterativeflow/core/backend";
+import { type Wakeup, assertSqlIdentifier, createLocalWakeup } from "@iterativeflow/core/backend";
 import type { Pool, PoolClient } from "pg";
 import { tables } from "#schema";
 import type { Sql } from "#sql";
@@ -131,6 +131,7 @@ const backoffMs = (attempt: number): number =>
  */
 export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListener => {
   const schema = opts.schema ?? "workflow";
+  assertSqlIdentifier(schema);
   const wake = wakeChannel(schema);
   const done = doneChannel(schema);
   const progress = progressChannel(schema);

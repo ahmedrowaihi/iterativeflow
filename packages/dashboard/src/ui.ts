@@ -61,7 +61,7 @@ export const UI = `<!doctype html>
 <div id="drawer"></div>
 <script>
 const api = (p,o) => fetch("api"+p,o).then(r=>r.json());
-const esc = s => String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const esc = s => String(s).replace(/[&<>"'\`]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;","\`":"&#96;"}[c]));
 const badge = s => '<span class="s '+s+'">'+s+'</span>';
 
 async function loadStats(){
@@ -88,20 +88,24 @@ async function openRun(id){
     ' <span style="color:var(--mut)">'+esc(JSON.stringify(s.result ?? s.error ?? "")).slice(0,80)+'</span></li>').join("");
   const events = d.events.map(e=>'<li><code>'+esc(new Date(e.at).toISOString().slice(11,19))+'</code> '+esc(e.type)+'</li>').join("");
   dr.innerHTML =
-    '<div class="row"><h2>'+esc(d.run.name)+' v'+d.run.version+'</h2><button class="x" onclick="closeRun()">close</button></div>'+
+    '<div class="row"><h2>'+esc(d.run.name)+' v'+d.run.version+'</h2><button class="x">close</button></div>'+
     '<div class="kv"><div>id</div><div><code>'+esc(d.run.id)+'</code></div>'+
     '<div>status</div><div>'+badge(d.run.status)+'</div>'+
     '<div>attempts</div><div>'+d.run.attempts+'</div>'+
     (d.run.tags?.length?'<div>tags</div><div>'+esc(d.run.tags.join(", "))+'</div>':'')+'</div>'+
     '<div class="row">'+
-      '<button class="act" onclick="act(\\''+esc(id)+'\\',\\'retry\\')">Retry</button>'+
-      '<button onclick="act(\\''+esc(id)+'\\',\\'cancel\\')">Cancel</button>'+
+      '<button class="act" id="do-retry">Retry</button>'+
+      '<button id="do-cancel">Cancel</button>'+
     '</div>'+
     (steps?'<h2>Steps</h2><ul class="timeline">'+steps+'</ul>':'')+
     (d.run.input!==undefined?'<h2>Input</h2><pre>'+esc(JSON.stringify(d.run.input,null,2))+'</pre>':'')+
     (d.run.output!==undefined?'<h2>Output</h2><pre>'+esc(JSON.stringify(d.run.output,null,2))+'</pre>':'')+
     (d.run.error?'<h2>Error</h2><pre>'+esc(JSON.stringify(d.run.error,null,2))+'</pre>':'')+
     (events?'<h2>Events</h2><ul class="timeline">'+events+'</ul>':'');
+  // listeners, not inline onclick: nothing user-derived is ever concatenated into a script context
+  dr.querySelector(".x").onclick = closeRun;
+  dr.querySelector("#do-retry").onclick = () => act(id,"retry");
+  dr.querySelector("#do-cancel").onclick = () => act(id,"cancel");
   dr.classList.add("open");
 }
 function closeRun(){ document.getElementById("drawer").classList.remove("open"); }

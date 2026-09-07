@@ -19,7 +19,7 @@ npm install @iterativeflow/dynamodb @iterativeflow/core @aws-sdk/client-dynamodb
 
 ## Set up the table
 
-The engine uses one table with a global secondary index. `ensureTable` creates it if it's missing
+The engine uses one table with two global secondary indexes (`gsi1`, `gsi2`). `ensureTable` creates it if it's missing
 (idempotent) — fine for dev; in production, create the table with your IaC (Terraform, CDK) using
 `tableSpec`, and grant `REQUIRED_IAM_ACTIONS`.
 

@@ -5,7 +5,7 @@ function; it survives process crashes, retries failed steps, sleeps for days,
 and resumes deterministically by replaying memoized steps. Backend-agnostic —
 run it on Postgres, DynamoDB, or in-memory behind one interface.
 
-Part of [iterativeflow](https://github.com/ahmedrowaihi/iterativeflow) v2 (`2.0.0-alpha.2`).
+Part of [iterativeflow](https://github.com/ahmedrowaihi/iterativeflow) v2.
 
 ```bash
 npm install @iterativeflow/core @iterativeflow/memory
@@ -107,7 +107,7 @@ the actual failure.
 
 `submit` returns a `RunHandle<Output, Signals>`; `result` recovers the output
 type; signals are typed on both the `defineFlow` declaration and the
-`signalRun` call. See [docs/v2/CONTRACTS.md](../../../docs/v2/CONTRACTS.md).
+`signalRun` call. See [docs/v2/CONTRACTS.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/CONTRACTS.md).
 
 ## Determinism & drift
 
@@ -117,7 +117,7 @@ drift and applies the flow's `driftPolicy` (park or fail) instead of running the
 wrong step. Keep step order and labels stable across deploys.
 
 When a run does get stuck — a transient failure, a drift, or an un-resumable run
-— [docs/v2/RECOVERY.md](../../../docs/v2/RECOVERY.md) is the lever-by-scenario
+— [docs/v2/RECOVERY.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/RECOVERY.md) is the lever-by-scenario
 guide: `retry`, `cancel` + fresh submit, and the version-migration pattern.
 
 ## Serverless
@@ -139,7 +139,7 @@ if (nextWakeAt) await scheduleOneShot(nextWakeAt);
 
 `engine.nextWakeAt()` exposes the horizon standalone. `nextWakeAt` covers timers
 only; signal- and child-waits resume via a push when the event arrives. See
-[docs/v2/MIGRATION.md](../../../docs/v2/MIGRATION.md).
+[docs/v2/MIGRATION.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/MIGRATION.md).
 
 ## Backend authoring
 

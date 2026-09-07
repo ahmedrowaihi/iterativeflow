@@ -28,7 +28,8 @@ declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts,
 /**
  * Create the indexes the backend relies on. Idempotent (`createIndex` is a no-op if present). Run
  * once before use. `ord` is a per-document ObjectId giving a total insertion order (Mongo has no
- * auto-increment); the idempotency and signal-dedup indexes are `sparse` so unkeyed docs never
+ * auto-increment); the idempotency and signal-dedup indexes are partial
+ * (`partialFilterExpression`) so unkeyed docs never
  * collide. `steps` use a composite string `_id` (`runId:cursorKey`) so a duplicate insert is a clean
  * first-writer-wins conflict.
  */

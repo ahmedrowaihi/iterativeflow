@@ -34,5 +34,8 @@
   },
   "scripts": {
     "build": "tsdown"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

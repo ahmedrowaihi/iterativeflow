@@ -4,8 +4,8 @@ import type { Wakeup } from "#ports/wakeup";
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
  * every backend. `wait` is the inter-poll sleep the poll-first loop uses; `signal` wakes
  * current in-process waiters early. It pins nothing (no `LISTEN`, no stream), so it is safe
- * behind RDS Proxy / PgBouncer out of the box. Cross-process push (Postgres `NOTIFY`,
- * DynamoDB Streams) is a future opt-in; correctness never depends on it — the engine re-reads
+ * behind RDS Proxy / PgBouncer out of the box. Postgres ships an opt-in cross-process listener
+ * (`createPgListener`); other backends are poll-only. Correctness never depends on it — the engine re-reads
  * the store every tick regardless.
  */
 export const createLocalWakeup = (): Wakeup => {
