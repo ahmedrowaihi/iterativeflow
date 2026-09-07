@@ -1,5 +1,14 @@
 packages:
   - "packages/*"
+
+# Supply-chain cooldown: don't resolve a version published in the last day. The exclude list below
+# was already here without it, so the gate it assumed was never actually on.
+minimumReleaseAge: 1440
+
+# The op-sqlite adapter is typed structurally and its tests emulate the driver, so nothing in this
+# repo imports it — installing the optional peer would pull the whole React Native toolchain in.
+ignoredOptionalDependencies:
+  - "@op-engineering/op-sqlite"
 allowBuilds:
   esbuild: true
   lefthook: true

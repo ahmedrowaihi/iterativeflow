@@ -43,7 +43,7 @@ export interface StepPolicy {
   retryDelayMs?: number;
   /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default.
    *  Declaring it also holds the run's lease open while the step runs, so a step longer than
-   *  `leaseMs` is not re-claimed mid-flight. */
+   *  `leaseMs` is not re-claimed mid-flight; without it, one that is runs again on another worker. */
   timeoutMs?: number;
   /**
    * Decide whether an error is worth retrying. A `permanent` verdict fails the step (and the
