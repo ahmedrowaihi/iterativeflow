@@ -25,7 +25,11 @@ const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
 
-const PG_PURGE = { placeholder: (n: number) => `$${n}`, time: (at: Date) => at };
+const PG_PURGE = {
+  placeholder: (n: number) => `$${n}`,
+  time: (at: Date) => at,
+  statusTuple: sqlTuple,
+};
 
 /** @internal */
 export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
@@ -93,13 +97,16 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const q = purgeWhereSql(filter, PG_PURGE);
     if (!q) return 0;
+    // Oldest-first only matters for an age sweep; without a cutoff the whole matched set goes
+    // eventually, and the sort would force a full read before LIMIT could bound it.
+    const order = filter.before === undefined ? "" : " ORDER BY created_at";
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
       const ids = (
         await tx.query<{ id: string }>(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
-             ORDER BY created_at LIMIT $${params.length}`,
+             ${order} LIMIT $${params.length}`,
           params,
         )
       ).map((r) => r.id);

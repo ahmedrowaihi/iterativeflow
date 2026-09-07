@@ -58,6 +58,11 @@ CREATE INDEX IF NOT EXISTS run_parent ON ${t.run} (parent_run_id) WHERE parent_r
 CREATE UNIQUE INDEX IF NOT EXISTS run_idem
   ON ${t.run} (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS run_status ON ${t.run} (status);
+-- A filtered purge seeks on (name, status) and walks created_at in order. status must be IN THE
+-- KEY, not only in the partial predicate: the predicate decides membership, it does not let the
+-- planner seek one terminal status. Partial keeps live runs out, so the hot path never pays for it.
+CREATE INDEX IF NOT EXISTS run_purge ON ${t.run} (name, status, created_at)
+  WHERE status IN ('done','failed','canceled');
 
 CREATE TABLE IF NOT EXISTS ${t.step} (
   run_id      text NOT NULL REFERENCES ${t.run}(id),

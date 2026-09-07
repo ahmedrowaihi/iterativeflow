@@ -47,6 +47,10 @@ interface PurgeSqlOpts {
   placeholder: (n: number) => string;
   /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
   time: (at: Date) => unknown;
+  /** Renders a status set as a SQL literal tuple, e.g. `('done','failed')`. Literals, not binds:
+   *  a partial index over the terminal statuses is only usable when the planner can prove the
+   *  query's predicate implies the index's, which it cannot do through a bind parameter. */
+  statusTuple: (statuses: readonly string[]) => string;
 }
 /**
  * The SQL form of {@link purgeMatcher}: the `WHERE` body and its binds for the run-selecting half of

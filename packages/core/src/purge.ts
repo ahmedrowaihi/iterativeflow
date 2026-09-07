@@ -48,6 +48,10 @@ export interface PurgeSqlOpts {
   placeholder: (n: number) => string;
   /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
   time: (at: Date) => unknown;
+  /** Renders a status set as a SQL literal tuple, e.g. `('done','failed')`. Literals, not binds:
+   *  a partial index over the terminal statuses is only usable when the planner can prove the
+   *  query's predicate implies the index's, which it cannot do through a bind parameter. */
+  statusTuple: (statuses: readonly string[]) => string;
 }
 
 /**
@@ -62,8 +66,8 @@ export const purgeWhereSql = (
 ): { where: string; params: unknown[] } | undefined => {
   const statuses = purgeStatuses(filter);
   if (statuses.length === 0) return undefined;
-  const params: unknown[] = [...statuses];
-  const where = [`status IN (${statuses.map((_, i) => o.placeholder(i + 1)).join(",")})`];
+  const params: unknown[] = [];
+  const where = [`status IN ${o.statusTuple(statuses)}`];
   const add = (column: string, value: unknown): void => {
     params.push(value);
     where.push(`${column} ${o.placeholder(params.length)}`);

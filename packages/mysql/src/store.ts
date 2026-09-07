@@ -36,7 +36,11 @@ const TERMINAL = sqlTuple(TERMINAL_STATUSES);
 const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
 const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
 
-const MS_PURGE = { placeholder: () => "?", time: (at: Date) => at.getTime() };
+const MS_PURGE = {
+  placeholder: () => "?",
+  time: (at: Date) => at.getTime(),
+  statusTuple: sqlTuple,
+};
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
 
@@ -101,13 +105,16 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const q = purgeWhereSql(filter, MS_PURGE);
     if (!q) return 0;
+    // Oldest-first only matters for an age sweep; without a cutoff the whole matched set goes
+    // eventually, and the sort would force a full read before LIMIT could bound it.
+    const order = filter.before === undefined ? "" : " ORDER BY seq";
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
       const ids = (
         await tx.query<{ id: string }>(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
-             ORDER BY seq LIMIT ?`,
+             ${order} LIMIT ?`,
           params,
         )
       ).map((r) => r.id);

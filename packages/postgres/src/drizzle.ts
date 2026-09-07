@@ -63,6 +63,11 @@ const MODEL: TableModel[] = [
         where: "sql`${t.idempotencyKey} is not null`",
       },
       { name: "run_status", on: ["status"] },
+      {
+        name: "run_purge",
+        on: ["name", "status", "createdAt"],
+        where: "sql`${t.status} in ('done','failed','canceled')`",
+      },
     ],
   },
   {
