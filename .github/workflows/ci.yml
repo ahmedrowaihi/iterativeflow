@@ -2,10 +2,7 @@ name: ci
 
 on:
   push:
-    # changeset-release/** too: the version PR is opened with GITHUB_TOKEN, so its `pull_request`
-    # checks don't reliably run — without this, the one commit that rewrites all 12 manifests and the
-    # lockfile is the one commit nothing verifies.
-    branches: [main, changeset-release/**]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -110,6 +107,12 @@ jobs:
           git checkout -B changeset-release/main
           pnpm changeset version
           pnpm install --lockfile-only
+          # Verify the versioned tree HERE. A push made with GITHUB_TOKEN fires no workflow events,
+          # so this branch's own checks never run — without this the one commit that rewrites all 12
+          # manifests and the lockfile is the one commit nothing checks.
+          pnpm install --frozen-lockfile
+          pnpm run typecheck
+          pnpm run build
           git add .
           git commit -m "chore: version packages"
           git push -f origin changeset-release/main

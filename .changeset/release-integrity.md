@@ -5,10 +5,12 @@
 Release-pipeline integrity: verify the version PR, protect the publish, pin the formatter, and fix
 the npm source links.
 
-- **The version commit is now verified.** CI ran on `main` and on pull requests, but the changeset
-  version PR is opened with `GITHUB_TOKEN`, whose events don't reliably start workflows — so the one
+- **The version commit is now verified.** CI ran on `main` and on pull requests, but a push made with
+  `GITHUB_TOKEN` fires no workflow events at all, so the version PR's own checks never ran — the one
   commit that rewrites all 12 manifests, every changelog and the lockfile was the one commit nothing
-  checked. `changeset-release/**` is now a push trigger. The release job stays inert there.
+  checked. Adding a push trigger for that branch does not help, for the same reason. The release job
+  now installs from the regenerated lockfile and runs typecheck + build against the versioned tree
+  before opening the PR, so a broken lockfile fails there instead of after merge.
 - **A publish can no longer be cancelled halfway.** Workflow-level `cancel-in-progress` covered the
   release job, so a second push during a release could interrupt `changeset publish` mid-loop and
   leave npm with a partial `fixed` version set — some packages at the new version depending on
