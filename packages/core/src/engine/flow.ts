@@ -73,8 +73,13 @@ export type SignalPayload<S extends SignalMap, K> = K extends keyof S ? S[K] : u
  * executes. Non-determinism BETWEEN ctx calls (Date.now, random, branching on wall-clock)
  * is the one footgun — do that work inside `ctx.step` so its result is memoized.
  */
-export interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
-  name: string;
+export interface Flow<
+  I = unknown,
+  O = unknown,
+  S extends SignalMap = NoSignals,
+  N extends string = string,
+> {
+  name: N;
   version: number;
   run: (ctx: Ctx<S>, input: I) => Promise<O>;
   /** Optional Standard-Schema validator for the input, checked at submit time. */
@@ -115,9 +120,9 @@ export const validateInput = async <I>(
 };
 
 /** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
-export const defineFlow = <I, O, S extends SignalMap = NoSignals>(
-  flow: Flow<I, O, S>,
-): Flow<I, O, S> => flow;
+export const defineFlow = <I, O, S extends SignalMap = NoSignals, N extends string = string>(
+  flow: Flow<I, O, S, N>,
+): Flow<I, O, S, N> => flow;
 
 /**
  * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
@@ -144,7 +149,7 @@ export const defineContract = <I = unknown, O = unknown, S extends SignalMap = N
 ): Contract<I, O, S> => contract;
 
 /** A flow of any shape — the registry and executor dispatch flows type-erased. */
-export type AnyFlow = Flow<any, any, any>;
+export type AnyFlow = Flow<any, any, any, string>;
 
 /** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
 export interface InvokeSpec<CI = any, CO = any> {

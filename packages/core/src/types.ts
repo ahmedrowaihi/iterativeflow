@@ -123,9 +123,9 @@ export interface RunSnapshot {
 
 /** Filter for {@link Store.listRuns}, and for the set operations {@link Store.cancelRuns} and
  *  {@link Store.retryRuns}. `status` accepts one or several states. */
-export interface RunFilter {
+export interface RunFilter<N extends string = string> {
   status?: RunStatus | readonly RunStatus[];
-  name?: string;
+  name?: N;
   version?: number;
   tag?: string;
 }
@@ -135,9 +135,9 @@ export interface RunFilter {
  * is "delete all history" and has to be spelled out as `{ before: new Date() }`. `status` narrows
  * within the terminal states and can never widen past them: a live run is not deletable.
  */
-export interface PurgeFilter {
+export interface PurgeFilter<N extends string = string> {
   before?: Date;
-  name?: string;
+  name?: N;
   version?: number;
   status?: TerminalStatus | readonly TerminalStatus[];
 }

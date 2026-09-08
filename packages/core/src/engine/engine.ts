@@ -158,7 +158,7 @@ export interface RunLoopOpts {
  * worker loop over a single {@link Backend} + flow registry. This is the public surface most
  * apps use; the free functions it wraps stay available for fine-grained control.
  */
-export interface Engine {
+export interface Engine<N extends string = string> {
   readonly backend: Backend;
 
   submit<I, O, S extends SignalMap = NoSignals>(
@@ -175,8 +175,8 @@ export interface Engine {
   ): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
-  cancelMany(filter: RunFilter, limit?: number): Promise<number>;
-  retryMany(filter: RunFilter, limit?: number): Promise<number>;
+  cancelMany(filter: RunFilter<N>, limit?: number): Promise<number>;
+  retryMany(filter: RunFilter<N>, limit?: number): Promise<number>;
   result<O = unknown>(
     runId: RunHandle<O> | string,
     opts?: { timeoutMs?: number; pollMs?: number },
@@ -184,7 +184,7 @@ export interface Engine {
 
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
-  listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
+  listRuns(filter: RunFilter<N>, page: Page): Promise<RunPage>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
   /**
@@ -213,7 +213,7 @@ export interface Engine {
    * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
    * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
    */
-  pendingWork(names?: readonly string[]): Promise<number>;
+  pendingWork(names?: readonly N[]): Promise<number>;
 
   registerCron<I>(def: CronDef<I>): Promise<void>;
   /** Every registered cron — a cron deleted from source keeps firing until `removeCron`. */
@@ -237,7 +237,7 @@ export interface Engine {
    * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
    * history. Repeat until it returns `< limit`.
    */
-  purge(filter: PurgeFilter, limit?: number): Promise<number>;
+  purge(filter: PurgeFilter<N>, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -264,11 +264,11 @@ export interface Engine {
   isPaused(): boolean;
 }
 
-export const createEngine = (
+export const createEngine = <const F extends readonly AnyFlow[]>(
   backend: Backend,
-  flows: readonly AnyFlow[],
+  flows: F,
   opts: EngineOpts = {},
-): Engine => {
+): Engine<F[number]["name"]> => {
   const reg = registry(flows);
   const now = opts.now;
   const tickOpts = {

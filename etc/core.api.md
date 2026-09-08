@@ -301,8 +301,8 @@ type SignalPayload<S extends SignalMap, K> = K extends keyof S ? S[K] : unknown;
  * executes. Non-determinism BETWEEN ctx calls (Date.now, random, branching on wall-clock)
  * is the one footgun — do that work inside `ctx.step` so its result is memoized.
  */
-interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
-  name: string;
+interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals, N extends string = string> {
+  name: N;
   version: number;
   run: (ctx: Ctx<S>, input: I) => Promise<O>;
   /** Optional Standard-Schema validator for the input, checked at submit time. */
@@ -331,7 +331,7 @@ declare const validateInput: <I>(flow: {
   input?: InputSchema<I>;
 }, input: I) => Promise<I>;
 /** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
-declare const defineFlow: <I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S>) => Flow<I, O, S>;
+declare const defineFlow: <I, O, S extends SignalMap = NoSignals, N extends string = string>(flow: Flow<I, O, S, N>) => Flow<I, O, S, N>;
 /**
  * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
  * signals, WITHOUT the run body. A caller that doesn't own the implementation (another service, or a
@@ -353,7 +353,7 @@ interface Contract<I = unknown, O = unknown, S extends SignalMap = NoSignals> {
  */
 declare const defineContract: <I = unknown, O = unknown, S extends SignalMap = NoSignals>(contract: Contract<I, O, S>) => Contract<I, O, S>;
 /** A flow of any shape — the registry and executor dispatch flows type-erased. */
-type AnyFlow = Flow<any, any, any>;
+type AnyFlow = Flow<any, any, any, string>;
 /** One child of a fan-out `ctx.invoke([...])`: a flow and its input. */
 interface InvokeSpec<CI = any, CO = any> {
   flow: Flow<CI, CO, any>;
@@ -663,7 +663,7 @@ interface RunLoopOpts {
  * worker loop over a single {@link Backend} + flow registry. This is the public surface most
  * apps use; the free functions it wraps stay available for fine-grained control.
  */
-interface Engine {
+interface Engine<N extends string = string> {
   readonly backend: Backend;
   submit<I, O, S extends SignalMap = NoSignals>(flow: Flow<I, O, S> | Contract<I, O, S>, input: I, opts?: SubmitOpts): Promise<RunHandle<O, S>>;
   submitMany<I>(items: readonly SubmitSpec<I>[]): Promise<string[]>;
@@ -672,15 +672,15 @@ interface Engine {
   }): Promise<boolean>;
   cancel(runId: string): Promise<void>;
   retry(runId: string): Promise<boolean>;
-  cancelMany(filter: RunFilter, limit?: number): Promise<number>;
-  retryMany(filter: RunFilter, limit?: number): Promise<number>;
+  cancelMany(filter: RunFilter<N>, limit?: number): Promise<number>;
+  retryMany(filter: RunFilter<N>, limit?: number): Promise<number>;
   result<O = unknown>(runId: RunHandle<O> | string, opts?: {
     timeoutMs?: number;
     pollMs?: number;
   }): Promise<RunResult<O>>;
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
-  listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
+  listRuns(filter: RunFilter<N>, page: Page): Promise<RunPage>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
   /**
@@ -706,7 +706,7 @@ interface Engine {
    * due timers/crons, not just queued jobs, is what wakes a scaled-to-zero worker for a durable
    * `ctx.sleep` or a cron occurrence. `names` scopes it to a sharded worker's flows.
    */
-  pendingWork(names?: readonly string[]): Promise<number>;
+  pendingWork(names?: readonly N[]): Promise<number>;
   registerCron<I>(def: CronDef<I>): Promise<void>;
   /** Every registered cron — a cron deleted from source keeps firing until `removeCron`. */
   listCrons(): Promise<readonly CronRow[]>;
@@ -728,7 +728,7 @@ interface Engine {
    * the filter asks for. Throws on an empty filter — pass `{ before: new Date() }` to mean all
    * history. Repeat until it returns `< limit`.
    */
-  purge(filter: PurgeFilter, limit?: number): Promise<number>;
+  purge(filter: PurgeFilter<N>, limit?: number): Promise<number>;
   /** Fire every due cron once. */
   runCrons(): Promise<number>;
   /**
@@ -752,7 +752,7 @@ interface Engine {
   /** Whether claiming is currently paused. */
   isPaused(): boolean;
 }
-declare const createEngine: (backend: Backend, flows: readonly AnyFlow[], opts?: EngineOpts) => Engine;
+declare const createEngine: <const F extends readonly AnyFlow[]>(backend: Backend, flows: F, opts?: EngineOpts) => Engine<F[number]["name"]>;
 //#endregion
 export { Clock as $, TickResult as A, InputSchema as B, tickOnce as C, runDueCrons as D, registerCron as E, Contract as F, SignalSchema as G, InvokeSpecFor as H, Flow as I, defineFlow as J, SignalSchemas as K, FlowOutputs as L, defaultRetry as M, runTick as N, RetryPolicy as O, AnyFlow as P, validateSignal as Q, FlowPolicy as R, submitMany as S, cronTag as T, NoSignals as U, InvokeSpec as V, SignalMap as W, signalType as X, registry as Y, validateInput as Z, result as _, createEngine as a, signalRun as b, RunResult as c, SweepResult as d, Ctx as et, TickOnceOpts as f, reconcile as g, purge as h, RunLoopOpts as i, TickStatus as j, TickOpts as k, SubmitOpts as l, prune as m, EngineOpts as n, StepPolicy as nt, OnDuplicate as o, drainTimers as p, defineContract as q, Liveness as r, systemClock as rt, RunHandle as s, Engine as t, StepArg as tt, SubmitSpec as u, retryRun as v, CronDef as w, submit as x, serverlessTick as y, FlowRegistry as z };
 ```
@@ -857,9 +857,9 @@ interface RunSnapshot {
 }
 /** Filter for {@link Store.listRuns}, and for the set operations {@link Store.cancelRuns} and
  *  {@link Store.retryRuns}. `status` accepts one or several states. */
-interface RunFilter {
+interface RunFilter<N extends string = string> {
   status?: RunStatus | readonly RunStatus[];
-  name?: string;
+  name?: N;
   version?: number;
   tag?: string;
 }
@@ -868,9 +868,9 @@ interface RunFilter {
  * is "delete all history" and has to be spelled out as `{ before: new Date() }`. `status` narrows
  * within the terminal states and can never widen past them: a live run is not deletable.
  */
-interface PurgeFilter {
+interface PurgeFilter<N extends string = string> {
   before?: Date;
-  name?: string;
+  name?: N;
   version?: number;
   status?: TerminalStatus | readonly TerminalStatus[];
 }

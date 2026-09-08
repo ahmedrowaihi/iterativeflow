@@ -1,5 +1,6 @@
 import {
   type SignalSchema,
+  createEngine,
   defineContract,
   defineFlow,
   registry,
@@ -199,5 +200,20 @@ describe("ctx.signal timeout", () => {
     const r = await result(backend, handle, { timeoutMs: 1000, now });
     expect(r.status).toBe("done");
     expect(r.output).toEqual({ received: true, payload: { hi: 1 } });
+  });
+});
+
+describe("engine flow-name typing", () => {
+  it("accepts a registered name and rejects a typo at compile time", async () => {
+    const engine = createEngine(createMemoryBackend(), [approval, childNum]);
+
+    expect(await engine.cancelMany({ name: "approval" })).toBe(0);
+    expect(await engine.pendingWork(["child-num"])).toBe(0);
+    // @ts-expect-error "aproval" is not a registered flow name
+    await engine.cancelMany({ name: "aproval" });
+    // @ts-expect-error "child-nun" is not a registered flow name
+    await engine.pendingWork(["child-nun"]);
+    // @ts-expect-error purge filters on the same names
+    await engine.purge({ name: "nope" });
   });
 });
