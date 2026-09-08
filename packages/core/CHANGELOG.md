@@ -1,5 +1,314 @@
 # @iterativeflow/core
 
+## 2.4.0
+
+### Minor Changes
+
+- 2f1bb99: Bulk control: `engine.cancelMany(filter, limit)` and `engine.retryMany(filter, limit)`.
+
+  Bulk creation (`submitMany`) and bulk deletion (`purge`) existed; control did not, so abandoning a
+  queue or re-driving a failure wave meant paging ids and issuing one round trip per run — and
+  `cancelRun` walks `childrenOf` recursively, so it was well over N. A downstream deployment reported
+  ~11k failed runs of one flow and had built a sweep with a page cap, a time budget and a `seen` set to
+  work around it.
+
+  Both take the same `RunFilter` the ops UI already passes to `listRuns` (now with `version`), so "act
+  on what I filtered" needs no new vocabulary, and both mirror `deleteRuns`: narrow by filter, cap with
+  `limit`, return the count acted on, repeat until `< limit`. A filter with no predicate throws — a set
+  operation over everything has to be spelled out.
+
+  Cancel intersects with the live set and retry with `failed`, unconditionally, so neither can be
+  widened past the statuses it is defined on. Retry zeroes `attempts` per row, matching the single-run
+  fix, or a dead-lettered run would be re-failed without executing.
+
+  Bulk cancel deliberately does not walk descendants: a child whose parent went non-success cancels
+  itself on its next dispatch, and reconcile re-enqueues exactly those children, so the cascade still
+  completes — one maintenance interval later instead of inline. That is what keeps this one round trip
+  rather than a recursive graph walk.
+
+- 6ed85c5: Crons are readable and removable, and metrics carry the flow they belong to.
+
+  **`engine.listCrons()` / `engine.removeCron(name)`.** The cron surface was write-only — `upsertCron`,
+  `dueCrons`, `dueCronCount`, `advanceCron` — with no way to see what was registered or to retire one.
+  Because registration is an upsert, deleting a cron from your source did nothing: the row outlived it
+  and kept firing forever, and the only fix was raw SQL against the table. Both are on the `Store` port
+  and implemented by all 8 backends, with a conformance case.
+
+  **`Metrics` callbacks now carry a flow label.** They passed only a `runId`, so labelling a metric by
+  flow meant a store read inside the callback and per-flow p95 or failure-rate was effectively
+  unobtainable. `runStarted`, `runSettled` and `runSuspended` now receive `{ name, version }`;
+  `runSettled` also gets `durationMs` (wall-clock from the run's creation) and `errorCode`, and
+  `stepFinished` gets its own `durationMs`. Existing callbacks keep working — the additions are trailing
+  parameters.
+
+- 6f2f7b4: `engine.pause()` / `engine.resume()` / `engine.isPaused()` — drain a running worker without stopping it.
+
+  The only lever before this was the stop function from `engine.run()`, which aborts the tick loop
+  _and_ clears the maintenance interval, so reconcile and crons stop with it. There was no way to say
+  "stop taking new work, finish what you have" — the documented workaround was to deploy a worker
+  registered for zero flows.
+
+  `pause()` stops the run loop claiming; in-flight runs finish, reconcile and crons keep running, and a
+  paused loop parked in its idle backoff **wakes immediately** rather than after up to
+  `maxIdleTickMs`. That is what makes it react to a start/stop command on a live pod instead of on a
+  poll interval: pausing flips an abort gate the loop is waiting on, so it is a push, not a poll. It
+  takes effect on the next claim, so a batch already claimed still drains — leases are never abandoned.
+
+  It gates the `run()` loop only. A caller driving `tick()` or `serverlessTick()` themselves pauses by
+  not calling them, which needs no API, so `tick()` is deliberately not gated — an explicit call means
+  you meant it.
+
+  `Queue.waitForWork` takes an optional `AbortSignal` so a push-listener wait is interruptible too;
+  previously a loop with `createPgListener` wired could sit out its full backoff before noticing either
+  a pause or a stop.
+
+  This is the worker-level pause only. Pausing a single flow, a single run, or a cron is durable
+  fleet-wide state and a separate piece of work.
+
+### Patch Changes
+
+- c5443d5: Four correctness fixes: cron schedule changes, `n/step` cron syntax, observer isolation, and duplicate
+  flow registration.
+
+  **A changed cron schedule never took effect.** `upsertCron` preserved `nextRunAt` whenever the row
+  already existed, so re-registering `0 3 * * *` as `*/5 * * * *` updated the stored schedule but left
+  the next fire at tomorrow 03:00 — the old cadence outlived the deploy that changed it, by up to a
+  year for a yearly cron. Timing is now preserved only when the schedule string is unchanged, on all 8
+  backends, and pinned by a conformance case. (The redeploy-doesn't-reset-timing behaviour it was
+  protecting is unchanged and still tested.)
+
+  **`0/15 * * * *` silently meant "hourly".** A bare number with a step discarded the step, so a
+  common, valid Vixie/Quartz expression parsed as the single value `{0}` and fired 4× less often than
+  written — accepted at registration, no error anywhere. `n/step` is now a range from `n` to the field
+  maximum.
+
+  **A throwing event sink could derail a run.** `Observer.event` let a sink rejection escape into the
+  executor, where it was caught as a flow error — between `markTerminal` and the parent-wake, that
+  skipped `arriveAtJoin` and the ack, so a completed child left its parent waiting for the reconcile
+  sweep and the tick reported `retrying` for a run that was `done`. With `level: "all"` a persistently
+  failing sink advanced a run one step per attempt until it dead-lettered. Sink and tracer failures now
+  surface through `metrics.tickError` and never touch control flow, which is what "observability is
+  never load-bearing" was supposed to mean.
+
+  **Two flows registered under the same `name@version` silently kept the last one**, so every run of
+  the first executed the second body — and the drift guard cannot catch it, because the fingerprint is
+  `kind:label`, not the body. `registry()` now throws.
+
+- 2000935: Documentation accuracy pass, plus three small hardening fixes.
+
+  The reference docs the package READMEs link to (`CONTRACTS.md`, `RECOVERY.md`, `MIGRATION.md`,
+  `ARCHITECTURE.md`, `PARITY.md`) are now in the repository. `.gitignore` excluded all of `docs/`, so
+  those links 404'd for every reader — the design notes, ADR drafts and docs plan stay local, which is
+  what the rule was for.
+
+  Corrected against the source: `result()` waits **indefinitely** without `timeoutMs` (and the README's
+  headline example now passes one); Postgres has shipped cross-process push, so `createLocalWakeup` no
+  longer calls it "a future opt-in"; Redis is single-node, not "or a Cluster" — the outbox Lua spans
+  keys and a Cluster fails with `CROSSSLOT`; MongoDB's dedup indexes are partial, not sparse; DynamoDB
+  needs **two** GSIs, not one; `inTx` exists for MongoDB too; the `maxFanOut` (10 000) and `maxDepth`
+  (32) caps are documented where they're declared; the conformance suite list is complete (12, not 9,
+  with the single-writer exemption stated); the React Native example passes the right argument; and the
+  core README no longer advertises an alpha version.
+
+  Hardening: `createPgListener` validates its schema identifier like every other interpolation site in
+  the package; the dashboard's HTML escaper covers quotes and backticks, and its two inline `onclick`
+  handlers are delegated listeners, so no value derived from a run id can reach a script context.
+
+  Also adds `CONTRIBUTING.md` (Node 22.5+, corepack, the Docker-optional `SKIP_TESTCONTAINERS=1` path
+  that was documented only inside `lefthook.yml`) and an `engines` floor to all 12 manifests, so a Node
+  mismatch is a clear message instead of a stack trace.
+
+- 789e7fc: Make the memo's runtime type the same on every backend, and gate the published packages.
+
+  `ctx.step` is typed `Promise<T>`, but the memo round-trips through the backend's storage, so what a
+  replay hands back was **backend-dependent**: Postgres/MySQL/SQLite/Redis/DynamoDB store JSON and turn
+  a `Date` into a string, MongoDB stores BSON and kept it a `Date`, and the in-memory backend used
+  `structuredClone` and kept it too. So `ctx.step("now", () => new Date())` returned a `Date` in tests
+  and a `string` in production — the divergence was invisible precisely where you'd catch it.
+
+  Values that cross the durable boundary (run input/output/error, step results, signal payloads) are
+  now JSON-normalized on MongoDB and in memory, matching what every other backend already did. A new
+  store-conformance case pins it, and it is what caught the MongoDB divergence — the doc change alone
+  had asserted "a string on every backend", which was false.
+
+  `ctx.step`'s JSDoc now says this outright: `T` describes what `fn` returns, not necessarily what a
+  replay hands back.
+
+  Also adds a packaging gate (`publint` over all 12 packages in CI — every `exports`, `files` and
+  `types` entry must point at something the build actually emits; all 12 pass today, so this locks in
+  a property that was previously unverified luck), a Renovate config that groups non-major updates and
+  keeps backend drivers and `tsdown` on their own PRs, and a note in the deployment guide that
+  `applySchema` builds indexes and a plain `CREATE INDEX` takes a write lock — at scale, run it as a
+  migration or pre-create with `CONCURRENTLY`.
+
+- 9eb11e2: Fix: a `ctx.*` call inside a `ctx.step` body no longer corrupts replay, and a suspend inside a step
+  is no longer treated as a step failure.
+
+  Two bugs on the same boundary, both reachable from the idiom the README documents — the builder hands
+  `ctx` to every step fn, and the docs say "sleeps, signals, and invokes happen through `ctx` inside a
+  step".
+
+  **Cursor skew.** `step()` took its cursor key before running the body, so a nested `ctx.sleep` /
+  `ctx.signal` / `ctx.invoke` consumed the keys after it while the outer step's memo committed at the
+  earlier one. The invocation that resumed the step wrote its memo, and the _next_ replay returned that
+  memo without re-running the body — so the following call landed on the nested call's memo, raised
+  `FlowDriftError`, parked, and re-claimed until the run dead-lettered as `RUN_ATTEMPTS_EXHAUSTED`. The
+  run was unrecoverable: no redeploy fixes an already-skewed cursor. A call issued inside a step body
+  now keys off that step (`s1.0`, `s1.1`) instead of the flat cursor, so the body can never shift the
+  keys of anything after it. Flows that don't nest are unaffected — their keys are byte-identical.
+
+  **Suspends ran the failure policy.** `runWithPolicy` passed the thrown control signal to `classify`
+  and counted it against `retries`. A `classify` written the documented way — treat anything
+  unrecognised as `permanent` — turned an ordinary `ctx.sleep` into a `StepFailedError` and failed the
+  run; with `retries > 0` a normal park instead re-ran the whole step body after `retryDelayMs`,
+  re-executing its side effects. Control signals now short-circuit both, matching the guard the
+  executor already applies.
+
+  Note the remaining property, now covered by a test: a step body containing a suspend re-runs **from
+  the top** on resume, because the enclosing step's memo is only written once the body returns. Put
+  side effects in their own `ctx.step` rather than alongside a nested sleep.
+
+  **Upgrading with runs in flight:** a run that is parked _inside_ a nested `ctx.*` call when you deploy
+  this resumes with the new key scheme and drift-parks — the guard catches it, it is not silently wrong,
+  but it needs the usual drift recovery (redeploy the old body, or bump the flow version). Runs that
+  never nest are unaffected: their keys are byte-identical. Drain nesting flows before upgrading if you
+  can.
+
+- cad0b53: Close two gaps on the remote-fed surfaces: signal payloads bypassed `maxPayloadBytes`, and the
+  dashboard passed unvalidated input to the store.
+
+  **`maxPayloadBytes` now covers signals.** It was applied at `submit` and `submitMany` only, so the
+  one knob documented as "a runaway-payload guard" missed the other way a payload enters durable
+  storage — and the signal path is the one fed by `@iterativeflow/webhooks` and the dashboard. A signal
+  payload lands in the run's inbox and is re-read by every subsequent `loadRun`, so an oversized one is
+  amplified on each replay; on DynamoDB it can wedge the run past the 400 KB item limit at a point
+  where the caller can no longer intervene. Note this is a behaviour change for anyone already sending
+  signal payloads larger than a configured cap: they will now be rejected, which is the point.
+
+  **The dashboard validates before dispatching.** `?limit` went through `Math.min(Number(raw), 200)`,
+  so `-1` survived and reaches SQLite as _no limit_ — paging the entire run table, inputs and outputs
+  included, into one response — while `abc` yielded `NaN` and a driver error instead of a clamped
+  value. It is now clamped to a positive integer. The signal route cast its JSON body without checking
+  it, so a body with no `name` reached `postSignal` and surfaced as a NOT-NULL violation rather than a
+  `400`.
+
+  Also carries the "mutating routes are unauthenticated, mount behind your own auth and add CSRF" note
+  from the dashboard README into the `createDashboard` JSDoc, so it reaches anyone wiring it from
+  editor autocomplete rather than only those who read the README.
+
+- 5c2c9d5: Make a filtered purge use an index instead of scanning the run table.
+
+  Measured on Postgres 17 against 500k runs with 780 matching rows, using the shipped query: **217 ms
+  and 38,181 rows discarded, down to 1.87 ms with none discarded.** Three changes, all needed together.
+
+  - **A partial index with `status` in the key** — `(name, status, created_at) WHERE status IN
+('done','failed','canceled')`, on Postgres and SQLite. The obvious index `(name, version,
+created_at)` with the statuses only in the _predicate_ measured **worse than no index at all**: the
+    predicate decides which rows are in the index, it does not let the planner seek one terminal
+    status. Partial keeps live runs out entirely, so a row enters the index once, when it goes terminal,
+    and the hot path never pays. MySQL has no partial indexes, so it is deliberately left alone rather
+    than given a full index that would pay on every insert and transition.
+  - **Statuses render as SQL literals, not binds.** A partial index is only usable when the planner can
+    prove the query's predicate implies the index's, and it cannot do that through a bind parameter —
+    under a generic plan (which Postgres switches to after roughly five executions of a prepared
+    statement) it silently drops the index and scans everything. That is the nastiest shape of bug:
+    fast in tests and for the first minutes after deploy, then quietly not. The values come from the
+    engine's own closed enum via `purgeStatuses`, never from a caller, and the SQL backends already
+    render status tuples as literals everywhere else — the purge path was the deviation.
+  - **`ORDER BY` only when there is an age cutoff.** Without one the whole matched set is going
+    eventually, so the order is arbitrary, and sorting forced a full read of every matching row before
+    `LIMIT` could bound anything — which undercut the "repeat until `< limit`" contract by re-paying the
+    scan on every batch. Backends already disagreed on the column (`created_at` vs `seq`) and
+    conformance only ever asserted counts, so nothing promised an order.
+
+- a6b79cc: Release-pipeline integrity: verify the version PR, protect the publish, pin the formatter, and fix
+  the npm source links.
+
+  - **The version commit is now verified.** CI ran on `main` and on pull requests, but a push made with
+    `GITHUB_TOKEN` fires no workflow events at all, so the version PR's own checks never ran — the one
+    commit that rewrites all 12 manifests, every changelog and the lockfile was the one commit nothing
+    checked. Adding a push trigger for that branch does not help, for the same reason. The release job
+    now installs from the regenerated lockfile and runs typecheck + build against the versioned tree
+    before opening the PR, so a broken lockfile fails there instead of after merge.
+  - **A publish can no longer be cancelled halfway.** Workflow-level `cancel-in-progress` covered the
+    release job, so a second push during a release could interrupt `changeset publish` mid-loop and
+    leave npm with a partial `fixed` version set — some packages at the new version depending on
+    siblings that never published, and npm publishes are not revocable. Cancellation now applies to the
+    test job only; the release job has its own non-cancelling group.
+  - **`oxfmt` is pinned.** The pre-commit hook ran it via `npx` with no version and no lockfile entry,
+    so every contributor fetched whatever was latest and could reformat the same file differently. It's
+    now a pinned dev dependency invoked from the local binary, with `format` / `format:check` scripts
+    and a CI check. Six files that had drifted are formatted.
+  - **npm's source links resolve.** All 12 manifests pointed `repository.directory` at `v2/packages/*`,
+    a path that doesn't exist in this repo, so every package's "source" link 404'd.
+  - **The public-API gate can't be outgrown.** `api-snapshot.mjs` had a hardcoded 12-package list, so a
+    13th package would ship with no `etc/*.api.md` and the `git diff --exit-code etc` check would pass
+    because nothing was generated for it. The list is derived from the workspace now, and a missing
+    `dist/` fails with a clear "run build first" instead of a raw ENOENT.
+
+- 8a02c61: Fix: `postSignal` stayed idempotent only until the signal was consumed, on half the backends.
+
+  `postSignal` promises "idempotent on `idempotencyKey` — a retried delivery lands once", and
+  `@iterativeflow/webhooks` leans on it: its default key is `${event.id}:${runId}:${name}`, so a
+  provider redelivering the same event is supposed to be a no-op.
+
+  Postgres, MySQL, SQLite and MongoDB dedupe via a unique index **on the signal row itself**, and
+  consuming a signal deleted that row — destroying the only record that the key had ever been seen. A
+  redelivery after consumption therefore landed as a brand-new signal, and a flow that awaits the same
+  signal more than once (a loop, a second gate) consumed it as genuine. Memory, Redis and DynamoDB keep
+  a separate dedupe record and were always correct, so the guarantee was backend-dependent — and the
+  two backends the docs push for production SQL were the unsafe ones.
+
+  Consumption is now a soft mark (`signal.consumed`) rather than a delete, so the key survives for the
+  life of the run and retention still reclaims it with everything else. The inbox read filters consumed
+  rows, so nothing else changes.
+
+  The conformance suite could not see this: it posted the same key twice back-to-back and never after
+  consumption. It now has a `post → consume → re-post` case, which is what proves all eight backends
+  agree.
+
+  Schema: adds a `consumed` column to the `signal` table. `applySchema` adds it in place on Postgres,
+  MySQL and SQLite (guarded, since MySQL and SQLite have no `ADD COLUMN IF NOT EXISTS` and it runs on
+  every boot); MongoDB needs no migration. The generated drizzle schema mirrors the new column.
+
+- 02147f8: Fix: a step that declares `timeoutMs` now holds its run's lease while it runs.
+
+  A lease was renewed only when a step **committed**, so a single step longer than `leaseMs` could not
+  renew: the lease expired mid-flight, a second worker claimed the same run, and the same step body
+  executed concurrently. The memo stays exactly-once, so the _result_ was never wrong — the side effect
+  ran twice. Reproduced on the memory backend with no crash involved, and reported from production as a
+  run that sat `running` for ~4.5h across 25 attempts, re-running an expensive scan each time.
+
+  Declaring `StepPolicy.timeoutMs` now also keeps the lease alive for as long as the step runs. The
+  ceiling is the step's own declared timeout, so the engine invents no new number and no new knob: a
+  step that overruns is still aborted, and its lease still lapses, so a wedged worker is reclaimable
+  exactly as before. `leaseMs` no longer has to be hand-sized above the longest step times the batch
+  size.
+
+  A step with **no** `timeoutMs` is deliberately unchanged: there is no honest bound to renew to, and
+  renewing without one would convert a hung step into a permanent stall — worse than today, since
+  reclaim by another live worker is the only thing that currently recovers that case.
+
+  Also documents, on `serverlessTick`, that a renewing step widens the worst-case strand of an
+  un-executed batch tail to about twice `leaseMs` past a killed invocation.
+
+- 2367975: Turn on the supply-chain cooldown that was configured but never active, and stop dev-installing a
+  peer nothing imports.
+
+  `pnpm-workspace.yaml` carried a `minimumReleaseAgeExclude` list with no `minimumReleaseAge` set, so
+  the gate it assumed existed was off — a freshly published version of any dev dependency was
+  installable the moment it appeared. Now set to a one-day cooldown, which is what the exclude list was
+  written for.
+
+  `@op-engineering/op-sqlite` is an optional peer of `@iterativeflow/sqlite`, and `autoInstallPeers`
+  installed it anyway — pulling the whole React Native/Metro toolchain into every clone and CI run for
+  a package nothing in this repo imports (the adapter is typed structurally and its tests emulate the
+  driver). It is now in `ignoredOptionalDependencies`. Consumers who actually use op-sqlite are
+  unaffected: the peer declaration is unchanged.
+
+  Note the tree is only pruned on the next full lockfile resolution — the setting is recorded now, but
+  the already-resolved entries stay until then.
+
 ## 2.3.0
 
 ### Minor Changes

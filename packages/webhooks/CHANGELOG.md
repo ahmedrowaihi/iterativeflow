@@ -1,5 +1,24 @@
 # @iterativeflow/webhooks
 
+## 2.4.0
+
+### Patch Changes
+
+- Updated dependencies [2f1bb99]
+- Updated dependencies [c5443d5]
+- Updated dependencies [6ed85c5]
+- Updated dependencies [2000935]
+- Updated dependencies [789e7fc]
+- Updated dependencies [6f2f7b4]
+- Updated dependencies [9eb11e2]
+- Updated dependencies [cad0b53]
+- Updated dependencies [5c2c9d5]
+- Updated dependencies [a6b79cc]
+- Updated dependencies [8a02c61]
+- Updated dependencies [02147f8]
+- Updated dependencies [2367975]
+  - @iterativeflow/core@2.4.0
+
 ## 2.3.0
 
 ### Patch Changes
