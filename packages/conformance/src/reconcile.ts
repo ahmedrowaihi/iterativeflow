@@ -92,5 +92,21 @@ export const reconcileConformance = (
       await store.markTerminal(runId, { status: "done", output: 1 });
       expect(await store.orphanedRuns(10)).not.toContain(runId);
     });
+
+    it("retryRuns re-enqueues, and cancelRuns clears the timer — not just a status flip", async () => {
+      const { store, queue, timer } = await makeBackend();
+      const now = new Date("2030-01-01T00:00:00Z");
+      const failed = (await store.startRun({ name: "f", version: 1, input: {} })).runId;
+      await store.markTerminal(failed, { status: "failed", error: { code: "X", message: "x" } });
+      const live = (await store.startRun({ name: "g", version: 1, input: {} })).runId;
+      await timer.schedule(live, now);
+
+      expect(await store.retryRuns({ name: "f" }, 10)).toBe(1);
+      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now });
+      expect(leases.map((l) => l.runId)).toContain(failed); // claimable, not merely `pending`
+
+      expect(await store.cancelRuns({ name: "g" }, 10)).toBe(1);
+      expect(await timer.dueCount(now)).toBe(0); // its wake timer went with it
+    });
   });
 };

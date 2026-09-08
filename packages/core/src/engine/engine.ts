@@ -49,15 +49,28 @@ export interface Liveness {
   runs: Record<RunStatus, number>;
 }
 
-const anySignal = (a: AbortSignal, b: AbortSignal): AbortSignal => {
+/** Fires when either input does. Returns a `release` because the loop calls this once per idle tick:
+ *  a `{ once: true }` listener that never fires is never collected, so without it the long-lived stop
+ *  signal accumulates one listener per iteration for the life of the process. */
+const anySignal = (
+  a: AbortSignal,
+  b: AbortSignal,
+): { signal: AbortSignal; release: () => void } => {
   const out = new AbortController();
   const stop = (): void => out.abort();
-  if (a.aborted || b.aborted) out.abort();
-  else {
-    a.addEventListener("abort", stop, { once: true });
-    b.addEventListener("abort", stop, { once: true });
+  if (a.aborted || b.aborted) {
+    out.abort();
+    return { signal: out.signal, release: () => undefined };
   }
-  return out.signal;
+  a.addEventListener("abort", stop, { once: true });
+  b.addEventListener("abort", stop, { once: true });
+  return {
+    signal: out.signal,
+    release: () => {
+      a.removeEventListener("abort", stop);
+      b.removeEventListener("abort", stop);
+    },
+  };
 };
 
 /** Signal-aware sleep on the Web-standard `setTimeout` — resolves after `ms`, rejects if `signal`
@@ -380,10 +393,16 @@ export const createEngine = (
         while (!signal.aborted) {
           // `gate` is replaced on every pause/resume, so waiting on it alongside `signal` is what
           // makes either land immediately instead of after the current backoff.
-          const idle = (ms: number): Promise<void> =>
-            waitForWork
-              ? waitForWork(ms, anySignal(signal, gate.signal)).catch(onTickError)
-              : delay(ms, { signal: anySignal(signal, gate.signal) }).catch(() => undefined);
+          const idle = async (ms: number): Promise<void> => {
+            const { signal: until, release } = anySignal(signal, gate.signal);
+            try {
+              await (waitForWork
+                ? waitForWork(ms, until).catch(onTickError)
+                : delay(ms, { signal: until }).catch(() => undefined));
+            } finally {
+              release();
+            }
+          };
           if (paused) {
             await idle(maxIdleMs);
             continue;

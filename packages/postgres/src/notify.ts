@@ -97,8 +97,8 @@ export interface PgListener {
   /** Completion push for `result()` — pass as `createPgBackend(sql, { wakeup })`. */
   readonly wakeup: Wakeup;
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
-   *  enqueue notify or after `timeoutMs`. */
-  waitForWork(timeoutMs: number): Promise<void>;
+   *  enqueue notify, when `signal` aborts, or after `timeoutMs`. */
+  waitForWork(timeoutMs: number, signal?: AbortSignal): Promise<void>;
   /**
    * Live progress for one run as an async iterator — yields `{ runId, type }` per event as it lands,
    * across processes. Requires {@link applyProgressTrigger} installed. Break the loop (or call
@@ -234,19 +234,22 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
     // Completion push: `signal` is the local fast path (executor's terminal write); a run completing
     // in ANOTHER process reaches us via the `done` trigger feeding `completion.signal` above.
     wakeup: completion,
-    waitForWork(timeoutMs) {
+    waitForWork(timeoutMs, signal) {
       if (pendingWake) {
         pendingWake = false;
         return Promise.resolve();
       }
+      if (signal?.aborted) return Promise.resolve();
       return new Promise<void>((resolve) => {
         let t: ReturnType<typeof setTimeout>;
         const settle = (): void => {
           clearTimeout(t);
           workWaiters.delete(settle);
+          signal?.removeEventListener("abort", settle);
           resolve();
         };
         workWaiters.add(settle);
+        signal?.addEventListener("abort", settle, { once: true });
         t = setTimeout(settle, timeoutMs);
       });
     },

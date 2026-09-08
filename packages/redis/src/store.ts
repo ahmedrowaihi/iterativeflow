@@ -488,7 +488,9 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       const statuses = statusList(filter.status);
       // Scan the index in bounded windows so an interactive page isn't O(total runs); a filtered
       // page has no secondary index, so widen the window to offset the misses.
-      const filtered = Boolean(statuses || filter.name || filter.tag);
+      const filtered = Boolean(
+        statuses || filter.name || filter.version !== undefined || filter.tag,
+      );
       const window = filtered ? Math.max(page.limit * 4, 64) : page.limit;
       let max = page.cursor ? `(${page.cursor}` : "+inf";
       const rows: RunRow[] = [];
@@ -518,6 +520,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           if (!row) continue;
           if (statuses && !statuses.includes(row.status)) continue;
           if (filter.name && row.name !== filter.name) continue;
+          if (filter.version !== undefined && row.version !== filter.version) continue;
           if (filter.tag && !(row.tags?.includes(filter.tag) ?? false)) continue;
           rows.push(row);
           cursor = String(scores[i]);
@@ -538,8 +541,9 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
 
     async retryRuns(filter, limit) {
       const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
-      for (const r of victims) await store.retryRun(r.id);
-      return victims.length;
+      let n = 0;
+      for (const r of victims) if ((await store.retryRun(r.id)).retried) n += 1;
+      return n;
     },
 
     async childrenOf(runId) {

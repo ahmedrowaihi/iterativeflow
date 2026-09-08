@@ -303,6 +303,10 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         params.push(filter.name);
         where.push(`name = $${params.length}`);
       }
+      if (filter.version !== undefined) {
+        params.push(filter.version);
+        where.push(`version = $${params.length}`);
+      }
       if (filter.tag) {
         params.push(filter.tag);
         where.push(`$${params.length} = ANY(tags)`);

@@ -290,6 +290,10 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         where.push(`name = ?`);
         params.push(filter.name);
       }
+      if (filter.version !== undefined) {
+        where.push(`version = ?`);
+        params.push(filter.version);
+      }
       if (filter.tag) {
         where.push(`EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`);
         params.push(filter.tag);

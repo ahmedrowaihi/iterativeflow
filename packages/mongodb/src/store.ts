@@ -345,6 +345,7 @@ export const createMongoStore = (
       const q: Filter<RunDoc> = {
         ...(statuses && { status: { $in: statuses } }),
         ...(filter.name && { name: filter.name }),
+        ...(filter.version !== undefined && { version: filter.version }),
         ...(filter.tag && { tags: filter.tag }),
         ...(page.cursor && { ord: { $lt: new ObjectId(page.cursor) } }),
       };

@@ -614,6 +614,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const keep = (r: RunItem): boolean =>
         (!statuses || statuses.includes(r.status)) &&
         (!filter.name || r.name === filter.name) &&
+        (filter.version === undefined || r.version === filter.version) &&
         (!filter.tag || (r.tags?.includes(filter.tag) ?? false));
       // gsi2 RUN partition, descending seq. With no filter this reads one page; a selective filter
       // may walk a few index pages, but never the whole table.

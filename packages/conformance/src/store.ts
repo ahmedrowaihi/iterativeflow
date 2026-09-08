@@ -449,6 +449,17 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       await expect(s.retryRuns({}, 100)).rejects.toThrow();
     });
 
+    it("listRuns filters by version, not just name", async () => {
+      const s = await makeStore();
+      const v1 = (await s.startRun({ name: "f", version: 1, input: {} })).runId;
+      const v2 = (await s.startRun({ name: "f", version: 2, input: {} })).runId;
+
+      const only1 = await s.listRuns({ name: "f", version: 1 }, { limit: 10 });
+      expect(only1.runs.map((r) => r.id)).toEqual([v1]);
+      const only2 = await s.listRuns({ name: "f", version: 2 }, { limit: 10 });
+      expect(only2.runs.map((r) => r.id)).toEqual([v2]);
+    });
+
     it("runStats counts runs per status", async () => {
       const s = await makeStore();
       const a = await s.startRun({ name: "f", version: 1, input: {} });

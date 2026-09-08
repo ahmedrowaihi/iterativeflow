@@ -105,8 +105,8 @@ interface PgListener {
   /** Completion push for `result()` — pass as `createPgBackend(sql, { wakeup })`. */
   readonly wakeup: Wakeup;
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
-   *  enqueue notify or after `timeoutMs`. */
-  waitForWork(timeoutMs: number): Promise<void>;
+   *  enqueue notify, when `signal` aborts, or after `timeoutMs`. */
+  waitForWork(timeoutMs: number, signal?: AbortSignal): Promise<void>;
   /**
    * Live progress for one run as an async iterator — yields `{ runId, type }` per event as it lands,
    * across processes. Requires {@link applyProgressTrigger} installed. Break the loop (or call

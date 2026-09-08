@@ -28,3 +28,9 @@ executor already applies.
 Note the remaining property, now covered by a test: a step body containing a suspend re-runs **from
 the top** on resume, because the enclosing step's memo is only written once the body returns. Put
 side effects in their own `ctx.step` rather than alongside a nested sleep.
+
+**Upgrading with runs in flight:** a run that is parked _inside_ a nested `ctx.*` call when you deploy
+this resumes with the new key scheme and drift-parks — the guard catches it, it is not silently wrong,
+but it needs the usual drift recovery (redeploy the old body, or bump the flow version). Runs that
+never nest are unaffected: their keys are byte-identical. Drain nesting flows before upgrading if you
+can.

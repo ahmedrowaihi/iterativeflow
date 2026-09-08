@@ -261,6 +261,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
           (r) =>
             (!statuses || statuses.includes(r.status)) &&
             (!filter.name || r.name === filter.name) &&
+            (filter.version === undefined || r.version === filter.version) &&
             (!filter.tag || (r.tags?.includes(filter.tag) ?? false)),
         )
         .sort((a, b) => (runSeq.get(b.id) ?? 0) - (runSeq.get(a.id) ?? 0)); // newest first

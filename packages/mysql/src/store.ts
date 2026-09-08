@@ -290,6 +290,10 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         where.push(`name = ?`);
         params.push(filter.name);
       }
+      if (filter.version !== undefined) {
+        where.push(`version = ?`);
+        params.push(filter.version);
+      }
       if (filter.tag) {
         where.push(`JSON_CONTAINS(tags, JSON_QUOTE(?))`);
         params.push(filter.tag);
