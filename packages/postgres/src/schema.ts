@@ -18,6 +18,33 @@ export const tables = (schema: string) => {
 export type Tables = ReturnType<typeof tables>;
 
 /**
+ * DDL for the `pending_work(flow_names, as_of)` function alone — claimable jobs + due timers + due
+ * crons as one number, for a KEDA/Prometheus scaler that reads the database directly.
+ *
+ * {@link ddl} already includes this. It is exported separately for consumers who own their
+ * migrations, because {@link drizzleSchema} emits tables only — its generated header explains the
+ * consequence of skipping it.
+ */
+export const pendingWorkDdl = (schema: string): string => {
+  const t = tables(schema);
+  return `CREATE OR REPLACE FUNCTION "${schema}".pending_work(flow_names text[] DEFAULT NULL, as_of timestamptz DEFAULT now())
+RETURNS bigint LANGUAGE sql STABLE AS $$
+  SELECT
+    (SELECT count(*) FROM ${t.job} j
+       WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
+         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
+               SELECT 1 FROM ${t.run} r WHERE r.id = j.run_id AND NOT (r.name = ANY(flow_names))))))
+  + (SELECT count(*) FROM ${t.timer} tm
+       WHERE tm.fire_at <= as_of
+         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
+               SELECT 1 FROM ${t.run} r WHERE r.id = tm.run_id AND NOT (r.name = ANY(flow_names))))))
+  + (SELECT count(*) FROM ${t.cron} c
+       WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR c.flow_name = ANY(flow_names)))
+$$;
+`;
+};
+
+/**
  * DDL for one schema. `run` carries the durable state; `step` is the exactly-once memo (PK
  * `(run_id, cursor_key)` is the first-writer-wins guard); `job` is the lease-CAS queue;
  * `timer` is the durable-deadline set. Ids are opaque `text` supplied by the runtime's
@@ -127,21 +154,7 @@ CREATE TABLE IF NOT EXISTS ${t.cron} (
 );
 CREATE INDEX IF NOT EXISTS cron_due ON ${t.cron} (next_run_at);
 
-CREATE OR REPLACE FUNCTION "${schema}".pending_work(flow_names text[] DEFAULT NULL, as_of timestamptz DEFAULT now())
-RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT
-    (SELECT count(*) FROM ${t.job} j
-       WHERE j.run_at <= as_of AND (j.lease_expires IS NULL OR j.lease_expires <= as_of)
-         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
-               SELECT 1 FROM ${t.run} r WHERE r.id = j.run_id AND NOT (r.name = ANY(flow_names))))))
-  + (SELECT count(*) FROM ${t.timer} tm
-       WHERE tm.fire_at <= as_of
-         AND (flow_names IS NULL OR (cardinality(flow_names) > 0 AND NOT EXISTS (
-               SELECT 1 FROM ${t.run} r WHERE r.id = tm.run_id AND NOT (r.name = ANY(flow_names))))))
-  + (SELECT count(*) FROM ${t.cron} c
-       WHERE c.next_run_at <= as_of AND (flow_names IS NULL OR c.flow_name = ANY(flow_names)))
-$$;
-`;
+${pendingWorkDdl(schema)}`;
 };
 
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */

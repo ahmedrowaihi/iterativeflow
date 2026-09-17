@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { ddl, drizzleSchema } from "@iterativeflow/postgres";
+import { ddl, drizzleSchema, pendingWorkDdl } from "@iterativeflow/postgres";
 import { generateDrizzleJson, generateMigration } from "drizzle-kit/api";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -116,5 +116,31 @@ describe.skipIf(skip)("drizzle schema mirrors ddl()", () => {
     const dl = await indexes(DDL_SCHEMA);
     expect(drz.map((i) => i.indexname)).toEqual(NAMED_INDEXES.slice().sort());
     expect(drz).toEqual(dl);
+  });
+
+  const hasPendingWork = async (schema: string): Promise<boolean> => {
+    const { rows } = await pool.query<{ oid: string | null }>(
+      `SELECT to_regprocedure('"${schema}".pending_work(text[], timestamptz)')::text AS oid`,
+    );
+    return rows[0].oid !== null;
+  };
+
+  it("leaves pending_work out of the drizzle schema, and pendingWorkDdl supplies it", async () => {
+    // The gap: a consumer who migrates the generated schema and never calls applySchema has the
+    // tables but no counter, so a scaler querying it fails on every poll.
+    expect(await hasPendingWork(DDL_SCHEMA)).toBe(true);
+    expect(await hasPendingWork(DRZ_SCHEMA)).toBe(false);
+
+    await pool.query(pendingWorkDdl(DRZ_SCHEMA));
+    expect(await hasPendingWork(DRZ_SCHEMA)).toBe(true);
+
+    // It must also RUN against the drizzle-built tables, not merely exist.
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT "${DRZ_SCHEMA}".pending_work(NULL, now()) AS n`,
+    );
+    expect(Number(rows[0].n)).toBe(0);
+
+    // Restore the fixture: the sibling tests introspect this schema as drizzle built it.
+    await pool.query(`DROP FUNCTION "${DRZ_SCHEMA}".pending_work(text[], timestamptz)`);
   });
 });

@@ -68,7 +68,10 @@ The library gives you the numbers; you wire up the scaling.
   can read it directly — the argument types differ per backend (Postgres `text[]`/`timestamptz`, both
   defaulted; MySQL a JSON array and epoch-ms `BIGINT`), so see the backend page for the exact call.
   MongoDB exposes `pendingWorkPipeline` (a `$unionWith` aggregation) for a mongo-side metric. Counting due timers and crons, not just queued jobs, is what lets a worker scaled to
-  zero wake for a `ctx.sleep` or a cron.
+  zero wake for a `ctx.sleep` or a cron. The SQL function is created by `applySchema` — if you own
+  your migrations (a Drizzle migration creates the tables only), run the `pendingWorkSql` the
+  generated schema exports as well, or the scaler's query fails on every poll and the deployment
+  silently pins at its last replica count.
 - `engine.nextWakeAt()` (also on the `serverlessTick` result) returns the next time work is due. Use it
   to schedule a single wake-up — SQS `DelaySeconds`, EventBridge, a Step Functions `Wait` — instead of
   polling on a timer. Signals and child completions wake a run directly, so they aren't part of this.

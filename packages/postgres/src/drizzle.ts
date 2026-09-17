@@ -11,6 +11,7 @@
  * and asserts the two produce the same columns, keys, and indexes — the emitted file cannot drift
  * from the DDL the engine actually runs on.
  */
+import { pendingWorkDdl } from "#schema";
 
 interface TableModel {
   sql: string;
@@ -207,6 +208,11 @@ export const drizzleSchema = (schema = "workflow"): string => {
 // You own this file: run your own migrations from it, add foreign keys to "${schema}".run, and
 // query the tables with full type-safety. Regenerate with \`iterativeflow-pg-drizzle\` if you
 // upgrade the engine. Do NOT pass these tables back into the engine — it manages them itself.
+//
+// The table migration does NOT create "${schema}".pending_work — drizzle cannot express a
+// CREATE FUNCTION — so run \`pendingWorkSql\` (below) in a migration too, or call \`applySchema\`
+// on boot. Without it a KEDA/Prometheus scaler's query fails on every poll and the deployment pins
+// at its last replica count, reporting no error anywhere.
 // Uses the array-form index callback + generatedAlwaysAsIdentity — valid on drizzle-orm stable
 // (>= 0.32) and the 1.0 beta (verified against 0.45 and 1.0.0-beta.22).
 import { ${IMPORTS.join(", ")} } from "drizzle-orm/pg-core";
@@ -219,6 +225,10 @@ ${tables}
 ${selectTypes}
 
 export const schema = { ${exportNames} };
+
+// Run this in a migration, after the tables exist:
+//   await db.execute(sql.raw(pendingWorkSql));
+export const pendingWorkSql = String.raw\`${pendingWorkDdl(schema)}\`;
 `;
 };
 

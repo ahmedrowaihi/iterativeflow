@@ -26,6 +26,15 @@ declare const pgPool: (pool: Pool) => Sql;
 //#endregion
 //#region src/schema.d.ts
 /**
+ * DDL for the `pending_work(flow_names, as_of)` function alone — claimable jobs + due timers + due
+ * crons as one number, for a KEDA/Prometheus scaler that reads the database directly.
+ *
+ * {@link ddl} already includes this. It is exported separately for consumers who own their
+ * migrations, because {@link drizzleSchema} emits tables only — its generated header explains the
+ * consequence of skipping it.
+ */
+declare const pendingWorkDdl: (schema: string) => string;
+/**
  * DDL for one schema. `run` carries the durable state; `step` is the exactly-once memo (PK
  * `(run_id, cursor_key)` is the first-writer-wins guard); `job` is the lease-CAS queue;
  * `timer` is the durable-deadline set. Ids are opaque `text` supplied by the runtime's
@@ -51,19 +60,6 @@ declare const applySchema: (sql: Sql, schema?: string) => Promise<void>;
 declare const pgClassify: (error: unknown) => "transient" | "permanent";
 //#endregion
 //#region src/drizzle.d.ts
-/**
- * Emit a standalone drizzle-orm schema file that mirrors the durable tables {@link ddl} creates.
- *
- * The engine never imports this — you own the emitted file. Drop it in your repo to get typed
- * reads (`db.select().from(run)`), foreign keys from your own tables to `workflow.run`, and a
- * drizzle-kit migration source you control. It is generated (not re-exported from this package)
- * on purpose: the file is written against whatever `drizzle-orm` version you have installed, so
- * a drizzle schema-builder API change can't break across our release and yours.
- *
- * `drizzle.test.ts` applies both this schema (via drizzle-kit) and {@link ddl} to a real Postgres
- * and asserts the two produce the same columns, keys, and indexes — the emitted file cannot drift
- * from the DDL the engine actually runs on.
- */
 /**
  * Generate the TypeScript source of a consumer-owned drizzle schema for the workflow tables.
  * Write it into your repo (see the `iterativeflow-pg-drizzle` bin) and point drizzle-kit at it.
@@ -181,5 +177,5 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pgClassify, pgPool, progressDdl };
+export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pendingWorkDdl, pgClassify, pgPool, progressDdl };
 ```

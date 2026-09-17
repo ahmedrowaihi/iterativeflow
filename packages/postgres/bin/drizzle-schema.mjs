@@ -18,3 +18,9 @@ for (let i = 0; i < args.length; i++) {
 const path = resolve(process.cwd(), out);
 writeFileSync(path, drizzleSchema(schema));
 process.stdout.write(`wrote drizzle schema for "${schema}" → ${path}\n`);
+// The tables migrate; the function does not. Nothing reports a missing pending_work at runtime —
+// a scaler just pins — so print the check rather than only warning about it.
+process.stdout.write(
+  `\nAlso run \`pendingWorkSql\` from that file in a migration (or call applySchema). Verify with:\n` +
+    `  SELECT to_regprocedure('${schema}.pending_work(text[], timestamptz)') IS NOT NULL;\n`,
+);

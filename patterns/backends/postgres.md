@@ -41,6 +41,12 @@ To use a different schema, pass it here and to `createPgBackend`: `applySchema(s
 migrations through your own tool instead, `ddl(schema)` returns the SQL string, and `drizzleSchema`
 (or the `iterativeflow-pg-drizzle` CLI) emits a Drizzle schema.
 
+Migrating that file creates the **tables only** — Drizzle cannot express a `CREATE FUNCTION`, so
+`pending_work` is not created. The generated file exports the SQL for it as `pendingWorkSql`; run
+that in a migration too (`await db.execute(sql.raw(pendingWorkSql))`), or call `applySchema` on
+boot. Skip it and a scaler querying `pending_work` fails on every poll — see
+[Autoscaling](#autoscaling).
+
 ## Run a worker
 
 ```ts
@@ -137,6 +143,15 @@ to and from zero:
 ```sql
 SELECT workflow.pending_work();               -- whole backlog
 SELECT workflow.pending_work(ARRAY['greet']); -- one flow's shard
+```
+
+**It has to exist first.** `applySchema` creates it; a database migrated from the generated Drizzle
+schema alone does **not** have it (see [Set up the database](#set-up-the-database)). Check before you
+point a scaler at it — KEDA reports no error when the trigger query fails, it just holds the last
+replica count, which reads exactly like a cooldown that hasn't elapsed:
+
+```sql
+SELECT to_regprocedure('workflow.pending_work(text[], timestamptz)') IS NOT NULL;
 ```
 
 The dashboard also serves this at `GET /api/metrics` for a KEDA `metrics-api` scaler.
