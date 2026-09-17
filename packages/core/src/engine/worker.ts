@@ -230,7 +230,11 @@ export interface TickOnceOpts {
   driftPolicy?: DriftPolicy;
   names?: readonly string[];
   pollTimeoutMs?: number;
+  reconcileLimit?: number;
 }
+
+/** @internal */
+export const DEFAULT_RECONCILE_LIMIT = 100;
 
 const withPollDeadline = async <T>(work: Promise<T>, ms?: number): Promise<T> => {
   if (!ms) return await work;
@@ -337,7 +341,7 @@ export const serverlessTick = async (
   // Both must land before tickOnce claims, so this cycle's crons/orphans are claimable now.
   const [fired, reconciled] = await Promise.all([
     runDueCrons(backend, now),
-    reconcile(backend, { limit: opts.batchMax }),
+    reconcile(backend, { limit: opts.reconcileLimit ?? DEFAULT_RECONCILE_LIMIT }),
   ]);
   const results = await tickOnce(backend, flows, opts);
   // After the tick drained the due timers, the earliest remaining is the next wake horizon.

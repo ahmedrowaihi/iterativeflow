@@ -504,6 +504,43 @@ describe("engine — end to end on the memory backend", () => {
     expect((await backend.store.loadRun(runId))?.run.output).toBe("recovered");
   });
 
+  describe("reconcile limit", () => {
+    const flow = defineFlow({ name: "stranded-many", version: 1, run: async () => "recovered" });
+    // Crash after startRun, before enqueue: `n` runs exist with no job row.
+    const strandRuns = async (backend: Backend, n: number): Promise<void> => {
+      await Promise.all(
+        Array.from({ length: n }, () =>
+          backend.store.startRun({ name: "stranded-many", version: 1, input: {} }),
+        ),
+      );
+    };
+
+    it("recovers a whole backlog on a worker that claims one run at a time", async () => {
+      const backend = createMemoryBackend();
+      await strandRuns(backend, 5);
+
+      expect(await createEngine(backend, [flow], { batchMax: 1 }).reconcile()).toBe(5);
+    });
+
+    it("recovers the same backlog through serverlessTick", async () => {
+      const backend = createMemoryBackend();
+      await strandRuns(backend, 5);
+
+      const sweep = await serverlessTick(backend, registry([flow]), {
+        batchMax: 1,
+        leaseMs: 60_000,
+      });
+      expect(sweep.reconciled).toBe(5);
+    });
+
+    it("caps the sweep at reconcileLimit", async () => {
+      const backend = createMemoryBackend();
+      await strandRuns(backend, 5);
+
+      expect(await createEngine(backend, [flow], { reconcileLimit: 2 }).reconcile()).toBe(2);
+    });
+  });
+
   it("dead-letters a poison-pill run once attempts exceed the cap", async () => {
     const flow = defineFlow<Record<string, never>, number>({
       name: "poison",

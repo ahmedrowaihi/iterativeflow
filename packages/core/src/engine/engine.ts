@@ -30,6 +30,7 @@ import {
   type SubmitSpec,
   type SubmitOpts,
   type SweepResult,
+  DEFAULT_RECONCILE_LIMIT,
   cancelRun,
   prune,
   purge,
@@ -95,9 +96,18 @@ export interface EngineOpts {
   /** Max runs claimed per worker cycle. Default 20. */
   batchMax?: number;
   /**
-   * How long a claimed run's lease is held before another worker may re-claim it. There is no
-   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
-   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
+   * Max runs a reconcile sweep re-drives — crash-stranded runs and lost parent-wakes — whether that
+   * sweep runs on the resident loop's maintenance cadence or inside a `serverlessTick`.
+   * Separate from `batchMax` because claim throughput and recovery throughput are unrelated: a
+   * worker claiming one long run at a time still has a whole backlog to recover. Each re-drive is a
+   * concurrent enqueue, so this also bounds the sweep's fan-out per worker per cycle. Default 100.
+   */
+  reconcileLimit?: number;
+  /**
+   * How long a claimed run's lease is held before another worker may re-claim it. It must exceed the
+   * longest step that does NOT declare `StepPolicy.timeoutMs` — the lease renews as the run commits
+   * steps, and continuously while a step declaring a timeout runs, but a step with no declared
+   * ceiling has nothing to renew to. With `serverlessTick` it must be ≤ the invocation timeout or a
    * batch tail is stranded until the oversized lease expires. Default 30000.
    *
    * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
@@ -223,7 +233,8 @@ export interface Engine<N extends string = string> {
 
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;
-  /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
+  /** Re-enqueue crash-stranded runs, up to `reconcileLimit`. Run on a slow cadence (or via
+   *  {@link Engine.run}). */
   reconcile(): Promise<number>;
   /**
    * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
@@ -280,6 +291,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
     now,
     driftPolicy: opts.driftPolicy,
     pollTimeoutMs: opts.pollTimeoutMs ?? 30_000,
+    reconcileLimit: opts.reconcileLimit ?? DEFAULT_RECONCILE_LIMIT,
   };
   const clock: Clock = now ?? systemClock;
   // Pausing is a push, not a poll: flipping it wakes any loop sitting in its idle backoff, so a
@@ -356,7 +368,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
     removeCron: (name) => backend.store.removeCron(name),
 
     tick: () => tickOnce(backend, reg, tickOpts),
-    reconcile: () => reconcile(backend, { limit: tickOpts.batchMax }),
+    reconcile: () => reconcile(backend, { limit: tickOpts.reconcileLimit }),
     prune: (olderThanMs, limit = 1000) =>
       prune(backend, { before: new Date(clock().getTime() - olderThanMs), limit }),
     purge: (filter, limit = 1000) => purge(backend, { filter, limit }),
@@ -424,7 +436,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       })();
       const maintenance = setInterval(() => {
         if (signal.aborted) return;
-        void reconcile(backend, { limit: tickOpts.batchMax }).catch(onTickError);
+        void reconcile(backend, { limit: tickOpts.reconcileLimit }).catch(onTickError);
         void runDueCrons(backend, clock).catch(onTickError);
       }, maintenanceMs);
       return async () => {

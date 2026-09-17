@@ -552,6 +552,7 @@ interface TickOnceOpts {
   driftPolicy?: DriftPolicy;
   names?: readonly string[];
   pollTimeoutMs?: number;
+  reconcileLimit?: number;
 }
 /**
  * One worker cycle: drain due timers back onto the queue, then claim and execute a batch.
@@ -605,9 +606,18 @@ interface EngineOpts {
   /** Max runs claimed per worker cycle. Default 20. */
   batchMax?: number;
   /**
-   * How long a claimed run's lease is held before another worker may re-claim it. There is no
-   * heartbeat, so it must exceed the longest step's wall-clock duration or a slow run gets
-   * concurrently re-executed; and with `serverlessTick` it must be ≤ the invocation timeout or a
+   * Max runs a reconcile sweep re-drives — crash-stranded runs and lost parent-wakes — whether that
+   * sweep runs on the resident loop's maintenance cadence or inside a `serverlessTick`.
+   * Separate from `batchMax` because claim throughput and recovery throughput are unrelated: a
+   * worker claiming one long run at a time still has a whole backlog to recover. Each re-drive is a
+   * concurrent enqueue, so this also bounds the sweep's fan-out per worker per cycle. Default 100.
+   */
+  reconcileLimit?: number;
+  /**
+   * How long a claimed run's lease is held before another worker may re-claim it. It must exceed the
+   * longest step that does NOT declare `StepPolicy.timeoutMs` — the lease renews as the run commits
+   * steps, and continuously while a step declaring a timeout runs, but a step with no declared
+   * ceiling has nothing to renew to. With `serverlessTick` it must be ≤ the invocation timeout or a
    * batch tail is stranded until the oversized lease expires. Default 30000.
    *
    * Lease expiry is judged against each worker's own clock (not the database's), so a multi-worker
@@ -714,7 +724,8 @@ interface Engine<N extends string = string> {
   removeCron(name: string): Promise<boolean>;
   /** One worker cycle: drain due timers, then claim + execute a batch. */
   tick(): Promise<TickResult[]>;
-  /** Re-enqueue crash-stranded runs. Run on a slow cadence (or via {@link Engine.run}). */
+  /** Re-enqueue crash-stranded runs, up to `reconcileLimit`. Run on a slow cadence (or via
+   *  {@link Engine.run}). */
   reconcile(): Promise<number>;
   /**
    * Delete terminal runs older than `olderThanMs` (with their steps/signals/events), up to `limit`
