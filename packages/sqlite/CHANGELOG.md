@@ -1,5 +1,11 @@
 # @iterativeflow/sqlite
 
+## 2.7.0
+
+### Patch Changes
+
+- @iterativeflow/core@2.7.0
+
 ## 2.6.0
 
 ### Patch Changes
