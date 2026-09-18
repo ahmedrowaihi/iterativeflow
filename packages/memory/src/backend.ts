@@ -69,6 +69,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
   const runSeq = new Map<string, number>(); // runId -> insertion order (listing cursor)
   const crons = new Map<string, CronRow>();
   const joinRemaining = new Map<string, number>(); // parent runId -> children still to arrive at its join
+  const priorities = new Map<string, number>(); // runId -> dispatch priority set at submit
   let seq = 0;
   let runCounter = 0;
 
@@ -90,6 +91,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       createdAt: spec.createdAt ?? new Date(),
     });
     steps.set(runId, new Map());
+    if (spec.priority !== undefined) priorities.set(runId, spec.priority);
     if (spec.idempotencyKey) {
       idemIndex.set(idemKey(spec.name, spec.version, spec.idempotencyKey), runId);
     }
@@ -102,7 +104,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     jobs.set(runId, {
       runId,
       runAtMs: opts?.runAt ? opts.runAt.getTime() : 0,
-      priority: opts?.priority ?? 0,
+      priority: opts?.priority ?? priorities.get(runId) ?? 0,
       version: (prior?.version ?? 0) + 1,
       leaseToken: prior?.leaseToken,
       leaseExpiresMs: prior?.leaseExpiresMs,
@@ -355,6 +357,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         deadlines.delete(runId);
         joinRemaining.delete(runId);
         runSeq.delete(runId);
+        priorities.delete(runId);
       }
       for (const k of signalIdem) if (gone.has(k.slice(0, k.indexOf(" ")))) signalIdem.delete(k);
       return victims.length;

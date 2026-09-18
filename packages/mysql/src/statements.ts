@@ -8,7 +8,7 @@ import { j } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 
-// 3 binds per row, under MySQL's 65535 placeholder ceiling.
+// 4 binds per row, under MySQL's 65535 placeholder ceiling.
 const ENQUEUE_ROWS_PER_STATEMENT = 1000;
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
@@ -25,12 +25,13 @@ export const enqueueManyStmt = async (
     // ON DUPLICATE KEY assigns left to right: version reads the stored column, so never reorder.
     await sql.exec(
       `INSERT INTO ${t.job} (run_id, run_at, priority, version)
-       VALUES ${chunk.map(() => "(?, ?, ?, 1)").join(", ")}
+       VALUES ${chunk.map(() => `(?, ?, COALESCE(?, (SELECT priority FROM ${t.run} WHERE id = ?), 0), 1)`).join(", ")}
        ON DUPLICATE KEY UPDATE run_at = VALUES(run_at), priority = VALUES(priority), version = version + 1`,
       chunk.flatMap(([runId, opts]) => [
         runId,
         opts?.runAt ? opts.runAt.getTime() : 0,
-        opts?.priority ?? 0,
+        opts?.priority ?? null,
+        runId,
       ]),
     );
   }
@@ -57,8 +58,8 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
   for (const s of fx.spawn ?? []) {
     await sql.exec(
       `INSERT IGNORE INTO ${t.run}
-         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, created_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.runId,
         s.spec.name,
@@ -69,6 +70,7 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
         s.spec.parentRunId ?? null,
         s.spec.parentCursorKey ?? null,
         s.spec.depth ?? 0,
+        s.spec.priority ?? 0,
         (s.spec.createdAt ?? new Date()).getTime(),
       ],
     );

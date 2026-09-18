@@ -808,6 +808,8 @@ interface RunSpec {
   /** Creation instant, stamped from the engine clock at submit/spawn. Drives retention. Backends
    *  default it to their own clock when a direct `startRun` omits it. */
   createdAt?: Date;
+  /** Dispatch priority, lower = sooner. Stored on the run, so every later re-enqueue keeps it. */
+  priority?: number;
 }
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
  *  successful steps are ever written (their existence IS the success marker). */
@@ -936,7 +938,7 @@ type TerminalOutcome = {
 interface EnqueueOpts {
   /** Earliest instant the run may be claimed. Omitted ⇒ immediately claimable. */
   runAt?: Date;
-  /** Lower = sooner. Default 0. */
+  /** Lower = sooner. Omitted ⇒ the run's own priority (set at submit), else 0. */
   priority?: number;
 }
 /** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany} and of an {@link Outbox}'s

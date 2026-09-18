@@ -10,8 +10,8 @@ import type { Sql } from "#sql";
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
 
-// 3 binds per row, under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
-const ENQUEUE_ROWS_PER_STATEMENT = 300;
+// 4 binds per row, under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+const ENQUEUE_ROWS_PER_STATEMENT = 249;
 
 /** @internal */
 export const enqueueManyStmt = async (
@@ -24,13 +24,14 @@ export const enqueueManyStmt = async (
     const chunk = rows.slice(i, i + ENQUEUE_ROWS_PER_STATEMENT);
     await sql.query(
       `INSERT INTO ${t.job} (run_id, run_at, priority, version)
-       VALUES ${chunk.map(() => "(?, ?, ?, 1)").join(", ")}
+       VALUES ${chunk.map(() => `(?, ?, COALESCE(?, (SELECT priority FROM ${t.run} WHERE id = ?), 0), 1)`).join(", ")}
        ON CONFLICT(run_id) DO UPDATE
          SET run_at = excluded.run_at, priority = excluded.priority, version = ${t.job}.version + 1`,
       chunk.flatMap(([runId, opts]) => [
         runId,
         opts?.runAt ? opts.runAt.getTime() : 0,
-        opts?.priority ?? 0,
+        opts?.priority ?? null,
+        runId,
       ]),
     );
   }
@@ -57,8 +58,8 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
   for (const s of fx.spawn ?? []) {
     await sql.query(
       `INSERT INTO ${t.run}
-         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, created_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
       [
         s.runId,
@@ -70,6 +71,7 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
         s.spec.parentRunId ?? null,
         s.spec.parentCursorKey ?? null,
         s.spec.depth ?? 0,
+        s.spec.priority ?? 0,
         (s.spec.createdAt ?? new Date()).getTime(),
       ],
     );

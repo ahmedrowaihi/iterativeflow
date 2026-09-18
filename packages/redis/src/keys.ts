@@ -65,6 +65,7 @@ export const RUN = {
   createdAt: "createdAt",
   joinRemaining: "joinRemaining",
   seq: "seq",
+  priority: "priority",
 } as const;
 
 /**

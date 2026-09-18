@@ -3,7 +3,7 @@ import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamod
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
-import { runNames } from "#run-names";
+import { runNames, storedPriorities } from "#run-names";
 import { JOB_GSI_PK, key } from "#schema";
 import { enqueueParams } from "#statements";
 
@@ -25,16 +25,24 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
 
   return {
     async enqueue(runId, opts) {
-      await send(new UpdateCommand(enqueueParams(table, runId, opts)));
+      const priorities = await storedPriorities(doc, table, [{ runId, opts }]);
+      await send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId))));
     },
 
     async enqueueMany(requests) {
       const rows = distinctEnqueues(requests);
+      const priorities = await storedPriorities(
+        doc,
+        table,
+        rows.map(([runId, opts]) => ({ runId, opts })),
+      );
       for (let i = 0; i < rows.length; i += ENQUEUE_CONCURRENCY) {
         await Promise.all(
           rows
             .slice(i, i + ENQUEUE_CONCURRENCY)
-            .map(([runId, opts]) => send(new UpdateCommand(enqueueParams(table, runId, opts)))),
+            .map(([runId, opts]) =>
+              send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId)))),
+            ),
         );
       }
     },

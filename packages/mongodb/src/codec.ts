@@ -23,6 +23,7 @@ export interface RunDoc {
   parent_cursor_key?: string;
   depth?: number;
   join_remaining?: number;
+  priority?: number;
   created_at: number;
   ord: ObjectId;
 }
@@ -127,4 +128,5 @@ export const buildRunDoc = (spec: RunSpec, runId: string, ord: ObjectId): RunDoc
   ...(spec.tags && { tags: [...spec.tags] }),
   ...(spec.parentRunId !== undefined && { parent_run_id: spec.parentRunId }),
   ...(spec.parentCursorKey !== undefined && { parent_cursor_key: spec.parentCursorKey }),
+  ...(spec.priority !== undefined && { priority: spec.priority }),
 });

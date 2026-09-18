@@ -58,6 +58,8 @@ export interface RunSpec {
   /** Creation instant, stamped from the engine clock at submit/spawn. Drives retention. Backends
    *  default it to their own clock when a direct `startRun` omits it. */
   createdAt?: Date;
+  /** Dispatch priority, lower = sooner. Stored on the run, so every later re-enqueue keeps it. */
+  priority?: number;
 }
 
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only

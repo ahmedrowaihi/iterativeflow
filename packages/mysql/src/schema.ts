@@ -48,6 +48,7 @@ export const ddl = (prefix = ""): string[] => {
       parent_cursor_key VARCHAR(191),
       depth             INT NOT NULL DEFAULT 0,
       join_remaining    INT NOT NULL DEFAULT 0,
+      priority          INT NOT NULL DEFAULT 0,
       created_at        BIGINT NOT NULL,
       UNIQUE KEY run_idem (name, version, idempotency_key),
       KEY run_created (created_at),
@@ -127,18 +128,20 @@ export const ddl = (prefix = ""): string[] => {
 };
 
 // MySQL has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
-const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
+const addColumn = async (sql: Sql, table: string, column: string, def: string): Promise<void> => {
   const cols = await sql.query<{ n: number }>(
     `SELECT COUNT(*) AS n FROM information_schema.columns
-      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'consumed'`,
-    [t.signal.replace(/`/g, "")],
+      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [table.replace(/`/g, ""), column],
   );
   if (Number(cols[0]?.n ?? 0) > 0) return;
-  await sql.query(`ALTER TABLE ${t.signal} ADD COLUMN consumed TINYINT(1) NOT NULL DEFAULT 0`);
+  await sql.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
 };
 
 /** Apply the schema DDL (idempotent). Run once before use. */
 export const applySchema = async (sql: Sql, prefix = ""): Promise<void> => {
   for (const stmt of ddl(prefix)) await sql.query(stmt);
-  await addSignalConsumed(sql, tables(prefix));
+  const t = tables(prefix);
+  await addColumn(sql, t.signal, "consumed", "TINYINT(1) NOT NULL DEFAULT 0");
+  await addColumn(sql, t.run, "priority", "INT NOT NULL DEFAULT 0");
 };

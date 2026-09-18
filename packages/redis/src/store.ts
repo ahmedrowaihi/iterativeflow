@@ -25,7 +25,7 @@ import {
 } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
-import { luaRunner } from "#scripts";
+import { ENQUEUE_FN, luaRunner } from "#scripts";
 import {
   cronRowFromSpec,
   decodeCron,
@@ -49,14 +49,7 @@ local function iflow_terminal(s)
   return ${IS_TERMINAL}
 end`;
 
-// Enqueue contract shared verbatim with the standalone Queue: ZADD the queue by runAt (ms), then
-// stamp the job hash and bump its version.
-const OUTBOX_LIB = `
-local function iflow_enqueue(qKey, runId, jobKey, runAtMs, priority)
-  redis.call('ZADD', qKey, runAtMs, runId)
-  redis.call('HSET', jobKey, '${JOB.runAt}', runAtMs, '${JOB.priority}', priority)
-  redis.call('HINCRBY', jobKey, '${JOB.version}', 1)
-end
+const OUTBOX_LIB = `${ENQUEUE_FN}
 
 local function iflow_apply(fx, qKey, idxKey, tmrKey, seqKey, idemKey, inboxKey)
   if fx.spawn then
@@ -67,7 +60,7 @@ local function iflow_apply(fx, qKey, idxKey, tmrKey, seqKey, idemKey, inboxKey)
       redis.call('ZADD', idxKey, seq, s.childId)
       if s.childrenKey then redis.call('SADD', s.childrenKey, s.childId) end
       if s.idemField then redis.call('HSET', idemKey, s.idemField, s.childId) end
-      iflow_enqueue(qKey, s.childId, s.jobKey, s.runAtMs, s.priority)
+      iflow_enqueue(qKey, s.childId, s.jobKey, s.runKey, s.runAtMs, s.priority)
     end
   end
   if fx.joinTarget then
@@ -75,7 +68,7 @@ local function iflow_apply(fx, qKey, idxKey, tmrKey, seqKey, idemKey, inboxKey)
   end
   if fx.enqueue then
     for _, e in ipairs(fx.enqueue) do
-      iflow_enqueue(qKey, e.runId, e.jobKey, e.runAtMs, e.priority)
+      iflow_enqueue(qKey, e.runId, e.jobKey, e.runKey, e.runAtMs, e.priority)
     end
   end
   if fx.timers then
@@ -120,7 +113,7 @@ if ARGV[1] ~= '' then
   if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then return 0 end
 end
 redis.call('RPUSH', KEYS[2], ARGV[2])
-iflow_enqueue(KEYS[4], ARGV[3], KEYS[3], ARGV[4], ARGV[5])
+iflow_enqueue(KEYS[4], ARGV[3], KEYS[3], KEYS[5], ARGV[4], ARGV[5])
 return 1`;
 
 const MARK_RUNNING_LUA = `${TERMINAL_FN}
@@ -181,7 +174,7 @@ if s == false then return -1 end
 if s ~= 'failed' then return 0 end
 redis.call('HSET', KEYS[1], '${RUN.status}', 'pending', '${RUN.attempts}', '0')
 redis.call('HDEL', KEYS[1], '${RUN.error}')
-iflow_enqueue(KEYS[3], ARGV[1], KEYS[2], ARGV[2], ARGV[3])
+iflow_enqueue(KEYS[3], ARGV[1], KEYS[2], KEYS[1], ARGV[2], ARGV[3])
 return 1`;
 
 const UPSERT_CRON_LUA = `
@@ -263,8 +256,9 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     const enq = (runId: string, opts?: { runAt?: Date; priority?: number }) => ({
       runId,
       jobKey: keys.job(runId),
+      runKey: keys.run(runId),
       runAtMs: opts?.runAt ? opts.runAt.getTime() : 0,
-      priority: opts?.priority ?? 0,
+      priority: opts?.priority,
     });
     const blob: Record<string, unknown> = {};
     if (fx.spawn?.length) {
@@ -394,8 +388,8 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     async postSignal(runId, name, payload, opts) {
       const delivered = await evalLua<number>(
         POST_SIGNAL_LUA,
-        [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue],
-        [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, 0],
+        [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue, keys.run(runId)],
+        [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, ""],
       );
       return { delivered: delivered === 1 };
     },
@@ -611,7 +605,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       const res = await evalLua<number>(
         RETRY_LUA,
         [keys.run(runId), keys.job(runId), keys.queue],
-        [runId, 0, 0],
+        [runId, 0, ""],
       );
       if (res === -1) throw new Error(`retryRun: run ${runId} not found`);
       return { retried: res === 1 };

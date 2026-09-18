@@ -133,4 +133,30 @@ describe("sqlite backend", () => {
       expect(await drive(backend, flows, runId)).toMatchObject({ status: "done", output: 51 });
     });
   });
+
+  it("upgrades a database from an older release in place, keeping its runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "iflow-sqlite-"));
+    const client = createClient({ url: `file:${join(dir, "test.db")}` });
+    cleanups.push(() => {
+      client.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const sql = libsqlDb(client);
+    await applySchema(sql);
+    const { runId } = await createSqliteBackend(sql).store.startRun({
+      name: "old",
+      version: 1,
+      input: {},
+    });
+    // An older release's tables: the columns added since were not there yet.
+    await sql.query("ALTER TABLE run DROP COLUMN priority");
+
+    await applySchema(sql); // what a boot on the new release does
+    await applySchema(sql); // and it must be idempotent on every boot after
+
+    const backend = createSqliteBackend(sql);
+    await backend.queue.enqueue(runId);
+    const [lease] = await backend.queue.claim({ limit: 1, leaseMs: 60_000 });
+    expect(lease.runId).toBe(runId); // the pre-upgrade run is still dispatchable
+  });
 });

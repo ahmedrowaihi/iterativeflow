@@ -31,7 +31,7 @@ import {
   mapSignal,
   mapStep,
 } from "#codec";
-import { type JobDoc, enqueueJob, enqueueJobs } from "#queue";
+import { type JobDoc, enqueueJobs } from "#queue";
 
 const isDup = (e: unknown): boolean =>
   typeof e === "object" && e !== null && (e as { code?: number }).code === 11000;
@@ -67,7 +67,7 @@ export const createMongoStore = (
   };
 
   const enqueue = (runId: string, opts: EnqueueOpts | undefined, session: ClientSession) =>
-    enqueueJob(jobs, runId, opts, session);
+    enqueueJobs(jobs, runs, [{ runId, opts }], session);
 
   const insertSpawn = async (
     spec: RunSpec,
@@ -90,7 +90,7 @@ export const createMongoStore = (
       ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
       ...(fx.enqueue ?? []),
     ];
-    if (enqueues.length) await enqueueJobs(jobs, enqueues, session);
+    if (enqueues.length) await enqueueJobs(jobs, runs, enqueues, session);
     for (const t of fx.timers ?? []) {
       await timers.updateOne(
         { _id: t.runId },
@@ -379,6 +379,7 @@ export const createMongoStore = (
         );
         await enqueueJobs(
           jobs,
+          runs,
           ids.map((runId) => ({ runId })),
           session,
         );

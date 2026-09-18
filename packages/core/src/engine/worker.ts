@@ -58,6 +58,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
     idempotencyKey: opts?.idempotencyKey,
     tags: opts?.tags,
     createdAt: now(),
+    priority: opts?.priority,
   });
   if (created) {
     await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
@@ -96,6 +97,7 @@ export const submitMany = async <I>(
       idempotencyKey: it.idempotencyKey,
       tags: it.tags,
       createdAt,
+      priority: it.priority,
     })),
   );
   const results = await backend.store.startManyRuns(specs);

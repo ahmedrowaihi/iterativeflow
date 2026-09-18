@@ -63,8 +63,8 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     if (spec.idempotencyKey) {
       const ins = await exec.query<{ id: string }>(
         `INSERT INTO ${t.run}
-           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, created_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL
          DO NOTHING
          RETURNING id`,
@@ -78,6 +78,7 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           spec.parentRunId ?? null,
           spec.parentCursorKey ?? null,
           spec.depth ?? 0,
+          spec.priority ?? 0,
           (spec.createdAt ?? new Date()).getTime(),
         ],
       );
@@ -90,8 +91,8 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     }
     await exec.query(
       `INSERT INTO ${t.run}
-         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key, depth, created_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
+         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
       [
         runId,
         spec.name,
@@ -101,6 +102,7 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         spec.parentRunId ?? null,
         spec.parentCursorKey ?? null,
         spec.depth ?? 0,
+        spec.priority ?? 0,
         (spec.createdAt ?? new Date()).getTime(),
       ],
     );

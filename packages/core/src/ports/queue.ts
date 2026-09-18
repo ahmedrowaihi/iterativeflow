@@ -2,7 +2,7 @@
 export interface EnqueueOpts {
   /** Earliest instant the run may be claimed. Omitted ⇒ immediately claimable. */
   runAt?: Date;
-  /** Lower = sooner. Default 0. */
+  /** Lower = sooner. Omitted ⇒ the run's own priority (set at submit), else 0. */
   priority?: number;
 }
 

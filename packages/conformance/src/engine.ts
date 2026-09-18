@@ -370,6 +370,24 @@ export const engineConformance = (
       expect(kids.some((k) => k.status === "canceled")).toBe(true);
     });
 
+    it("a re-enqueue with no priority keeps the run's own priority", async () => {
+      const backend = await makeBackend();
+      const at = (ms: number): Date => new Date(Date.UTC(2030, 0, 1) + ms);
+      const low = (await backend.store.startRun({ name: "p", version: 1, input: {}, priority: 10 }))
+        .runId;
+      const urgent = (
+        await backend.store.startRun({ name: "p", version: 1, input: {}, priority: -10 })
+      ).runId;
+      // Every wake re-enqueues like this: no priority. `urgent` is due later, so without its stored
+      // priority the claim would order by `run_at` and pick `low` — deterministically, not by chance.
+      await backend.queue.enqueueMany([
+        { runId: low, opts: { runAt: at(0) } },
+        { runId: urgent, opts: { runAt: at(1000) } },
+      ]);
+      const [first] = await backend.queue.claim({ limit: 1, leaseMs: 60_000, now: at(2000) });
+      expect(first.runId).toBe(urgent);
+    });
+
     it("a claimed run for an unregistered flow version parks and resumes once that version deploys", async () => {
       const backend = await makeBackend();
       const v1 = defineFlow({ name: "wf", version: 1, run: async (): Promise<string> => "v1" });

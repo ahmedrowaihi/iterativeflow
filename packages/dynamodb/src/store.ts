@@ -21,6 +21,7 @@ import {
   type StartResult,
   type StepOutcome,
   type OrphanView,
+  type Outbox,
   type PurgeFilter,
   type RunFilter,
   type Store,
@@ -35,6 +36,7 @@ import {
 } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { countQuery } from "#count";
+import { storedPriorities } from "#run-names";
 import {
   type CronItem,
   type RunItem,
@@ -247,6 +249,13 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     return runs.length;
   };
 
+  // A transaction can't read, so the priority an enqueue inherits from its run is fetched first.
+  const outbox = async (fx?: Outbox) =>
+    outboxParts(table, fx, await storedPriorities(doc, table, fx?.enqueue ?? []));
+
+  const runPriority = async (runId: string): Promise<number | undefined> =>
+    (await storedPriorities(doc, table, [{ runId }])).get(runId);
+
   const store: Store = {
     startRun: startOne,
 
@@ -376,7 +385,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           },
         },
       };
-      const enqueue: TxItem = { Update: enqueueParams(table, runId) };
+      const enqueue: TxItem = {
+        Update: enqueueParams(table, runId, undefined, await runPriority(runId)),
+      };
       if (!opts?.idempotencyKey) {
         await send(new TransactWriteCommand({ TransactItems: [signalPut, enqueue] }));
         return { delivered: true };
@@ -444,7 +455,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         attempts: c.attempts,
         shape: c.shape,
       };
-      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const { nonSpawn, spawns } = await outbox(fx);
       const inline = spawns.flatMap((s) => spawnTx(table, s));
       // ConditionCheck on the job version, riding the TransactWriteItems at index 2 (the catch below
       // matches that index). The job item is key-addressable, so this is atomic — no residual window.
@@ -524,7 +535,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async suspendRun(runId, status: SuspendStatus, fx) {
-      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const { nonSpawn, spawns } = await outbox(fx);
       const reset = status !== "retrying"; // forward progress resets the poison-pill cap
       const gate: TxItem = {
         Update: {
@@ -581,7 +592,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           ExpressionAttributeValues: values,
         },
       };
-      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const { nonSpawn, spawns } = await outbox(fx);
       const inline = spawns.flatMap((s) => spawnTx(table, s));
       try {
         await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
@@ -741,7 +752,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
                   },
                 },
               },
-              { Update: enqueueParams(table, runId) },
+              { Update: enqueueParams(table, runId, undefined, await runPriority(runId)) },
             ],
           }),
         );

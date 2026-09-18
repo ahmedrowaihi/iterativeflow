@@ -32,6 +32,7 @@ export const runFields = (spec: RunSpec, runId: string): Record<string, string> 
   if (spec.tags !== undefined) f[RUN.tags] = JSON.stringify(spec.tags);
   if (spec.parentRunId !== undefined) f[RUN.parentRunId] = spec.parentRunId;
   if (spec.parentCursorKey !== undefined) f[RUN.parentCursorKey] = spec.parentCursorKey;
+  if (spec.priority !== undefined) f[RUN.priority] = String(spec.priority);
   return f;
 };
 

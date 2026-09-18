@@ -2,8 +2,20 @@ import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
-import { luaRunner } from "#scripts";
+import { ENQUEUE_FN, luaRunner } from "#scripts";
 import { ms } from "#time";
+
+// Lua, not MULTI: resolving an omitted priority reads the run hash before writing the job.
+const ENQUEUE_MANY = `${ENQUEUE_FN}
+local jobPre, jobSuf, runPre, runSuf = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+for i = 5, #ARGV, 3 do
+  local runId = ARGV[i]
+  iflow_enqueue(KEYS[1], runId, jobPre .. runId .. jobSuf, runPre .. runId .. runSuf, ARGV[i + 1], ARGV[i + 2])
+end
+`;
+
+// Bounds a script's ARGV (3 per run) so one huge batch can't hit the multibulk limit or stall the server.
+const ENQUEUE_CHUNK = 1000;
 
 const CLAIM = `
 local nowMs = tonumber(ARGV[1])
@@ -98,15 +110,28 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
     },
 
     async enqueueMany(requests) {
-      if (requests.length === 0) return;
-      const tx = client.multi();
-      for (const [runId, opts] of distinctEnqueues(requests)) {
-        const runAtMs = opts?.runAt ? opts.runAt.getTime() : 0;
-        tx.zadd(keys.queue, runAtMs, runId)
-          .hset(keys.job(runId), JOB.runAt, runAtMs, JOB.priority, opts?.priority ?? 0)
-          .hincrby(keys.job(runId), JOB.version, 1);
+      const args = distinctEnqueues(requests).map(([runId, opts]) => [
+        runId,
+        opts?.runAt ? opts.runAt.getTime() : 0,
+        opts?.priority ?? "",
+      ]);
+      const chunks = [];
+      for (let i = 0; i < args.length; i += ENQUEUE_CHUNK) {
+        chunks.push(
+          run(
+            ENQUEUE_MANY,
+            [keys.queue],
+            [
+              jobPrefix,
+              jobSuffix,
+              runPrefix,
+              runSuffix,
+              ...args.slice(i, i + ENQUEUE_CHUNK).flat(),
+            ],
+          ),
+        );
       }
-      await tx.exec();
+      await Promise.all(chunks);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

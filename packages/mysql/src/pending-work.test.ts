@@ -2,6 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
+import { applySchema } from "#schema";
 import { mysqlPool } from "#sql";
 import { startMysql, stopMysql } from "#test-container";
 
@@ -67,5 +68,19 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
         (await be.store.dueCronCount(asOf, names));
       expect(await pendingAt(asOf.getTime(), names)).toBe(ports);
     }
+  });
+
+  it("upgrades a database from an older release in place, keeping its runs", async () => {
+    const be = createMysqlBackend(mysqlPool(pool));
+    const { runId } = await be.store.startRun({ name: "old", version: 1, input: {} });
+    // An older release's tables: the columns added since were not there yet.
+    await pool.query("ALTER TABLE `run` DROP COLUMN priority");
+
+    await applySchema(mysqlPool(pool)); // what a boot on the new release does
+    await applySchema(mysqlPool(pool)); // and it must be idempotent on every boot after
+
+    await be.queue.enqueue(runId);
+    const [lease] = await be.queue.claim({ limit: 1, leaseMs: 60_000 });
+    expect(lease.runId).toBe(runId); // the pre-upgrade run is still dispatchable
   });
 });

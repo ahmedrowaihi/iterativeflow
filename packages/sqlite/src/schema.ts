@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS ${t.run} (
   parent_cursor_key TEXT,
   depth             INTEGER NOT NULL DEFAULT 0,
   join_remaining    INTEGER NOT NULL DEFAULT 0,
+  priority          INTEGER NOT NULL DEFAULT 0,
   created_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ${t.run}_created ON ${t.run} (created_at);
@@ -113,10 +114,10 @@ export interface ApplySchemaOpts {
 }
 
 // SQLite has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
-const addSignalConsumed = async (sql: Sql, t: Tables): Promise<void> => {
-  const cols = await sql.query<{ name: string }>(`PRAGMA table_info(${t.signal})`);
-  if (cols.some((c) => c.name === "consumed")) return;
-  await sql.query(`ALTER TABLE ${t.signal} ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0`);
+const addColumn = async (sql: Sql, table: string, column: string, decl: string): Promise<void> => {
+  const cols = await sql.query<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (cols.some((c) => c.name === column)) return;
+  await sql.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 };
 
 /**
@@ -137,5 +138,7 @@ export const applySchema = async (
     const s = stmt.trim();
     if (s) await sql.query(s);
   }
-  await addSignalConsumed(sql, tables(prefix));
+  const t = tables(prefix);
+  await addColumn(sql, t.signal, "consumed", "INTEGER NOT NULL DEFAULT 0");
+  await addColumn(sql, t.run, "priority", "INTEGER NOT NULL DEFAULT 0");
 };

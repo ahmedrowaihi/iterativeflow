@@ -8,6 +8,7 @@ import type {
 } from "@iterativeflow/core/backend";
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { ClientSession, Collection, Db, UpdateFilter } from "mongodb";
+import type { RunDoc } from "#codec";
 import type { Names } from "#collections";
 
 /** @internal */
@@ -20,33 +21,42 @@ export interface JobDoc {
   lease_expires?: number;
 }
 
-const jobUpdate = (opts: EnqueueOpts | undefined): UpdateFilter<JobDoc> => ({
-  $set: { run_at: opts?.runAt ? opts.runAt.getTime() : 0, priority: opts?.priority ?? 0 },
+const jobUpdate = (
+  opts: EnqueueOpts | undefined,
+  runPriority: number | undefined,
+): UpdateFilter<JobDoc> => ({
+  $set: {
+    run_at: opts?.runAt ? opts.runAt.getTime() : 0,
+    priority: opts?.priority ?? runPriority ?? 0,
+  },
   $inc: { version: 1 },
 });
 
 /** @internal */
-export const enqueueJob = async (
-  jobs: Collection<JobDoc>,
-  runId: string,
-  opts: EnqueueOpts | undefined,
-  session: ClientSession | undefined,
-): Promise<void> => {
-  await jobs.updateOne({ _id: runId }, jobUpdate(opts), { upsert: true, session });
-};
-
-/** @internal */
 export const enqueueJobs = async (
   jobs: Collection<JobDoc>,
+  runs: Collection<RunDoc>,
   requests: readonly EnqueueRequest[],
   session: ClientSession | undefined,
 ): Promise<void> => {
   // An unordered bulk would race two upserts of the same _id into a duplicate-key error.
   const latest = distinctEnqueues(requests);
   if (latest.length === 0) return;
+  const unprioritized = latest.filter(([, opts]) => opts?.priority === undefined).map(([id]) => id);
+  const stored = unprioritized.length
+    ? await runs
+        .find({ _id: { $in: unprioritized } }, { session })
+        .project<{ _id: string; priority?: number }>({ priority: 1 })
+        .toArray()
+    : [];
+  const runPriority = new Map(stored.map((r) => [r._id, r.priority]));
   await jobs.bulkWrite(
     latest.map(([runId, opts]) => ({
-      updateOne: { filter: { _id: runId }, update: jobUpdate(opts), upsert: true },
+      updateOne: {
+        filter: { _id: runId },
+        update: jobUpdate(opts, runPriority.get(runId)),
+        upsert: true,
+      },
     })),
     { ordered: false, session },
   );
@@ -60,16 +70,16 @@ export const createMongoQueue = (
   boundSession?: ClientSession,
 ): Queue => {
   const jobs = db.collection<JobDoc>(n.jobs);
-  const runs = db.collection<{ _id: string; name: string }>(n.runs);
+  const runs = db.collection<RunDoc>(n.runs);
   const ms = (now?: Date): number => (now ?? new Date()).getTime();
 
   return {
     async enqueue(runId, opts) {
-      await enqueueJob(jobs, runId, opts, boundSession);
+      await enqueueJobs(jobs, runs, [{ runId, opts }], boundSession);
     },
 
     async enqueueMany(requests) {
-      await enqueueJobs(jobs, requests, boundSession);
+      await enqueueJobs(jobs, runs, requests, boundSession);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

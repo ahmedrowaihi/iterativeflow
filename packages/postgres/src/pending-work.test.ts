@@ -186,4 +186,18 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
     expect(Number(byId.get(leased)?.version)).toBe(lease.version + 1);
     expect(byId.get(leased)?.lease_token).toBe(lease.token);
   });
+
+  it("upgrades a database from an older release in place, keeping its runs", async () => {
+    const be = createPgBackend(pgPool(pool));
+    const { runId } = await be.store.startRun({ name: "old", version: 1, input: {} });
+    // An older release's tables: the columns added since were not there yet.
+    await pool.query('ALTER TABLE "workflow".run DROP COLUMN priority');
+
+    await applySchema(pgPool(pool)); // what a boot on the new release does
+    await applySchema(pgPool(pool)); // and it must be idempotent on every boot after
+
+    await be.queue.enqueue(runId);
+    const [lease] = await be.queue.claim({ limit: 1, leaseMs: 60_000 });
+    expect(lease.runId).toBe(runId); // the pre-upgrade run is still dispatchable
+  });
 });
