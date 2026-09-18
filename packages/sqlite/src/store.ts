@@ -41,6 +41,7 @@ const MS_PURGE = {
   placeholder: () => "?",
   time: (at: Date) => at.getTime(),
   statusTuple: sqlTuple,
+  tag: (p: string) => `EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ${p})`,
 };
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;

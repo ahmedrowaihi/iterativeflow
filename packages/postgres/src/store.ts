@@ -54,6 +54,7 @@ const PG_PURGE = {
   placeholder: (n: number) => `$${n}`,
   time: (at: Date) => at,
   statusTuple: sqlTuple,
+  tag: (p: string) => `${p} = ANY(tags)`,
 };
 
 /** @internal */

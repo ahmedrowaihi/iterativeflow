@@ -427,6 +427,29 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       await expect(s.cancelRuns({}, 100)).rejects.toThrow();
     });
 
+    it("cancelRuns and retryRuns narrow by tag, never widening to untagged runs", async () => {
+      const s = await makeStore();
+      const mk = async (tags?: string[]) =>
+        (await s.startRun({ name: "f", version: 1, input: {}, tags })).runId;
+      const tenant = await mk(["tenant:42"]);
+      const neighbour = await mk(["tenant:7"]);
+      const untagged = await mk();
+
+      expect(await s.cancelRuns({ tag: "tenant:42" }, 100)).toBe(1);
+      expect((await s.loadRunRow(tenant))?.status).toBe("canceled");
+      expect((await s.loadRunRow(neighbour))?.status).toBe("pending");
+      expect((await s.loadRunRow(untagged))?.status).toBe("pending");
+
+      const failedTenant = await mk(["tenant:42"]);
+      const failedNeighbour = await mk(["tenant:7"]);
+      for (const id of [failedTenant, failedNeighbour]) {
+        await s.markTerminal(id, { status: "failed", error: { code: "X", message: "x" } });
+      }
+      expect(await s.retryRuns({ tag: "tenant:42" }, 100)).toBe(1);
+      expect((await s.loadRunRow(failedTenant))?.status).toBe("pending");
+      expect((await s.loadRunRow(failedNeighbour))?.status).toBe("failed");
+    });
+
     it("retryRuns re-drives the failed matched set, clearing the spent attempt budget", async () => {
       const s = await makeStore();
       const mk = async (name: string) => (await s.startRun({ name, version: 1, input: {} })).runId;

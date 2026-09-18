@@ -90,6 +90,10 @@ export const runSetWhereSql = (
   };
   if (filter.name !== undefined) add("name =", filter.name);
   if (filter.version !== undefined) add("version =", filter.version);
+  if (filter.tag !== undefined) {
+    params.push(filter.tag);
+    where.push(o.tag(o.placeholder(params.length)));
+  }
   return { where: where.join(" AND "), params };
 };
 
@@ -103,6 +107,9 @@ export interface PurgeSqlOpts {
    *  a partial index over the terminal statuses is only usable when the planner can prove the
    *  query's predicate implies the index's, which it cannot do through a bind parameter. */
   statusTuple: (statuses: readonly string[]) => string;
+  /** Renders "the run's `tags` contain the value bound at `placeholder`". Required so a backend
+   *  cannot silently drop a tag filter and widen a bulk cancel or retry to every tenant. */
+  tag: (placeholder: string) => string;
 }
 
 /**

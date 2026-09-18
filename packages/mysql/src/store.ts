@@ -42,6 +42,7 @@ const MS_PURGE = {
   placeholder: () => "?",
   time: (at: Date) => at.getTime(),
   statusTuple: sqlTuple,
+  tag: (p: string) => `JSON_CONTAINS(tags, JSON_QUOTE(${p}))`,
 };
 
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
