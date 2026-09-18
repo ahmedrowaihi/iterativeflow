@@ -44,7 +44,30 @@ describe("flow drift", () => {
     const drift = results.find((r) => r.status === "flow_drift");
     expect(drift).toBeDefined();
     expect(drift?.cursorKey).toBeDefined(); // the tick reports WHERE it drifted, no store read
-    expect(run?.status).toBe("retrying");
+    expect(run?.status).toBe("parked");
+  });
+
+  it("stays parked through a redeploy window instead of dead-lettering", async () => {
+    // Parking is not a failure: re-claiming a parked run must not spend the attempt budget.
+    const backend = createMemoryBackend();
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const now = (): Date => clock;
+    const runId = await submit(backend, parked, {});
+    await tickOnce(backend, registry([parked]), { ...opts, now });
+    for (let i = 0; i < 20; i++) {
+      clock = new Date(clock.getTime() + 60_000); // twenty minutes of re-checks
+      await tickOnce(backend, registry([refactored]), { ...opts, now });
+    }
+    const run = (await backend.store.loadRun(runId))?.run;
+    expect(run?.status).toBe("parked");
+    expect(run?.error).toBeUndefined();
+
+    // ...and the fixed build, once deployed, resumes it.
+    clock = new Date(clock.getTime() + 60_000);
+    await tickOnce(backend, registry([parked]), { ...opts, now });
+    clock = new Date(clock.getTime() + 2000);
+    await tickOnce(backend, registry([parked]), { ...opts, now });
+    expect((await backend.store.loadRun(runId))?.run.output).toBe("original");
   });
 
   it("hard-fails the run with FLOW_DRIFT when driftPolicy is 'fail'", async () => {

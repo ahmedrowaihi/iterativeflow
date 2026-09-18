@@ -28,9 +28,11 @@ burning the retry budget — see the core README.
 Replay compares each `ctx.*` call to the memo; a body that was reordered/refactored under a running
 run trips the drift guard and applies the flow's `driftPolicy`:
 
-- **`park` (default)** — the run parks (`retrying`) and re-checks on a timer. If you redeploy a fix
+- **`park` (default)** — the run parks (status `parked`) and re-checks every 30 seconds. It waits
+  indefinitely: parking is not a failure, so it doesn't spend the retry budget. If you redeploy a fix
   that makes the shape match the memo again **at the same version**, the parked run resumes on its
-  next wake with no further action. This is the common recovery.
+  next re-check with no further action. This is the common recovery. `listRuns({ status: "parked" })`
+  finds every run waiting on a deploy.
 - **A genuine shape change needs a version bump.** If the new body legitimately issues different
   steps, bump `.version(N)` — new submits run the new code. **Keep the old version registered until
   its in-flight runs drain**, otherwise an old-version run finds no registered flow (`unknown_flow`)

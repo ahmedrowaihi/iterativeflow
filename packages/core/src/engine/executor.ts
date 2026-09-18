@@ -38,6 +38,9 @@ export const defaultRetry: RetryPolicy = {
  *  multi-step run never loses the lease, rare enough that quick steps don't each cost a heartbeat. */
 const LEASE_RENEW_BELOW = 0.5;
 
+// A deploy takes minutes, so a parked run needn't be re-claimed every second.
+const REDEPLOY_RECHECK_MS = 30_000;
+
 // renew() no-ops until the lease is half spent, so a quarter-lease tick always lands before expiry.
 // Clamped to half the lease as well, or the floor would outrun a very short lease and every renewal
 // would land after it had already gone.
@@ -56,7 +59,8 @@ export type TickStatus =
   | "already_terminal"
   | "unknown_flow"
   | "flow_drift"
-  | "canceled";
+  | "canceled"
+  | "lease_lost";
 
 /**
  * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
@@ -110,6 +114,20 @@ const toFlowError = (e: unknown): FlowError => {
 const backoff = (attempt: number, p: RetryPolicy, now: Date): Date =>
   new Date(now.getTime() + Math.min(p.baseDelayMs * 2 ** (attempt - 1), p.maxDelayMs));
 
+// A batch is claimed at once but run one by one, so a run late in the batch may have spent most of
+// its lease waiting. Renew it before starting; `undefined` means a peer may already hold it.
+const leaseForStart = async (
+  queue: Backend["queue"],
+  lease: Lease,
+  leaseMs: number | undefined,
+  at: Date,
+): Promise<Lease | undefined> => {
+  const remaining = lease.expiresAt.getTime() - at.getTime();
+  if (remaining <= 0) return undefined;
+  if (leaseMs === undefined || remaining > leaseMs * LEASE_RENEW_BELOW) return lease;
+  return queue.heartbeat(lease, { leaseMs, now: at }).catch(() => undefined);
+};
+
 /**
  * Execute one claimed run to its next durable boundary (completion, suspend, or retry) and
  * release the lease. Idempotent across crashes: a re-claim re-invokes the flow and memoized
@@ -127,13 +145,16 @@ export const runTick = async (
   const obs = makeObserver(opts.observe);
   const { store, queue, wakeup } = backend;
 
+  const started = await leaseForStart(queue, lease, opts.leaseMs, now());
+  if (!started) return { runId: lease.runId, status: "lease_lost" };
+
   const snap = await store.loadRun(lease.runId);
   if (!snap) {
-    await queue.ack(lease, { now: now() });
+    await queue.ack(started, { now: now() });
     return { runId: lease.runId, status: "gone" };
   }
   if (isTerminal(snap.run.status)) {
-    await queue.ack(lease, { now: now() });
+    await queue.ack(started, { now: now() });
     return { runId: snap.run.id, status: "already_terminal" };
   }
   const run = snap.run;
@@ -148,7 +169,7 @@ export const runTick = async (
   // Best-effort lease renewal as the run commits durable progress. A lost lease is caught by the
   // first-writer-wins memo + reconcile, so a failed renewal just lets the step's at-least-once
   // contract stand. `held` is the current lease, used to ack when the tick ends.
-  let held = lease;
+  let held = started;
   const leaseMs = opts.leaseMs;
   const keepalive =
     leaseMs === undefined
@@ -206,17 +227,17 @@ export const runTick = async (
   };
 
   // The deployed code can't advance this run yet — the flow isn't registered (`unknown_flow`) or its
-  // shape drifted under it (`flow_drift`). Park and re-check on a flat delay; a redeploy or version
-  // bump recovers it. (The dead-letter cap still bounds a permanently-stuck run.)
+  // shape drifted under it (`flow_drift`). `parked` is not a failure, so it doesn't spend the
+  // dead-letter budget: the run waits, visibly, for a redeploy or a version bump.
   const parkForRedeploy = (
     tickStatus: "unknown_flow" | "flow_drift",
     extra?: Omit<TickResult, "runId" | "status">,
   ): Promise<TickResult> => {
     obs.metrics.redeployParked?.(run.id, tickStatus);
     return suspend(
-      "retrying",
+      "parked",
       tickStatus,
-      { timers: [{ runId: run.id, fireAt: new Date(now().getTime() + retry.baseDelayMs) }] },
+      { timers: [{ runId: run.id, fireAt: new Date(now().getTime() + REDEPLOY_RECHECK_MS) }] },
       extra,
     );
   };

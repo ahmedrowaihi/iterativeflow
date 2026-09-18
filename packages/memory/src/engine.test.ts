@@ -504,6 +504,82 @@ describe("engine — end to end on the memory backend", () => {
     expect((await backend.store.loadRun(runId))?.run.output).toBe("recovered");
   });
 
+  it("surfaces an observability failure on console.error when no tickError hook is wired", async () => {
+    const flow = defineFlow({ name: "noisy", version: 1, run: async () => "ok" });
+    const backend = createMemoryBackend();
+    const logged: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    try {
+      const runId = await submit(backend, flow, {});
+      await tickOnce(backend, registry([flow]), {
+        batchMax: 8,
+        leaseMs: 60_000,
+        observe: {
+          sink: {
+            record: () => {
+              throw new Error("sink down");
+            },
+          },
+        },
+      });
+      expect((await backend.store.loadRun(runId))?.run.status).toBe("done"); // still isolated
+      expect(JSON.stringify(logged.map(String))).toContain("sink down");
+    } finally {
+      console.error = original;
+    }
+  });
+
+  describe("a batch run late in the batch", () => {
+    // A batch is claimed at once and run one by one, so each step's time is spent from the leases of
+    // the runs still waiting. A step advances the virtual clock, then lets a peer try to claim.
+    const t0 = new Date("2030-01-01T00:00:00Z").getTime();
+    const setup = (stepMs: Record<string, number>) => {
+      const backend = createMemoryBackend();
+      let clock = t0;
+      const now = (): Date => new Date(clock);
+      const executed: string[] = [];
+      const peerClaimed: string[] = [];
+      const flow = defineFlow({
+        name: "batch",
+        version: 1,
+        run: async (ctx, input: { id: string }) => {
+          await ctx.step("work", async () => {
+            executed.push(input.id);
+            clock += stepMs[input.id] ?? 0;
+            const stolen = await backend.queue.claim({ limit: 10, leaseMs: 30_000, now: now() });
+            peerClaimed.push(...stolen.map((l) => l.runId));
+          });
+          return input.id;
+        },
+      });
+      const tick = () => tickOnce(backend, registry([flow]), { batchMax: 2, leaseMs: 30_000, now });
+      return { backend, flow, executed, peerClaimed, tick };
+    };
+
+    it("is not run when a peer took its lease while it waited", async () => {
+      const s = setup({ first: 35_000 }); // outlasts the second run's 30s lease
+      await submit(s.backend, s.flow, { id: "first" });
+      const second = await submit(s.backend, s.flow, { id: "second" });
+
+      const results = await s.tick();
+      expect(s.peerClaimed).toContain(second); // the peer owns it now
+      expect(s.executed).toEqual(["first"]); // so this worker must not run it too
+      expect(results.find((r) => r.runId === second)?.status).toBe("lease_lost");
+    });
+
+    it("gets a fresh lease when it starts, so a peer cannot take it mid-step", async () => {
+      // The second run starts at +20s with 10s left, then its own step reaches +35s — past the
+      // lease it was claimed with, but inside the one it renewed at start.
+      const s = setup({ first: 20_000, second: 15_000 });
+      await submit(s.backend, s.flow, { id: "first" });
+      const second = await submit(s.backend, s.flow, { id: "second" });
+      await s.tick();
+      expect(s.executed).toEqual(["first", "second"]);
+      expect(s.peerClaimed).not.toContain(second);
+    });
+  });
+
   describe("reconcile limit", () => {
     const flow = defineFlow({ name: "stranded-many", version: 1, run: async () => "recovered" });
     // Crash after startRun, before enqueue: `n` runs exist with no job row.
@@ -747,6 +823,19 @@ describe("engine — end to end on the memory backend", () => {
     expect(types).toContain("step.finished");
     expect(types).toContain("run.completed");
     expect(stepCalls).toHaveLength(2);
+
+    // The documented setup: a sink and nothing else records the full timeline.
+    const bare: FlowEvent[] = [];
+    await submit(backend, flow, {});
+    await tickOnce(backend, flows, {
+      batchMax: 16,
+      leaseMs: 600_000,
+      now: () => new Date("2030-01-01T00:00:00Z"),
+      observe: { sink: { record: (e) => void bare.push(e) } },
+    });
+    expect(bare.map((e) => e.type)).toEqual(
+      expect.arrayContaining(["run.started", "step.finished", "run.completed"]),
+    );
 
     // level "lifecycle" — no step events.
     const lifecycle: FlowEvent[] = [];

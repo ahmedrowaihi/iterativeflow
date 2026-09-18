@@ -6,6 +6,7 @@ export const RUN_STATUSES = [
   "awaiting_signal",
   "awaiting_child",
   "retrying",
+  "parked",
   "done",
   "failed",
   "canceled",
@@ -24,7 +25,12 @@ export const TERMINAL_STATUSES = [
 export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
 
 /** The non-terminal states a running run can be parked in, each with its own wake path. */
-export type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
+export type SuspendStatus =
+  | "sleeping"
+  | "awaiting_signal"
+  | "awaiting_child"
+  | "retrying"
+  | "parked";
 
 /** What a run does when its flow body drifted under it: park (recoverable) or fail (terminal). */
 export type DriftPolicy = "park" | "fail";

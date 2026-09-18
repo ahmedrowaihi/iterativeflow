@@ -27,7 +27,7 @@ export const UI = `<!doctype html>
   code { font:12px ui-monospace,monospace; color:var(--mut); }
   .s { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); }
   .s.done{color:#1a8f4a} .s.failed{color:#d33} .s.canceled{color:#996} .s.running,.s.pending{color:var(--accent)}
-  .s.sleeping,.s.awaiting_signal,.s.awaiting_child,.s.retrying{color:#c80}
+  .s.sleeping,.s.awaiting_signal,.s.awaiting_child,.s.retrying,.s.parked{color:#c80}
   #drawer { position:fixed; top:0; right:0; height:100%; width:min(560px,92vw); background:var(--bg); border-left:1px solid var(--line); transform:translateX(100%); transition:transform .15s; overflow:auto; padding:20px; }
   #drawer.open { transform:none; box-shadow:-8px 0 30px rgba(0,0,0,.15); }
   #drawer h2 { font-size:14px; margin:0 0 4px; }
@@ -50,7 +50,7 @@ export const UI = `<!doctype html>
     <select id="status">
       <option value="">all</option>
       <option>pending</option><option>running</option><option>sleeping</option>
-      <option>awaiting_signal</option><option>awaiting_child</option><option>retrying</option>
+      <option>awaiting_signal</option><option>awaiting_child</option><option>retrying</option><option>parked</option>
       <option>done</option><option>failed</option><option>canceled</option>
     </select>
   </label>

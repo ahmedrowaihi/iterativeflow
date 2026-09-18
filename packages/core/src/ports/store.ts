@@ -124,7 +124,8 @@ export interface Store {
   suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
 
   /**
-   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically with
+   * Take the run terminal. A no-op on a run that is already terminal: an outcome is final, so a late
+   * cancel cannot erase a finished run's output or error. `fx` commits atomically with
    * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
    * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
    * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.

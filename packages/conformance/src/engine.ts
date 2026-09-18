@@ -380,12 +380,12 @@ export const engineConformance = (
       const now = (): Date => clock;
       // A worker running only v1 shares the "wf" name, so it claims the v2 run but can't advance it.
       await tickOnce(backend, registry([v1]), { ...base, now, retry: fast });
-      expect((await backend.store.loadRunRow(runId))?.status).toBe("retrying");
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("parked");
       // The deploy-skew window must not dead-letter the run: repeated stale-worker ticks keep it parked.
       for (let i = 0; i < 4; i++) {
         clock = new Date(clock.getTime() + 60_000);
         await tickOnce(backend, registry([v1]), { ...base, now, retry: fast });
-        expect((await backend.store.loadRunRow(runId))?.status).toBe("retrying");
+        expect((await backend.store.loadRunRow(runId))?.status).toBe("parked");
       }
       const run = await drive(backend, registry([v2]), runId, fast, clock);
       expect(run).toMatchObject({ status: "done", output: "v2" });

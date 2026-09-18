@@ -311,7 +311,7 @@ export const createMongoStore = (
       await inTx(async (session) => {
         const run = await runs.findOne({ _id: runId }, { session });
         if (!run) throw new Error(`markTerminal: run ${runId} not found`);
-        if (run.status === "canceled") return; // cancel is sticky
+        if (isTerminal(run.status)) return;
         const output = outcome.status === "done" ? durable(outcome.output) : undefined;
         const error = outcome.status === "done" ? undefined : durable(outcome.error);
         const set: Record<string, unknown> = { status: outcome.status };

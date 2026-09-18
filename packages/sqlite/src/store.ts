@@ -271,7 +271,7 @@ export const createSqliteStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         const error = outcome.status === "done" ? undefined : outcome.error;
         const rows = await tx.query(
           `UPDATE ${t.run} SET status = ?, output = ?, error = ?
-           WHERE id = ? AND status <> 'canceled'
+           WHERE id = ? AND status NOT IN ${TERMINAL}
            RETURNING 1`,
           [outcome.status, j(output), j(error), runId],
         );

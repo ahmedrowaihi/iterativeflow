@@ -50,8 +50,9 @@ one worker this matters:
 - **Keep the workers' clocks in sync (NTP).** If one worker's clock runs ahead, it can decide a peer's
   lease has expired and re-claim a run that's still going. The run isn't corrupted — a step runs at
   most once because of its memo — but the re-run work is wasted.
-- **Set `leaseMs` above your longest step plus the skew you expect.** There's no heartbeat inside a
-  single step, so the lease has to cover the whole step.
+- **Set `leaseMs` above your longest step that declares no `timeoutMs`, plus the skew you expect.**
+  A step that declares `timeoutMs` keeps its lease alive while it runs, so a long step with a timeout
+  needs no large lease — only steps without a declared ceiling must fit inside it.
 - A single worker, or `serverlessTick`, has no peer, so none of this applies.
 
 If you run a large fleet you can't keep in sync, you'd want lease times to come from the database

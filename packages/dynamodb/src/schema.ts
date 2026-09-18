@@ -10,9 +10,13 @@ import {
 export const DEFAULT_TABLE = "iterativeflow";
 
 const PAD = 20;
-// Left-pad so lexical sk/GSI order matches numeric order.
+// Lexical order must match numeric: zero-pad non-negatives; offset negatives so they sort first.
 /** @internal */
-export const pad = (n: number): string => Math.trunc(n).toString().padStart(PAD, "0");
+export const pad = (n: number): string => {
+  const i = Math.trunc(n);
+  if (i < 0) return `-${(10n ** BigInt(PAD - 1) + BigInt(i)).toString()}`;
+  return i.toString().padStart(PAD, "0");
+};
 
 // A run and everything hanging off it (steps, signals) share one `RUN#<id>` partition, so
 // `loadRun` is a single Query; jobs/timers/crons/idem markers get their own partitions.

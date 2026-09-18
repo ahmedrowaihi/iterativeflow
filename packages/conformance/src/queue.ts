@@ -149,6 +149,19 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       expect(first.runId).toBe("high");
     });
 
+    it("negative priorities order numerically, before zero", async () => {
+      const q = await makeQueue();
+      await q.enqueue("zero", { priority: 0 });
+      await q.enqueue("minus3", { priority: -3 });
+      await q.enqueue("minus5", { priority: -5 });
+      const order: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const [l] = await q.claim({ limit: 1, leaseMs: 60_000, now: at(0) });
+        order.push(l.runId);
+      }
+      expect(order).toEqual(["minus5", "minus3", "zero"]);
+    });
+
     it("re-enqueue is an upsert keyed by runId — claimed once", async () => {
       const q = await makeQueue();
       await q.enqueue("r1");

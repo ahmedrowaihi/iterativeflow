@@ -284,7 +284,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         const error = outcome.status === "done" ? undefined : outcome.error;
         const rows = await tx.query(
           `UPDATE ${t.run} SET status = $2, output = $3::jsonb, error = $4::jsonb
-           WHERE id = $1 AND status <> 'canceled'
+           WHERE id = $1 AND status NOT IN ${TERMINAL}
            RETURNING 1`,
           [runId, outcome.status, j(output), j(error)],
         );

@@ -69,6 +69,9 @@ interface PurgeSqlOpts {
    *  a partial index over the terminal statuses is only usable when the planner can prove the
    *  query's predicate implies the index's, which it cannot do through a bind parameter. */
   statusTuple: (statuses: readonly string[]) => string;
+  /** Renders "the run's `tags` contain the value bound at `placeholder`". Required so a backend
+   *  cannot silently drop a tag filter and widen a bulk cancel or retry to every tenant. */
+  tag: (placeholder: string) => string;
 }
 /**
  * The SQL form of {@link purgeMatcher}: the `WHERE` body and its binds for the run-selecting half of
@@ -388,7 +391,7 @@ interface RetryPolicy {
 /** The retry policy applied when a deployment injects none. */
 declare const defaultRetry: RetryPolicy;
 /** The outcome status of one tick on a run. */
-type TickStatus = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled";
+type TickStatus = "done" | "failed" | "sleeping" | "awaiting_child" | "awaiting_signal" | "retrying" | "gone" | "already_terminal" | "unknown_flow" | "flow_drift" | "canceled" | "lease_lost";
 /**
  * What one tick did with a run. On a failure, transient retry, or drift it also carries the error
  * (and, for a drift, the cursor key it drifted at), so a driver (e.g. a serverless `SweepResult`
@@ -603,7 +606,7 @@ interface Liveness {
 }
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 interface EngineOpts {
-  /** Max runs claimed per worker cycle. Default 20. */
+  /** Max runs claimed per worker cycle. They run one at a time, not concurrently. Default 20. */
   batchMax?: number;
   /**
    * Max runs a reconcile sweep re-drives — crash-stranded runs and lost parent-wakes — whether that
@@ -666,7 +669,7 @@ interface RunLoopOpts {
    * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
    * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
    */
-  waitForWork?: (timeoutMs: number) => Promise<void>;
+  waitForWork?: (timeoutMs: number, signal?: AbortSignal) => Promise<void>;
 }
 /**
  * The cohesive engine: one object bundling submission, run control, queries, cron, and the
@@ -773,14 +776,14 @@ export { Clock as $, TickResult as A, InputSchema as B, tickOnce as C, runDueCro
 ```ts
 //#region src/types.d.ts
 /** The canonical run states, in lifecycle order. `RunStatus` is derived from this — one source. */
-declare const RUN_STATUSES: readonly ["pending", "running", "sleeping", "awaiting_signal", "awaiting_child", "retrying", "done", "failed", "canceled"];
+declare const RUN_STATUSES: readonly ["pending", "running", "sleeping", "awaiting_signal", "awaiting_child", "retrying", "parked", "done", "failed", "canceled"];
 type RunStatus = (typeof RUN_STATUSES)[number];
 /** The terminal run states — the one place they're written; every subset derives from it. */
 declare const TERMINAL_STATUSES: readonly ["done", "failed", "canceled"];
 /** The settled states — a run in one of these never runs again. */
 type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
 /** The non-terminal states a running run can be parked in, each with its own wake path. */
-type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying";
+type SuspendStatus = "sleeping" | "awaiting_signal" | "awaiting_child" | "retrying" | "parked";
 /** What a run does when its flow body drifted under it: park (recoverable) or fail (terminal). */
 type DriftPolicy = "park" | "fail";
 /** Structured error persisted on failed runs/steps. */
@@ -1292,7 +1295,8 @@ interface Store {
    */
   suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
   /**
-   * Take the run terminal. Must not override an existing `canceled`. `fx` commits atomically with
+   * Take the run terminal. A no-op on a run that is already terminal: an outcome is final, so a late
+   * cancel cannot erase a finished run's output or error. `fx` commits atomically with
    * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
    * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
    * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.
@@ -1374,7 +1378,8 @@ interface Store {
 }
 //#endregion
 //#region src/engine/observe.d.ts
-/** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events. */
+/** Granularity of the durable event log. `lifecycle` = run-level only; `all` adds step events and
+ *  `ctx.log`. Default `all` — wiring a sink is the opt-in; this only turns the volume down. */
 type EventLevel = "all" | "lifecycle" | "off";
 /** The durable event kinds the sink records — run lifecycle transitions, per-step completion, and `ctx.log`. */
 type EventType = "run.started" | "run.completed" | "run.failed" | "run.suspended" | "step.finished" | "run.log";
@@ -1385,7 +1390,7 @@ interface FlowEvent {
   at: Date;
   data?: unknown;
 }
-/** Where durable events are written. A Postgres sink persists them; the default is off. */
+/** Where durable events are written. A Postgres sink persists them; with no sink, nothing is recorded. */
 interface EventSink {
   record(event: FlowEvent): void | Promise<void>;
 }
@@ -1418,7 +1423,8 @@ interface FlowLabel {
   version: number;
 }
 /** In-process telemetry callbacks — cheap, non-durable, for OTel/StatsD wiring. Durations are
- *  wall-clock milliseconds, absent when the source instant was never recorded. */
+ *  wall-clock milliseconds, absent when the source instant was never recorded. Without `tickError`,
+ *  worker-loop and sink failures go to `console.error` rather than vanishing. */
 interface Metrics {
   runStarted?(runId: string, flow: FlowLabel): void;
   runSettled?(runId: string, status: "done" | "failed", flow: FlowLabel, extra?: {

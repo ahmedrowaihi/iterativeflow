@@ -22,7 +22,7 @@ import {
   type SignalPayload,
   registry,
 } from "#engine/flow";
-import type { ObserveOpts } from "#engine/observe";
+import { type ObserveOpts, reportError } from "#engine/observe";
 import { type CronDef, registerCron, runDueCrons } from "#engine/schedule";
 import {
   type RunHandle,
@@ -93,7 +93,7 @@ const delay = (ms: number, opts?: { signal?: AbortSignal }): Promise<void> =>
 
 /** Defaults the engine applies to every worker cycle, so callers don't repeat them. */
 export interface EngineOpts {
-  /** Max runs claimed per worker cycle. Default 20. */
+  /** Max runs claimed per worker cycle. They run one at a time, not concurrently. Default 20. */
   batchMax?: number;
   /**
    * Max runs a reconcile sweep re-drives — crash-stranded runs and lost parent-wakes — whether that
@@ -160,7 +160,7 @@ export interface RunLoopOpts {
    * {@link Queue.waitForWork} if it has one (e.g. a Postgres listener wired into the backend), so
    * you rarely set this. Provide it only to supply a custom push source. `tickMs` is the backstop.
    */
-  waitForWork?: (timeoutMs: number) => Promise<void>;
+  waitForWork?: (timeoutMs: number, signal?: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -395,7 +395,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       const waitForWork = loop?.waitForWork ?? backend.queue.waitForWork?.bind(backend.queue);
       const stop = new AbortController();
       const { signal } = stop;
-      const onTickError = (err: unknown): void => opts.observe?.metrics?.tickError?.(err);
+      const onTickError = (err: unknown): void => reportError(opts.observe?.metrics, err);
       // Self-tuning claim loop across the whole duty cycle: a FULL batch means more work is almost
       // certainly waiting, so re-claim immediately (saturated → max throughput); a PARTIAL batch
       // waits the floor `tickMs`; an EMPTY batch backs off geometrically toward `maxIdleMs` (idle →

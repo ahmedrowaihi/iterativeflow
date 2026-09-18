@@ -272,7 +272,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         const error = outcome.status === "done" ? undefined : outcome.error;
         const res = await tx.exec(
           `UPDATE ${t.run} SET status = ?, output = ?, error = ?
-           WHERE id = ? AND status <> 'canceled'`,
+           WHERE id = ? AND status NOT IN ${TERMINAL}`,
           [outcome.status, j(output), j(error), runId],
         );
         if (res.affectedRows > 0 && fx) await applyOutbox(tx, t, fx);

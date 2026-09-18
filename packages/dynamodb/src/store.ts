@@ -554,6 +554,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const remove: string[] = [];
       const values: Record<string, unknown> = {
         ":status": outcome.status,
+        ":done": "done",
+        ":failed": "failed",
         ":canceled": "canceled",
       };
       const output = outcome.status === "done" ? enc(outcome.output) : undefined;
@@ -573,7 +575,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           TableName: table,
           Key: key.run(runId),
           UpdateExpression: `SET ${set.join(", ")}${remove.length ? ` REMOVE ${remove.join(", ")}` : ""}`,
-          ConditionExpression: "attribute_exists(pk) AND #status <> :canceled",
+          ConditionExpression:
+            "attribute_exists(pk) AND NOT (#status IN (:done, :failed, :canceled))",
           ExpressionAttributeNames: { "#status": "status", "#output": "output", "#error": "error" },
           ExpressionAttributeValues: values,
         },
@@ -583,7 +586,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       try {
         await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
       } catch (e) {
-        if (conditionFailedAt(cancellationReasons(e), 0)) return; // canceled is sticky — outbox skipped
+        if (conditionFailedAt(cancellationReasons(e), 0)) return; // already terminal — outbox skipped
         throw e;
       }
     },

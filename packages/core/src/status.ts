@@ -35,6 +35,7 @@ export const zeroRunStats = (): Record<RunStatus, number> => ({
   awaiting_signal: 0,
   awaiting_child: 0,
   retrying: 0,
+  parked: 0,
   done: 0,
   failed: 0,
   canceled: 0,

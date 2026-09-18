@@ -248,7 +248,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     async markTerminal(runId, outcome: TerminalOutcome, fx?: Outbox) {
       const row = runs.get(runId);
       if (!row) throw new Error(`markTerminal: run ${runId} not found`);
-      if (row.status === "canceled") return; // cancel is sticky
+      if (isTerminal(row.status)) return;
       row.status = outcome.status;
       row.output = outcome.status === "done" ? outcome.output : undefined;
       row.error = outcome.status === "done" ? undefined : outcome.error;

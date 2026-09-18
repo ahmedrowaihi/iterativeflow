@@ -409,6 +409,24 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(await s.markRunning(runId)).toBe(1);
     });
 
+    it("markTerminal never overwrites a terminal run — a late cancel keeps the outcome", async () => {
+      const s = await makeStore();
+      const done = (await s.startRun({ name: "f", version: 1, input: {} })).runId;
+      const failed = (await s.startRun({ name: "f", version: 1, input: {} })).runId;
+      await s.markTerminal(done, { status: "done", output: { total: 42 } });
+      await s.markTerminal(failed, { status: "failed", error: { code: "X", message: "boom" } });
+
+      await s.markTerminal(done, { status: "canceled" });
+      await s.markTerminal(failed, { status: "canceled" });
+
+      expect(await s.loadRunRow(done)).toMatchObject({ status: "done", output: { total: 42 } });
+      expect(await s.loadRunRow(failed)).toMatchObject({
+        status: "failed",
+        error: { code: "X", message: "boom" },
+      });
+      expect((await s.retryRun(failed)).retried).toBe(true); // still retryable
+    });
+
     it("cancelRuns cancels the live matched set and never a terminal run", async () => {
       const s = await makeStore();
       const mk = async (name: string) => (await s.startRun({ name, version: 1, input: {} })).runId;
