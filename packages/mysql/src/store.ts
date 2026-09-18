@@ -29,7 +29,7 @@ import {
   mapStep,
 } from "#codec";
 import type { Tables } from "#schema";
-import { applyOutbox, enqueueStmt } from "#statements";
+import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
 
 const sqlTuple = (statuses: readonly string[]): string =>
@@ -349,7 +349,11 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0 WHERE id IN ${inIds}`,
           ids,
         );
-        for (const runId of ids) await enqueueStmt(tx, t, runId);
+        await enqueueManyStmt(
+          tx,
+          t,
+          ids.map((runId) => ({ runId })),
+        );
         return ids.length;
       });
     },

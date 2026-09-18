@@ -15,6 +15,7 @@ const hangingBackend = (): Backend =>
     } as unknown as Backend["timer"],
     queue: {
       enqueue: async () => undefined,
+      enqueueMany: async () => undefined,
       claim: () => new Promise<never>(() => undefined),
     } as unknown as Backend["queue"],
   }) satisfies Backend;

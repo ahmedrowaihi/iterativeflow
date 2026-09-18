@@ -7,7 +7,7 @@ import {
   queueDepthOf,
 } from "@iterativeflow/core/backend";
 import { type Tables, tables } from "#schema";
-import { enqueueStmt } from "#statements";
+import { enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
 
 interface LeaseRow {
@@ -25,6 +25,10 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
   return {
     async enqueue(runId, opts) {
       await enqueueStmt(sql, t, runId, opts);
+    },
+
+    async enqueueMany(requests) {
+      await enqueueManyStmt(sql, t, requests);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

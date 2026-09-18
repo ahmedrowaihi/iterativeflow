@@ -99,11 +99,11 @@ export const submitMany = async <I>(
     })),
   );
   const results = await backend.store.startManyRuns(specs);
-  await Promise.all(
-    results.map((r, i) =>
+  await backend.queue.enqueueMany(
+    results.flatMap((r, i) =>
       r.created
-        ? backend.queue.enqueue(r.runId, { runAt: items[i].runAt, priority: items[i].priority })
-        : undefined,
+        ? [{ runId: r.runId, opts: { runAt: items[i].runAt, priority: items[i].priority } }]
+        : [],
     ),
   );
   return results.map((r) => r.runId);
@@ -182,7 +182,7 @@ export const drainTimers = async (
   opts: { limit: number; now?: Date },
 ): Promise<number> => {
   const due = await backend.timer.dueBatch({ now: opts.now, limit: opts.limit });
-  await Promise.all(due.map((runId) => backend.queue.enqueue(runId)));
+  await backend.queue.enqueueMany(due.map((runId) => ({ runId })));
   return due.length;
 };
 
@@ -194,7 +194,7 @@ export const drainTimers = async (
  */
 export const reconcile = async (backend: Backend, opts: { limit: number }): Promise<number> => {
   const orphans = await backend.store.orphanedRuns(opts.limit);
-  await Promise.all(orphans.map((runId) => backend.queue.enqueue(runId)));
+  await backend.queue.enqueueMany(orphans.map((runId) => ({ runId })));
   return orphans.length;
 };
 

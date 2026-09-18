@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { B as RunStatus, C as Lease, D as CronRow, E as queueDepthOf, F as RunFilter, G as TERMINAL_STATUSES, H as StepOutcome, I as RunPage, K as TerminalOutcome, L as RunRow, M as Page, N as PurgeFilter, O as CronSpec, P as RUN_STATUSES, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, U as StepStatus, V as StepCheckpoint, W as SuspendStatus, _ as TimerRequest, a as EventType, b as TimerDueOpts, d as StartResult, f as Store, g as SpawnRequest, h as Outbox, i as EventSink, j as FlowError, k as DeliveredSignal, m as EnqueueRequest, n as newId, o as FlowEvent, p as Backend, q as TerminalStatus, t as IdGen, v as Wakeup, w as Queue, x as ClaimOpts, y as Timer, z as RunSpec } from "./id-<hash>.mjs";
+import { A as DeliveredSignal, B as RunSpec, C as Lease, D as queueDepthOf, E as distinctEnqueues, F as RUN_STATUSES, G as SuspendStatus, H as StepCheckpoint, I as RunFilter, J as TerminalStatus, K as TERMINAL_STATUSES, L as RunPage, M as FlowError, N as Page, O as CronRow, P as PurgeFilter, R as RunRow, S as EnqueueRequest, T as QueueDepth, U as StepOutcome, V as RunStatus, W as StepStatus, _ as Wakeup, a as EventType, b as ClaimOpts, d as StartResult, f as Store, g as TimerRequest, h as SpawnRequest, i as EventSink, k as CronSpec, m as Outbox, n as newId, o as FlowEvent, p as Backend, q as TerminalOutcome, t as IdGen, v as Timer, w as Queue, x as EnqueueOpts, y as TimerDueOpts, z as RunSnapshot } from "./id-<hash>.mjs";
 import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, o as statusList, r as RECONCILABLE_STATUSES, s as zeroRunStats, t as ACTIVE_STATUSES } from "./status-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
@@ -136,13 +136,13 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
  */
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, distinctEnqueues, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
 ```
 
 ## engine-<hash>.d.mts
 
 ```ts
-import { A as DriftPolicy, B as RunStatus, C as Lease, D as CronRow, F as RunFilter, I as RunPage, M as Page, N as PurgeFilter, R as RunSnapshot, S as EnqueueOpts, T as QueueDepth, c as ObserveOpts, j as FlowError, p as Backend, t as IdGen } from "./id-<hash>.mjs";
+import { C as Lease, I as RunFilter, L as RunPage, M as FlowError, N as Page, O as CronRow, P as PurgeFilter, T as QueueDepth, V as RunStatus, c as ObserveOpts, j as DriftPolicy, p as Backend, t as IdGen, x as EnqueueOpts, z as RunSnapshot } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -936,6 +936,17 @@ interface EnqueueOpts {
   /** Lower = sooner. Default 0. */
   priority?: number;
 }
+/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany} and of an {@link Outbox}'s
+ *  atomic enqueues. */
+interface EnqueueRequest {
+  runId: string;
+  opts?: EnqueueOpts;
+}
+/**
+ * Collapse an {@link Queue.enqueueMany} batch to one entry per `runId`, last request winning — the
+ * de-duplication every backend owes that method, in one place so they cannot drift.
+ */
+declare const distinctEnqueues: (requests: readonly EnqueueRequest[]) => [string, EnqueueOpts | undefined][];
 /** Options for a claim cycle — all tunable per deployment. */
 interface ClaimOpts {
   /** Max runs to lease this cycle (batch size). */
@@ -991,6 +1002,12 @@ interface Lease {
 interface Queue {
   /** Enqueue (or re-enqueue) a run. Re-enqueue is an upsert keyed by `runId`. */
   enqueue(runId: string, opts?: EnqueueOpts): Promise<void>;
+  /**
+   * {@link Queue.enqueue} for many runs, in as few round trips as the store allows. Duplicate
+   * `runId`s collapse to one upsert — last wins, `version` rises once — so callers need not
+   * de-duplicate ({@link distinctEnqueues} does it). An empty list is a no-op.
+   */
+  enqueueMany(requests: readonly EnqueueRequest[]): Promise<void>;
   /**
    * Lease up to `limit` due, unleased runs to this worker for `leaseMs`. A leased run is
    * invisible to other claimers until its lease expires (crash recovery) or is `ack`ed.
@@ -1108,11 +1125,6 @@ interface SpawnRequest {
   runId: string;
   spec: RunSpec;
   enqueue?: EnqueueOpts;
-}
-/** An existing run to (re-)enqueue atomically with a Store write (e.g. wake a parent). */
-interface EnqueueRequest {
-  runId: string;
-  opts?: EnqueueOpts;
 }
 /** A durable deadline to set atomically with a Store write (sleep / retry backoff). */
 interface TimerRequest {
@@ -1435,13 +1447,13 @@ type IdGen = () => string;
  *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { DriftPolicy as A, RunStatus as B, Lease as C, CronRow as D, queueDepthOf as E, RunFilter as F, TERMINAL_STATUSES as G, StepOutcome as H, RunPage as I, TerminalOutcome as K, RunRow as L, Page as M, PurgeFilter as N, CronSpec as O, RUN_STATUSES as P, RunSnapshot as R, EnqueueOpts as S, QueueDepth as T, StepStatus as U, StepCheckpoint as V, SuspendStatus as W, TimerRequest as _, EventType as a, TimerDueOpts as b, ObserveOpts as c, StartResult as d, Store as f, SpawnRequest as g, Outbox as h, EventSink as i, FlowError as j, DeliveredSignal as k, Span as l, EnqueueRequest as m, newId as n, FlowEvent as o, Backend as p, TerminalStatus as q, EventLevel as r, Metrics as s, IdGen as t, Tracer as u, Wakeup as v, Queue as w, ClaimOpts as x, Timer as y, RunSpec as z };
+export { DeliveredSignal as A, RunSpec as B, Lease as C, queueDepthOf as D, distinctEnqueues as E, RUN_STATUSES as F, SuspendStatus as G, StepCheckpoint as H, RunFilter as I, TerminalStatus as J, TERMINAL_STATUSES as K, RunPage as L, FlowError as M, Page as N, CronRow as O, PurgeFilter as P, RunRow as R, EnqueueRequest as S, QueueDepth as T, StepOutcome as U, RunStatus as V, StepStatus as W, Wakeup as _, EventType as a, ClaimOpts as b, ObserveOpts as c, StartResult as d, Store as f, TimerRequest as g, SpawnRequest as h, EventSink as i, DriftPolicy as j, CronSpec as k, Span as l, Outbox as m, newId as n, FlowEvent as o, Backend as p, TerminalOutcome as q, EventLevel as r, Metrics as s, IdGen as t, Tracer as u, Timer as v, Queue as w, EnqueueOpts as x, TimerDueOpts as y, RunSnapshot as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { A as DriftPolicy, B as RunStatus, F as RunFilter, H as StepOutcome, I as RunPage, L as RunRow, M as Page, N as PurgeFilter, P as RUN_STATUSES, R as RunSnapshot, T as QueueDepth, U as StepStatus, a as EventType, c as ObserveOpts, i as EventSink, j as FlowError, k as DeliveredSignal, l as Span, n as newId, o as FlowEvent, p as Backend, q as TerminalStatus, r as EventLevel, s as Metrics, t as IdGen, u as Tracer } from "./id-<hash>.mjs";
+import { A as DeliveredSignal, F as RUN_STATUSES, I as RunFilter, J as TerminalStatus, L as RunPage, M as FlowError, N as Page, P as PurgeFilter, R as RunRow, T as QueueDepth, U as StepOutcome, V as RunStatus, W as StepStatus, a as EventType, c as ObserveOpts, i as EventSink, j as DriftPolicy, l as Span, n as newId, o as FlowEvent, p as Backend, r as EventLevel, s as Metrics, t as IdGen, u as Tracer, z as RunSnapshot } from "./id-<hash>.mjs";
 import { i as isRunStatus } from "./status-<hash>.mjs";
 import { $ as Clock, A as TickResult, B as InputSchema, C as tickOnce, D as runDueCrons, E as registerCron, F as Contract, G as SignalSchema, H as InvokeSpecFor, I as Flow, J as defineFlow, K as SignalSchemas, L as FlowOutputs, M as defaultRetry, N as runTick, O as RetryPolicy, P as AnyFlow, Q as validateSignal, R as FlowPolicy, S as submitMany, T as cronTag, U as NoSignals, V as InvokeSpec, W as SignalMap, X as signalType, Y as registry, Z as validateInput, _ as result, a as createEngine, b as signalRun, c as RunResult, d as SweepResult, et as Ctx, f as TickOnceOpts, g as reconcile, h as purge, i as RunLoopOpts, j as TickStatus, k as TickOpts, l as SubmitOpts, m as prune, n as EngineOpts, nt as StepPolicy, o as OnDuplicate, p as drainTimers, q as defineContract, r as Liveness, rt as systemClock, s as RunHandle, t as Engine, tt as StepArg, u as SubmitSpec, v as retryRun, w as CronDef, x as submit, y as serverlessTick, z as FlowRegistry } from "./engine-<hash>.mjs";
 //#region src/engine/signals.d.ts
@@ -1563,7 +1575,7 @@ export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type C
 ## status-<hash>.d.mts
 
 ```ts
-import { B as RunStatus, q as TerminalStatus } from "./id-<hash>.mjs";
+import { J as TerminalStatus, V as RunStatus } from "./id-<hash>.mjs";
 //#region src/status.d.ts
 /** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
 declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];

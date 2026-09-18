@@ -1,7 +1,34 @@
-import type { EnqueueOpts, Outbox } from "@iterativeflow/core/backend";
+import {
+  type EnqueueOpts,
+  type EnqueueRequest,
+  type Outbox,
+  distinctEnqueues,
+} from "@iterativeflow/core/backend";
 import { j } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
+
+/** @internal */
+export const enqueueManyStmt = (
+  sql: Sql,
+  t: Tables,
+  requests: readonly EnqueueRequest[],
+): Promise<unknown> => {
+  const rows = distinctEnqueues(requests);
+  if (rows.length === 0) return Promise.resolve();
+  return sql.query(
+    `INSERT INTO ${t.job} AS j (run_id, run_at, priority, version)
+     SELECT e.run_id, COALESCE(e.run_at, 'epoch'::timestamptz), e.priority, 1
+       FROM unnest($1::text[], $2::timestamptz[], $3::int[]) AS e(run_id, run_at, priority)
+     ON CONFLICT (run_id) DO UPDATE
+       SET run_at = EXCLUDED.run_at, priority = EXCLUDED.priority, version = j.version + 1`,
+    [
+      rows.map(([runId]) => runId),
+      rows.map(([, opts]) => opts?.runAt ?? null),
+      rows.map(([, opts]) => opts?.priority ?? 0),
+    ],
+  );
+};
 
 /** @internal */
 export const enqueueStmt = (
@@ -9,14 +36,7 @@ export const enqueueStmt = (
   t: Tables,
   runId: string,
   opts?: EnqueueOpts,
-): Promise<unknown> =>
-  sql.query(
-    `INSERT INTO ${t.job} AS j (run_id, run_at, priority, version)
-     VALUES ($1, COALESCE($2::timestamptz, 'epoch'::timestamptz), $3, 1)
-     ON CONFLICT (run_id) DO UPDATE
-       SET run_at = EXCLUDED.run_at, priority = EXCLUDED.priority, version = j.version + 1`,
-    [runId, opts?.runAt ?? null, opts?.priority ?? 0],
-  );
+): Promise<unknown> => enqueueManyStmt(sql, t, [{ runId, opts }]);
 
 /** @internal */
 export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): Promise<unknown> =>
@@ -48,9 +68,12 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
         s.spec.createdAt ?? new Date(),
       ],
     );
-    await enqueueStmt(sql, t, s.runId, s.enqueue);
   }
-  for (const e of fx.enqueue ?? []) await enqueueStmt(sql, t, e.runId, e.opts);
+  const enqueues = [
+    ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
+    ...(fx.enqueue ?? []),
+  ];
+  if (enqueues.length) await enqueueManyStmt(sql, t, enqueues);
   for (const tm of fx.timers ?? []) await scheduleStmt(sql, t, tm.runId, tm.fireAt);
   if (fx.cancelTimers?.length) {
     await sql.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1::text[])`, [fx.cancelTimers]);

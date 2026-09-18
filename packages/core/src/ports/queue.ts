@@ -6,6 +6,21 @@ export interface EnqueueOpts {
   priority?: number;
 }
 
+/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany} and of an {@link Outbox}'s
+ *  atomic enqueues. */
+export interface EnqueueRequest {
+  runId: string;
+  opts?: EnqueueOpts;
+}
+
+/**
+ * Collapse an {@link Queue.enqueueMany} batch to one entry per `runId`, last request winning — the
+ * de-duplication every backend owes that method, in one place so they cannot drift.
+ */
+export const distinctEnqueues = (
+  requests: readonly EnqueueRequest[],
+): [string, EnqueueOpts | undefined][] => [...new Map(requests.map((r) => [r.runId, r.opts]))];
+
 /** Options for a claim cycle — all tunable per deployment. */
 export interface ClaimOpts {
   /** Max runs to lease this cycle (batch size). */
@@ -75,6 +90,13 @@ export interface Lease {
 export interface Queue {
   /** Enqueue (or re-enqueue) a run. Re-enqueue is an upsert keyed by `runId`. */
   enqueue(runId: string, opts?: EnqueueOpts): Promise<void>;
+
+  /**
+   * {@link Queue.enqueue} for many runs, in as few round trips as the store allows. Duplicate
+   * `runId`s collapse to one upsert — last wins, `version` rises once — so callers need not
+   * de-duplicate ({@link distinctEnqueues} does it). An empty list is a no-op.
+   */
+  enqueueMany(requests: readonly EnqueueRequest[]): Promise<void>;
 
   /**
    * Lease up to `limit` due, unleased runs to this worker for `leaseMs`. A leased run is

@@ -1,9 +1,17 @@
-import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
-import { queueDepthOf } from "@iterativeflow/core/backend";
-import type { ClientSession, Db } from "mongodb";
+import type {
+  ClaimOpts,
+  EnqueueOpts,
+  EnqueueRequest,
+  IdGen,
+  Lease,
+  Queue,
+} from "@iterativeflow/core/backend";
+import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
+import type { ClientSession, Collection, Db, UpdateFilter } from "mongodb";
 import type { Names } from "#collections";
 
-interface JobDoc {
+/** @internal */
+export interface JobDoc {
   _id: string;
   run_at: number;
   priority: number;
@@ -11,6 +19,38 @@ interface JobDoc {
   lease_token?: string;
   lease_expires?: number;
 }
+
+const jobUpdate = (opts: EnqueueOpts | undefined): UpdateFilter<JobDoc> => ({
+  $set: { run_at: opts?.runAt ? opts.runAt.getTime() : 0, priority: opts?.priority ?? 0 },
+  $inc: { version: 1 },
+});
+
+/** @internal */
+export const enqueueJob = async (
+  jobs: Collection<JobDoc>,
+  runId: string,
+  opts: EnqueueOpts | undefined,
+  session: ClientSession | undefined,
+): Promise<void> => {
+  await jobs.updateOne({ _id: runId }, jobUpdate(opts), { upsert: true, session });
+};
+
+/** @internal */
+export const enqueueJobs = async (
+  jobs: Collection<JobDoc>,
+  requests: readonly EnqueueRequest[],
+  session: ClientSession | undefined,
+): Promise<void> => {
+  // An unordered bulk would race two upserts of the same _id into a duplicate-key error.
+  const latest = distinctEnqueues(requests);
+  if (latest.length === 0) return;
+  await jobs.bulkWrite(
+    latest.map(([runId, opts]) => ({
+      updateOne: { filter: { _id: runId }, update: jobUpdate(opts), upsert: true },
+    })),
+    { ordered: false, session },
+  );
+};
 
 /** @internal */
 export const createMongoQueue = (
@@ -25,14 +65,11 @@ export const createMongoQueue = (
 
   return {
     async enqueue(runId, opts) {
-      await jobs.updateOne(
-        { _id: runId },
-        {
-          $set: { run_at: opts?.runAt ? opts.runAt.getTime() : 0, priority: opts?.priority ?? 0 },
-          $inc: { version: 1 },
-        },
-        { upsert: true, session: boundSession },
-      );
+      await enqueueJob(jobs, runId, opts, boundSession);
+    },
+
+    async enqueueMany(requests) {
+      await enqueueJobs(jobs, requests, boundSession);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

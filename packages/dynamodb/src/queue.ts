@@ -1,7 +1,7 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
-import { queueDepthOf } from "@iterativeflow/core/backend";
+import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { runNames } from "#run-names";
 import { JOB_GSI_PK, key } from "#schema";
@@ -15,6 +15,9 @@ interface JobItem {
   leaseExpires?: number;
 }
 
+// Bounded so a large wake list can't open thousands of sockets at once.
+const ENQUEUE_CONCURRENCY = 25;
+
 /** @internal */
 export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => {
   const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
@@ -23,6 +26,17 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
   return {
     async enqueue(runId, opts) {
       await send(new UpdateCommand(enqueueParams(table, runId, opts)));
+    },
+
+    async enqueueMany(requests) {
+      const rows = distinctEnqueues(requests);
+      for (let i = 0; i < rows.length; i += ENQUEUE_CONCURRENCY) {
+        await Promise.all(
+          rows
+            .slice(i, i + ENQUEUE_CONCURRENCY)
+            .map(([runId, opts]) => send(new UpdateCommand(enqueueParams(table, runId, opts)))),
+        );
+      }
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

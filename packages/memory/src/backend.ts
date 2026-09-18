@@ -17,6 +17,7 @@ import {
   type TerminalOutcome,
   type TimerDueOpts,
   createLocalWakeup,
+  distinctEnqueues,
   ACTIVE_STATUSES,
   isOrphaned,
   isTerminal,
@@ -426,6 +427,10 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
   const queue: Backend["queue"] = {
     async enqueue(runId, opts) {
       enqueueCore(runId, opts);
+    },
+
+    async enqueueMany(requests) {
+      for (const [runId, opts] of distinctEnqueues(requests)) enqueueCore(runId, opts);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

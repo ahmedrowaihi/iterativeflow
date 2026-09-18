@@ -8,6 +8,7 @@ import {
 } from "@iterativeflow/core/backend";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
+import { enqueueManyStmt, enqueueStmt } from "#statements";
 
 interface ClaimRow {
   run_id: string;
@@ -20,11 +21,11 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
 
   return {
     async enqueue(runId, opts) {
-      await sql.exec(
-        `INSERT INTO ${t.job} (run_id, run_at, priority, version) VALUES (?, ?, ?, 1)
-         ON DUPLICATE KEY UPDATE run_at = VALUES(run_at), priority = VALUES(priority), version = version + 1`,
-        [runId, opts?.runAt ? opts.runAt.getTime() : 0, opts?.priority ?? 0],
-      );
+      await enqueueStmt(sql, t, runId, opts);
+    },
+
+    async enqueueMany(requests) {
+      await enqueueManyStmt(sql, t, requests);
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

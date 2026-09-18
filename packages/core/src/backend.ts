@@ -6,11 +6,18 @@
  */
 
 export type { Store, StartResult } from "#ports/store";
-export type { Queue, ClaimOpts, EnqueueOpts, Lease, QueueDepth } from "#ports/queue";
-export { queueDepthOf } from "#ports/queue";
+export type {
+  Queue,
+  ClaimOpts,
+  EnqueueOpts,
+  EnqueueRequest,
+  Lease,
+  QueueDepth,
+} from "#ports/queue";
+export { queueDepthOf, distinctEnqueues } from "#ports/queue";
 export type { Timer, TimerDueOpts } from "#ports/timer";
 export type { Wakeup } from "#ports/wakeup";
-export type { Backend, Outbox, SpawnRequest, EnqueueRequest, TimerRequest } from "#ports/outbox";
+export type { Backend, Outbox, SpawnRequest, TimerRequest } from "#ports/outbox";
 
 export type {
   RunRow,

@@ -156,4 +156,34 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
     await be.queue.enqueue(v2);
     expect(await pending(["tc"])).toBe(2);
   });
+
+  // Shares this file's container; the pg-only risks are the empty list (invalid SQL) and a
+  // repeated runId (ON CONFLICT cannot hit one row twice per statement).
+  it("enqueueMany: empty is a no-op, duplicates collapse to one upsert, a lease survives", async () => {
+    const be = createPgBackend(pgPool(pool));
+    await be.queue.enqueueMany([]);
+
+    const leased = await start(be, "em");
+    await be.queue.enqueue(leased);
+    const [lease] = await be.queue.claim({ limit: 1, leaseMs: 600_000 });
+    const other = await start(be, "em");
+
+    await be.queue.enqueueMany([
+      { runId: leased },
+      { runId: other, opts: { priority: 9 } },
+      { runId: other, opts: { priority: 3 } },
+    ]);
+
+    const { rows } = await pool.query<{
+      run_id: string;
+      version: string;
+      priority: number;
+      lease_token: string | null;
+    }>('SELECT run_id, version, priority, lease_token FROM "workflow".job ORDER BY run_id');
+    const byId = new Map(rows.map((r) => [r.run_id, r]));
+    expect(Number(byId.get(other)?.version)).toBe(1);
+    expect(byId.get(other)?.priority).toBe(3);
+    expect(Number(byId.get(leased)?.version)).toBe(lease.version + 1);
+    expect(byId.get(leased)?.lease_token).toBe(lease.token);
+  });
 });

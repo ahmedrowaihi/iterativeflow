@@ -1,4 +1,4 @@
-import type { EnqueueOpts, Queue } from "#ports/queue";
+import type { EnqueueOpts, EnqueueRequest, Queue } from "#ports/queue";
 import type { Store } from "#ports/store";
 import type { Timer } from "#ports/timer";
 import type { Wakeup } from "#ports/wakeup";
@@ -14,12 +14,6 @@ export interface SpawnRequest {
   runId: string;
   spec: RunSpec;
   enqueue?: EnqueueOpts;
-}
-
-/** An existing run to (re-)enqueue atomically with a Store write (e.g. wake a parent). */
-export interface EnqueueRequest {
-  runId: string;
-  opts?: EnqueueOpts;
 }
 
 /** A durable deadline to set atomically with a Store write (sleep / retry backoff). */

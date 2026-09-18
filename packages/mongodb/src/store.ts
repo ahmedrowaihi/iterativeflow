@@ -31,6 +31,7 @@ import {
   mapSignal,
   mapStep,
 } from "#codec";
+import { type JobDoc, enqueueJob, enqueueJobs } from "#queue";
 
 const isDup = (e: unknown): boolean =>
   typeof e === "object" && e !== null && (e as { code?: number }).code === 11000;
@@ -52,12 +53,7 @@ export const createMongoStore = (
   const steps = db.collection<StepDoc>(n.steps);
   const signals = db.collection<SignalDoc>(n.signals);
   const crons = db.collection<CronDoc>(n.crons);
-  const jobs = db.collection<{
-    _id: string;
-    run_at: number;
-    priority: number;
-    version: number;
-  }>(n.jobs);
+  const jobs = db.collection<JobDoc>(n.jobs);
   const timers = db.collection<{ _id: string; fire_at: number }>(n.timers);
 
   const inTx = async <T>(fn: (session: ClientSession) => Promise<T>): Promise<T> => {
@@ -71,17 +67,7 @@ export const createMongoStore = (
   };
 
   const enqueue = (runId: string, opts: EnqueueOpts | undefined, session: ClientSession) =>
-    jobs.updateOne(
-      { _id: runId },
-      {
-        $set: {
-          run_at: opts?.runAt ? opts.runAt.getTime() : 0,
-          priority: opts?.priority ?? 0,
-        },
-        $inc: { version: 1 },
-      },
-      { upsert: true, session },
-    );
+    enqueueJob(jobs, runId, opts, session);
 
   const insertSpawn = async (
     spec: RunSpec,
@@ -99,11 +85,12 @@ export const createMongoStore = (
 
   const commitOutbox = async (fx: Outbox | undefined, session: ClientSession): Promise<void> => {
     if (!fx) return;
-    for (const s of fx.spawn ?? []) {
-      await insertSpawn(s.spec, s.runId, session);
-      await enqueue(s.runId, s.enqueue, session);
-    }
-    for (const e of fx.enqueue ?? []) await enqueue(e.runId, e.opts, session);
+    for (const s of fx.spawn ?? []) await insertSpawn(s.spec, s.runId, session);
+    const enqueues = [
+      ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
+      ...(fx.enqueue ?? []),
+    ];
+    if (enqueues.length) await enqueueJobs(jobs, enqueues, session);
     for (const t of fx.timers ?? []) {
       await timers.updateOne(
         { _id: t.runId },
@@ -390,7 +377,11 @@ export const createMongoStore = (
           { $set: { status: "pending", attempts: 0 }, $unset: { error: "" } },
           { session },
         );
-        for (const runId of ids) await enqueue(runId, undefined, session);
+        await enqueueJobs(
+          jobs,
+          ids.map((runId) => ({ runId })),
+          session,
+        );
         return ids.length;
       });
     },

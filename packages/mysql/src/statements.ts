@@ -1,9 +1,40 @@
-import type { EnqueueOpts, Outbox } from "@iterativeflow/core/backend";
+import {
+  type EnqueueOpts,
+  type EnqueueRequest,
+  type Outbox,
+  distinctEnqueues,
+} from "@iterativeflow/core/backend";
 import { j } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 
+// 3 binds per row, under MySQL's 65535 placeholder ceiling.
+const ENQUEUE_ROWS_PER_STATEMENT = 1000;
+
 const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
+
+/** @internal */
+export const enqueueManyStmt = async (
+  sql: Sql,
+  t: Tables,
+  requests: readonly EnqueueRequest[],
+): Promise<void> => {
+  const rows = distinctEnqueues(requests);
+  for (let i = 0; i < rows.length; i += ENQUEUE_ROWS_PER_STATEMENT) {
+    const chunk = rows.slice(i, i + ENQUEUE_ROWS_PER_STATEMENT);
+    // ON DUPLICATE KEY assigns left to right: version reads the stored column, so never reorder.
+    await sql.exec(
+      `INSERT INTO ${t.job} (run_id, run_at, priority, version)
+       VALUES ${chunk.map(() => "(?, ?, ?, 1)").join(", ")}
+       ON DUPLICATE KEY UPDATE run_at = VALUES(run_at), priority = VALUES(priority), version = version + 1`,
+      chunk.flatMap(([runId, opts]) => [
+        runId,
+        opts?.runAt ? opts.runAt.getTime() : 0,
+        opts?.priority ?? 0,
+      ]),
+    );
+  }
+};
 
 /** @internal */
 export const enqueueStmt = (
@@ -11,12 +42,7 @@ export const enqueueStmt = (
   t: Tables,
   runId: string,
   opts?: EnqueueOpts,
-): Promise<unknown> =>
-  sql.exec(
-    `INSERT INTO ${t.job} (run_id, run_at, priority, version) VALUES (?, ?, ?, 1)
-     ON DUPLICATE KEY UPDATE run_at = VALUES(run_at), priority = VALUES(priority), version = version + 1`,
-    [runId, opts?.runAt ? opts.runAt.getTime() : 0, opts?.priority ?? 0],
-  );
+): Promise<void> => enqueueManyStmt(sql, t, [{ runId, opts }]);
 
 /** @internal */
 export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): Promise<unknown> =>
@@ -46,9 +72,12 @@ export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void
         (s.spec.createdAt ?? new Date()).getTime(),
       ],
     );
-    await enqueueStmt(sql, t, s.runId, s.enqueue);
   }
-  for (const e of fx.enqueue ?? []) await enqueueStmt(sql, t, e.runId, e.opts);
+  const enqueues = [
+    ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
+    ...(fx.enqueue ?? []),
+  ];
+  if (enqueues.length) await enqueueManyStmt(sql, t, enqueues);
   for (const tm of fx.timers ?? []) await scheduleStmt(sql, t, tm.runId, tm.fireAt);
   if (fx.cancelTimers?.length) {
     await sql.exec(

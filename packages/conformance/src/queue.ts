@@ -156,5 +156,57 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       const leases = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       expect(leases.map((l) => l.runId)).toEqual(["r1"]);
     });
+
+    it("enqueueMany enqueues every run, honouring per-request runAt and priority", async () => {
+      const q = await makeQueue();
+      await q.enqueueMany([
+        { runId: "low", opts: { priority: 10 } },
+        { runId: "high", opts: { priority: 1 } },
+        { runId: "later", opts: { runAt: at(5000) } },
+      ]);
+      expect(await q.depth(at(0))).toMatchObject({ claimable: 2, leased: 0 }); // "later" not due
+      // No backend promises RETURNING order, so claim one at a time.
+      const [first] = await q.claim({ limit: 1, leaseMs: 1000, now: at(0) });
+      expect(first.runId).toBe("high");
+      const rest = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
+      expect(rest.map((l) => l.runId)).toEqual(["low"]);
+    });
+
+    it("enqueueMany on an empty list is a no-op", async () => {
+      const q = await makeQueue();
+      await q.enqueueMany([]);
+      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(0) })).toEqual([]);
+    });
+
+    it("enqueueMany collapses duplicate runIds into one upsert, bumping version once", async () => {
+      const q = await makeQueue();
+      await q.enqueueMany([
+        { runId: "r1", opts: { priority: 9 } },
+        { runId: "r1", opts: { priority: 2 } },
+      ]);
+      const leases = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
+      expect(leases.map((l) => l.runId)).toEqual(["r1"]); // one job, not two
+      // Exactly one bump, so a backend cannot quietly apply duplicates as N upserts.
+      expect(leases[0].version).toBe(1);
+    });
+
+    it("enqueueMany does not yank an active lease, and its wake survives the ack", async () => {
+      const q = await makeQueue();
+      await q.enqueue("r1");
+      const [lease] = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
+      await q.enqueueMany([{ runId: "r1" }]); // bulk wake lands mid-lease
+      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(500) })).toEqual([]); // still held
+      await q.ack(lease, { now: at(600) }); // version moved → release, don't delete
+      const again = await q.claim({ limit: 10, leaseMs: 1000, now: at(601) });
+      expect(again.map((l) => l.runId)).toEqual(["r1"]);
+    });
+
+    it("enqueueMany re-enqueues an existing job rather than duplicating it", async () => {
+      const q = await makeQueue();
+      await q.enqueue("r1", { runAt: at(9000) }); // parked in the future
+      await q.enqueueMany([{ runId: "r1" }]); // bulk re-enqueue pulls it forward
+      const leases = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
+      expect(leases.map((l) => l.runId)).toEqual(["r1"]);
+    });
   });
 };

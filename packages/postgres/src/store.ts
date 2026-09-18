@@ -19,7 +19,7 @@ import {
 } from "@iterativeflow/core/backend";
 import { type RunRecord, type StepRecord, j, mapRun, mapStep } from "#codec";
 import { type Tables, tables } from "#schema";
-import { applyOutbox, enqueueStmt } from "#statements";
+import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
 
 interface CronRow_ {
@@ -360,7 +360,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0 WHERE id = ANY($1)`,
           [ids],
         );
-        for (const runId of ids) await enqueueStmt(tx, t, runId);
+        await enqueueManyStmt(
+          tx,
+          t,
+          ids.map((runId) => ({ runId })),
+        );
         return ids.length;
       });
     },

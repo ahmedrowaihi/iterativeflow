@@ -1,5 +1,5 @@
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
-import { queueDepthOf } from "@iterativeflow/core/backend";
+import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
 import { luaRunner } from "#scripts";
@@ -93,15 +93,20 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
   const run = luaRunner(client);
 
   return {
-    async enqueue(runId, opts) {
-      const runAtMs = opts?.runAt ? opts.runAt.getTime() : 0;
-      const priority = opts?.priority ?? 0;
-      await client
-        .multi()
-        .zadd(keys.queue, runAtMs, runId)
-        .hset(keys.job(runId), JOB.runAt, runAtMs, JOB.priority, priority)
-        .hincrby(keys.job(runId), JOB.version, 1)
-        .exec();
+    enqueue(runId, opts) {
+      return this.enqueueMany([{ runId, opts }]);
+    },
+
+    async enqueueMany(requests) {
+      if (requests.length === 0) return;
+      const tx = client.multi();
+      for (const [runId, opts] of distinctEnqueues(requests)) {
+        const runAtMs = opts?.runAt ? opts.runAt.getTime() : 0;
+        tx.zadd(keys.queue, runAtMs, runId)
+          .hset(keys.job(runId), JOB.runAt, runAtMs, JOB.priority, opts?.priority ?? 0)
+          .hincrby(keys.job(runId), JOB.version, 1);
+      }
+      await tx.exec();
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {

@@ -7,6 +7,7 @@ import {
   queueDepthOf,
 } from "@iterativeflow/core/backend";
 import type { Tables } from "#schema";
+import { enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
 
 interface LeaseRow {
@@ -22,12 +23,11 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
 
   return {
     async enqueue(runId, opts) {
-      await sql.query(
-        `INSERT INTO ${t.job} (run_id, run_at, priority, version) VALUES (?, ?, ?, 1)
-         ON CONFLICT(run_id) DO UPDATE
-           SET run_at = excluded.run_at, priority = excluded.priority, version = ${t.job}.version + 1`,
-        [runId, opts?.runAt ? opts.runAt.getTime() : 0, opts?.priority ?? 0],
-      );
+      await enqueueStmt(sql, t, runId, opts);
+    },
+
+    async enqueueMany(requests) {
+      await enqueueManyStmt(sql, t, requests);
     },
 
     async claim({ limit, leaseMs, names, now }: ClaimOpts) {
