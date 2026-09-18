@@ -1,5 +1,123 @@
 # @iterativeflow/core
 
+## 3.0.0
+
+### Major Changes
+
+- 8a9d860: Typed values are now checked values, and a step is a leaf. Breaking changes, with what to do:
+
+  - **A step body must not call `ctx`.** Nested calls were keyed under whichever step had started most
+    recently, so steps run in `Promise.all` could replay against the wrong memo. Move durable waits
+    into the flow body, and nested durable work into a child flow with `ctx.invoke`. A body that still
+    calls `ctx` parks the run as drifted on replay. Runs in flight that already made nested calls will
+    park the same way; let them finish before upgrading.
+  - **`signalType<T>()` is removed.** Declare each signal with a Standard Schema (zod, valibot, arktype…):
+    `signals: { approve: z.object({ by: z.string() }) }`. The payload is validated when the flow consumes it.
+  - **`result`, `engine.result` and `settle` return `output: unknown`** unless you pass the flow's output
+    schema: `engine.result(handle, { output: OrderSchema })`. With a schema, the output is validated
+    and typed.
+  - **`builder()` and `FlowBuilder` are removed.** Write the same steps as a `defineFlow` body.
+  - **Dashboard:** signals are delivered with `POST /api/runs/:id/signals/:name`. The request body is the
+    payload, and an optional `Idempotency-Key` header dedupes. `POST /api/runs/:id/signal` is gone.
+  - **Custom SQL drivers:** `Sql.query` on Postgres, MySQL and SQLite is no longer generic and returns
+    `SqlRow[]`, which the backend decodes and checks column by column. MySQL and Postgres export
+    `SqlParam`.
+  - **DynamoDB:** the client you pass must be a `DynamoDBDocumentClient` (its typed `send`), not any
+    object with a `send` method.
+  - **Backend authors:** `StepOutcome.shape` is renamed `call`. `run.failed` events always carry
+    `{ error }`, and `EventData` maps each event type to its data. `@iterativeflow/core/backend` adds
+    `Json`, `durable`, and shared decoders for stored values (`decodeFlowError`, `decodeTags`,
+    `decodeOneOf` with `CRON_OVERLAPS` / `STEP_STATUSES`).
+
+  Fixes:
+
+  - **Parallel branches no longer lose work.** In `Promise.all`, a branch still starts when a sibling
+    suspends first, and the run wakes at the earliest sleep or deadline of any branch, not only the
+    first to suspend.
+  - **In-memory backend:** a run's output now round-trips through JSON like on every other backend, so
+    a `Date` comes back as a string in tests too.
+
+  On MongoDB, Redis and DynamoDB, steps saved before the upgrade have no `call` field, so the drift
+  check skips them. Steps saved after the upgrade are checked as before.
+
+### Minor Changes
+
+- b4707aa: Fixes for defaults that failed silently. Most are behaviour changes, listed with what to check.
+
+  - **A drift-parked run no longer dead-letters.** The default `driftPolicy: "park"` spent one retry
+    attempt per re-check, so a drifted run failed with `RUN_ATTEMPTS_EXHAUSTED` about 10 seconds later —
+    well before any redeploy could land. Parked runs now use a new `parked` status, keep their attempts,
+    and re-check every 30 seconds until a fix deploys. `listRuns({ status: "parked" })` finds them. If you
+    count or filter runs by status, add `parked`.
+  - **A run late in a claimed batch no longer runs twice.** A worker claims its batch at once and runs it
+    one run at a time, so a run near the end could outlive its lease while waiting, then execute
+    alongside the peer that re-claimed it. Each run now renews its lease before it starts, and skips
+    itself (tick status `lease_lost`) if a peer already holds it.
+  - **Cancelling a finished run no longer erases it.** It overwrote a `done` run's output or a `failed`
+    run's error. A run that is already terminal is now left as it is.
+  - **An event sink without a `level` now records events.** `level` defaulted to `"off"`, so wiring only
+    `observe.sink` — as the Postgres guide shows — recorded nothing. It now defaults to `"all"`.
+  - **Worker-loop and sink errors go to `console.error`** when no `metrics.tickError` hook is set.
+    Previously they vanished, so a broken database connection produced no output at all.
+  - **DynamoDB orders negative priorities correctly.** `-3` was claimed before `-5`.
+  - `RunLoopOpts.waitForWork` now receives the loop's `AbortSignal`, so a custom waiter can be
+    interrupted by `pause()` and `stop()`.
+
+- aed7cc2: New `Queue.enqueueMany(requests)` on the backend port, used everywhere the engine re-drives a batch:
+  `drainTimers`, `reconcile`, `submitMany`, each backend's outbox commit, and `retryRuns`.
+
+  Those paths issued one round trip per run. `retryRuns` was the worst — N sequential inserts inside an
+  open transaction, so lock hold time scaled with the batch times the network round trip. Measured on
+  Postgres: 500 runs took 102ms sequentially in a transaction, 6ms as one statement, and a 500-run
+  concurrent fan-out took 49ms while opening 500 pool connections the worker also needs for its steps.
+
+  Duplicate `runId`s in one call collapse to a single upsert, last wins. `distinctEnqueues` is exported
+  for backend authors.
+
+  **Breaking, for backend authors only.** `Queue` implementations must add `enqueueMany`, and
+  `EnqueueRequest` now comes from the queue port rather than the outbox port — it is the unit of both.
+  Applications calling `engine.*` are unaffected.
+
+- 2d86163: Child flows:
+
+  - **`ctx.invoke(…, { onChildFailure: "settle" })`** waits for every child and returns each one's
+    result (`{ status: "done", output }`, `{ status: "failed", error }` or `{ status: "canceled" }`)
+    instead of failing the parent on the first failure. Works for one child and for a fan-out.
+  - **Canceling a child now wakes its parent.** A parent waiting on a child that was canceled directly
+    used to stay parked until the next reconcile sweep.
+  - **The dashboard run view lists a run's children and links a child to its parent.**
+  - **`settle` in the test harness names the child a stuck parent is waiting on**, with its status.
+
+- 57a5c90: A run now keeps its priority for its whole life. Priority was stored only on the queue job, which is
+  deleted each time a run parks, so a run submitted with `priority: -10` became ordinary priority after
+  its first `ctx.sleep`, signal, retry or manual retry.
+
+  Priority is now stored on the run. Any enqueue that doesn't pass a `priority` uses the run's own.
+
+  **Schema:** adds a `priority` column to the `run` table. `applySchema` adds it in place on Postgres,
+  MySQL and SQLite; existing runs read as priority 0, which is how they already behaved. MongoDB, Redis
+  and DynamoDB need no migration.
+
+  **If you run your own migrations instead of `applySchema`, add the column before upgrading** — without
+  it every run start and enqueue fails with an unknown-column error:
+
+  - MySQL: `ALTER TABLE run ADD COLUMN priority INT NOT NULL DEFAULT 0;`
+  - SQLite and Durable Objects: `ALTER TABLE run ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;`
+  - Postgres via `ddl()`: re-run it; it adds the column itself. Via the generated drizzle schema:
+    regenerate it with `iterativeflow-pg-drizzle` and generate a migration.
+
+  Prefix the table name if you configured one.
+
+### Patch Changes
+
+- a905beb: Fix: `cancelMany({ tag })` and `retryMany({ tag })` ignored the tag on Postgres, MySQL, SQLite and
+  Durable Objects, and acted on **every** matching run instead. `engine.cancelMany({ tag: "tenant:42" })`
+  cancelled all live runs for all tenants, up to the limit.
+
+  The tag is now part of the query on every backend. Memory, Redis, DynamoDB and MongoDB were already
+  correct. If you called either method with a `tag` filter on an affected backend since 2.4.0, check for
+  runs that were cancelled or retried unintentionally.
+
 ## 2.7.0
 
 ## 2.6.0
