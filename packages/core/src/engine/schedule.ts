@@ -72,7 +72,7 @@ export const runDueCrons = async (
       idempotencyKey: `cron:${c.name}:${c.nextRunAt.getTime()}`,
       tags: [cronTag(c.name)],
     });
-    if (created) await backend.queue.enqueue(runId);
+    if (created) await backend.queue.enqueue(runId, { priority: 0 });
     if (await advance()) fired += 1;
   }
   return fired;

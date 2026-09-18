@@ -34,6 +34,7 @@ export interface RunItem {
   parentCursorKey?: string;
   depth?: number;
   createdAt?: string;
+  priority?: number;
   seq: number;
 }
 

@@ -531,8 +531,7 @@ describe("engine — end to end on the memory backend", () => {
   });
 
   describe("a batch run late in the batch", () => {
-    // A batch is claimed at once and run one by one, so each step's time is spent from the leases of
-    // the runs still waiting. A step advances the virtual clock, then lets a peer try to claim.
+    // Each step advances the virtual clock, then a peer tries to claim.
     const t0 = new Date("2030-01-01T00:00:00Z").getTime();
     const setup = (stepMs: Record<string, number>) => {
       const backend = createMemoryBackend();
@@ -563,14 +562,13 @@ describe("engine — end to end on the memory backend", () => {
       const second = await submit(s.backend, s.flow, { id: "second" });
 
       const results = await s.tick();
-      expect(s.peerClaimed).toContain(second); // the peer owns it now
-      expect(s.executed).toEqual(["first"]); // so this worker must not run it too
+      expect(s.peerClaimed).toContain(second);
+      expect(s.executed).toEqual(["first"]);
       expect(results.find((r) => r.runId === second)?.status).toBe("lease_lost");
     });
 
     it("gets a fresh lease when it starts, so a peer cannot take it mid-step", async () => {
-      // The second run starts at +20s with 10s left, then its own step reaches +35s — past the
-      // lease it was claimed with, but inside the one it renewed at start.
+      // Starts at +20s with 10s left; its step reaches +35s, inside the lease renewed at start.
       const s = setup({ first: 20_000, second: 15_000 });
       await submit(s.backend, s.flow, { id: "first" });
       const second = await submit(s.backend, s.flow, { id: "second" });

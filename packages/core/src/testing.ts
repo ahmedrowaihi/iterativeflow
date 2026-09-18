@@ -100,6 +100,8 @@ export const createTestHarness = (
     if (status === "awaiting_signal")
       return `run ${runId} is awaiting a signal with no pending timer — deliver it with engine.signal(handle, name, payload)`;
     if (status === "awaiting_child") return `run ${runId} is awaiting a child that never settled`;
+    if (status === "parked")
+      return `run ${runId} is parked: no registered flow matches its name and version, or its body drifted — register the flow the run was started with`;
     return `run ${runId} is ${status} with nothing scheduled to wake it`;
   };
 
@@ -129,6 +131,7 @@ export const createTestHarness = (
         if (isTerminal(run.status)) {
           return { status: run.status, output: run.output as O, error: run.error };
         }
+        if (run.status === "parked") throw new Error(`settle: ${await stallReason(runId)}`);
         const next = await engine.nextWakeAt();
         if (!next) throw new Error(`settle: ${await stallReason(runId)}`);
         await advanceTo(next);

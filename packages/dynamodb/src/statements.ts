@@ -53,8 +53,8 @@ const runAtMs = (opts?: EnqueueOpts): number => (opts?.runAt ? opts.runAt.getTim
 export const enqueueParams = (
   table: string,
   runId: string,
-  opts?: EnqueueOpts,
-  runPriority?: number,
+  opts: EnqueueOpts | undefined,
+  runPriority: number | undefined,
 ) => {
   const priority = opts?.priority ?? runPriority ?? 0;
   return {

@@ -38,6 +38,9 @@ export const defaultRetry: RetryPolicy = {
  *  multi-step run never loses the lease, rare enough that quick steps don't each cost a heartbeat. */
 const LEASE_RENEW_BELOW = 0.5;
 
+const needsRenewal = (lease: Lease, leaseMs: number, at: number): boolean =>
+  lease.expiresAt.getTime() - at <= leaseMs * LEASE_RENEW_BELOW;
+
 // A deploy takes minutes, so a parked run needn't be re-claimed every second.
 const REDEPLOY_RECHECK_MS = 30_000;
 
@@ -124,7 +127,7 @@ const leaseForStart = async (
 ): Promise<Lease | undefined> => {
   const remaining = lease.expiresAt.getTime() - at.getTime();
   if (remaining <= 0) return undefined;
-  if (leaseMs === undefined || remaining > leaseMs * LEASE_RENEW_BELOW) return lease;
+  if (leaseMs === undefined || !needsRenewal(lease, leaseMs, at.getTime())) return lease;
   return queue.heartbeat(lease, { leaseMs, now: at }).catch(() => undefined);
 };
 
@@ -180,7 +183,7 @@ export const runTick = async (
             Math.floor(leaseMs * LEASE_RENEW_BELOW),
           ),
           renew: async (): Promise<void> => {
-            if (now().getTime() < held.expiresAt.getTime() - leaseMs * LEASE_RENEW_BELOW) return;
+            if (!needsRenewal(held, leaseMs, now().getTime())) return;
             held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
           },
         };

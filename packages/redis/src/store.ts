@@ -154,10 +154,10 @@ if ARGV[3] ~= '' then
 end
 return 'ok'`;
 
-const MARK_TERMINAL_LUA = `${OUTBOX_LIB}
+const MARK_TERMINAL_LUA = `${TERMINAL_FN}${OUTBOX_LIB}
 local s = redis.call('HGET', KEYS[1], '${RUN.status}')
 if s == false then return 'noRun' end
-if s == 'done' or s == 'failed' or s == 'canceled' then return 'ok' end
+if iflow_terminal(s) then return 'ok' end
 redis.call('HSET', KEYS[1], '${RUN.status}', ARGV[1])
 if ARGV[2] == '1' then redis.call('HSET', KEYS[1], '${RUN.output}', ARGV[3])
 else redis.call('HDEL', KEYS[1], '${RUN.output}') end

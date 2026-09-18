@@ -39,7 +39,8 @@ await applySchema(sql);
 
 To run several engines in one database, pass a table prefix: `applySchema(sql, "flows_")` and
 `createMysqlBackend(sql, { prefix: "flows_" })`. `ddl(prefix)` returns the raw SQL for your own
-migration tool.
+migration tool. It creates the tables from scratch, so it can't upgrade an existing database: when a
+release adds a column, its release notes give the `ALTER TABLE` to add as a migration.
 
 ## Run a worker
 

@@ -2,11 +2,7 @@ import { createHash } from "node:crypto";
 import type { RedisClient } from "#client";
 import { JOB, RUN } from "#keys";
 
-/**
- * The enqueue contract shared by the Queue and the Store's outbox: ZADD the queue by runAt (ms), then
- * stamp the job hash and bump its version. A nil/'' priority takes the run's stored one, else 0.
- * @internal
- */
+/** @internal */
 export const ENQUEUE_FN = `
 local function iflow_enqueue(qKey, runId, jobKey, runKey, runAtMs, priority)
   if priority == nil or priority == '' then

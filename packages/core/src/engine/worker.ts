@@ -61,7 +61,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
     priority: opts?.priority,
   });
   if (created) {
-    await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority });
+    await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority ?? 0 });
   } else if (opts?.onDuplicate === "error") {
     throw new DuplicateRunError(runId, opts.idempotencyKey ?? "");
   }
@@ -104,7 +104,7 @@ export const submitMany = async <I>(
   await backend.queue.enqueueMany(
     results.flatMap((r, i) =>
       r.created
-        ? [{ runId: r.runId, opts: { runAt: items[i].runAt, priority: items[i].priority } }]
+        ? [{ runId: r.runId, opts: { runAt: items[i].runAt, priority: items[i].priority ?? 0 } }]
         : [],
     ),
   );

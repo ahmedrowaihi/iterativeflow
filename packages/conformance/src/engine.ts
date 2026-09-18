@@ -388,6 +388,30 @@ export const engineConformance = (
       expect(first.runId).toBe(urgent);
     });
 
+    it("a signal delivery and a retry keep the run's own priority", async () => {
+      const backend = await makeBackend();
+      const start = async (priority?: number) =>
+        (await backend.store.startRun({ name: "p", version: 1, input: {}, priority })).runId;
+      const claimFirst = async () =>
+        (await backend.queue.claim({ limit: 1, leaseMs: 60_000 }))[0]?.runId;
+      // `rival` is enqueued at -5, so a woken run that lost its -10 (falling back to 0) loses to it.
+      const rival = async () => backend.queue.enqueue(await start(), { priority: -5 });
+
+      const signalled = await start(-10);
+      await rival();
+      await backend.store.postSignal(signalled, "go", {});
+      expect(await claimFirst()).toBe(signalled);
+
+      const retried = await start(-10);
+      await backend.store.markTerminal(retried, {
+        status: "failed",
+        error: { code: "X", message: "x" },
+      });
+      await rival();
+      await backend.store.retryRun(retried);
+      expect(await claimFirst()).toBe(retried);
+    });
+
     it("a claimed run for an unregistered flow version parks and resumes once that version deploys", async () => {
       const backend = await makeBackend();
       const v1 = defineFlow({ name: "wf", version: 1, run: async (): Promise<string> => "v1" });

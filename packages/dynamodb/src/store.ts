@@ -253,6 +253,39 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   const outbox = async (fx?: Outbox) =>
     outboxParts(table, fx, await storedPriorities(doc, table, fx?.enqueue ?? []));
 
+  const retryOne = async (
+    runId: string,
+    priority: number | undefined,
+  ): Promise<{ retried: boolean }> => {
+    try {
+      await send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: table,
+                Key: key.run(runId),
+                UpdateExpression: "SET #status = :pending, attempts = :zero REMOVE #error",
+                ConditionExpression: "attribute_exists(pk) AND #status = :failed",
+                ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+                ExpressionAttributeValues: {
+                  ":pending": "pending",
+                  ":failed": "failed",
+                  ":zero": 0,
+                },
+              },
+            },
+            { Update: enqueueParams(table, runId, undefined, priority) },
+          ],
+        }),
+      );
+      return { retried: true };
+    } catch (e) {
+      if (conditionFailedAt(cancellationReasons(e), 0)) return { retried: false };
+      throw e;
+    }
+  };
+
   const runPriority = async (runId: string): Promise<number | undefined> =>
     (await storedPriorities(doc, table, [{ runId }])).get(runId);
 
@@ -565,9 +598,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const remove: string[] = [];
       const values: Record<string, unknown> = {
         ":status": outcome.status,
-        ":done": "done",
-        ":failed": "failed",
-        ":canceled": "canceled",
+        ...TERMINAL_VALUES,
       };
       const output = outcome.status === "done" ? enc(outcome.output) : undefined;
       const error = outcome.status === "done" ? undefined : enc(outcome.error);
@@ -586,8 +617,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           TableName: table,
           Key: key.run(runId),
           UpdateExpression: `SET ${set.join(", ")}${remove.length ? ` REMOVE ${remove.join(", ")}` : ""}`,
-          ConditionExpression:
-            "attribute_exists(pk) AND NOT (#status IN (:done, :failed, :canceled))",
+          ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
           ExpressionAttributeNames: { "#status": "status", "#output": "output", "#error": "error" },
           ExpressionAttributeValues: values,
         },
@@ -675,7 +705,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async retryRuns(filter, limit) {
       const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
       let n = 0;
-      for (const r of victims) if ((await store.retryRun(r.id)).retried) n += 1;
+      for (const r of victims) if ((await retryOne(r.id, r.priority)).retried) n += 1;
       return n;
     },
 
@@ -734,33 +764,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async retryRun(runId) {
-      try {
-        await send(
-          new TransactWriteCommand({
-            TransactItems: [
-              {
-                Update: {
-                  TableName: table,
-                  Key: key.run(runId),
-                  UpdateExpression: "SET #status = :pending, attempts = :zero REMOVE #error",
-                  ConditionExpression: "attribute_exists(pk) AND #status = :failed",
-                  ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-                  ExpressionAttributeValues: {
-                    ":pending": "pending",
-                    ":failed": "failed",
-                    ":zero": 0,
-                  },
-                },
-              },
-              { Update: enqueueParams(table, runId, undefined, await runPriority(runId)) },
-            ],
-          }),
-        );
-        return { retried: true };
-      } catch (e) {
-        if (conditionFailedAt(cancellationReasons(e), 0)) return { retried: false };
-        throw e;
-      }
+      return retryOne(runId, await runPriority(runId));
     },
 
     async upsertCron(spec) {

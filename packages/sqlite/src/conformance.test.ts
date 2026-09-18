@@ -148,15 +148,14 @@ describe("sqlite backend", () => {
       version: 1,
       input: {},
     });
-    // An older release's tables: the columns added since were not there yet.
     await sql.query("ALTER TABLE run DROP COLUMN priority");
 
-    await applySchema(sql); // what a boot on the new release does
-    await applySchema(sql); // and it must be idempotent on every boot after
+    await applySchema(sql);
+    await applySchema(sql);
 
     const backend = createSqliteBackend(sql);
     await backend.queue.enqueue(runId);
     const [lease] = await backend.queue.claim({ limit: 1, leaseMs: 60_000 });
-    expect(lease.runId).toBe(runId); // the pre-upgrade run is still dispatchable
+    expect(lease.runId).toBe(runId);
   });
 });

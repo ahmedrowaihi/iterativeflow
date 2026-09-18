@@ -48,14 +48,13 @@ describe("flow drift", () => {
   });
 
   it("stays parked through a redeploy window instead of dead-lettering", async () => {
-    // Parking is not a failure: re-claiming a parked run must not spend the attempt budget.
     const backend = createMemoryBackend();
     let clock = new Date("2030-01-01T00:00:00Z");
     const now = (): Date => clock;
     const runId = await submit(backend, parked, {});
     await tickOnce(backend, registry([parked]), { ...opts, now });
     for (let i = 0; i < 20; i++) {
-      clock = new Date(clock.getTime() + 60_000); // twenty minutes of re-checks
+      clock = new Date(clock.getTime() + 60_000);
       await tickOnce(backend, registry([refactored]), { ...opts, now });
     }
     const run = (await backend.store.loadRun(runId))?.run;

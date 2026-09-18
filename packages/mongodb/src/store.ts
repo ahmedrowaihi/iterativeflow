@@ -351,7 +351,11 @@ export const createMongoStore = (
         ...(filter.version !== undefined && { version: filter.version }),
         ...(filter.tag !== undefined && { tags: filter.tag }),
       };
-      const victims = await runs.find(q).limit(limit).project({ _id: 1 }).toArray();
+      const victims = await runs
+        .find(q)
+        .limit(limit)
+        .project<{ _id: string; priority?: number }>({ _id: 1, priority: 1 })
+        .toArray();
       if (victims.length === 0) return 0;
       const ids = victims.map((r) => r._id);
       await timers.deleteMany({ _id: { $in: ids } });
@@ -380,7 +384,7 @@ export const createMongoStore = (
         await enqueueJobs(
           jobs,
           runs,
-          ids.map((runId) => ({ runId })),
+          victims.map((r) => ({ runId: r._id, opts: { priority: r.priority ?? 0 } })),
           session,
         );
         return ids.length;

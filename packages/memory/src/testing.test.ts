@@ -66,6 +66,15 @@ describe("test harness — virtual time over a real engine", () => {
     await expect(t.settle(handle)).rejects.toThrow(/awaiting a signal.*engine\.signal/s);
   });
 
+  it("settle reports a parked run straight away, naming the flow mismatch", async () => {
+    const v1 = defineFlow({ name: "wf", version: 1, run: async () => "v1" });
+    const v2 = defineFlow({ name: "wf", version: 2, run: async () => "v2" });
+    const t = createTestHarness(createMemoryBackend(), [v1]);
+    const handle = await t.engine.submit(v2, {});
+
+    await expect(t.settle(handle)).rejects.toThrow(/parked.*register the flow/s);
+  });
+
   it("the clock only moves when asked, and never backwards", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "sleeper",

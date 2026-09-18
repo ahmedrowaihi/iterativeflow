@@ -1,6 +1,6 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
+import type { ClaimOpts, EnqueueRequest, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { runNames, storedPriorities } from "#run-names";
@@ -23,29 +23,26 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
   const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
   const at = (d?: Date): number => (d ?? new Date()).getTime();
 
+  const enqueueMany = async (requests: readonly EnqueueRequest[]): Promise<void> => {
+    const rows = distinctEnqueues(requests);
+    const priorities = await storedPriorities(doc, table, requests);
+    for (let i = 0; i < rows.length; i += ENQUEUE_CONCURRENCY) {
+      await Promise.all(
+        rows
+          .slice(i, i + ENQUEUE_CONCURRENCY)
+          .map(([runId, opts]) =>
+            send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId)))),
+          ),
+      );
+    }
+  };
+
   return {
     async enqueue(runId, opts) {
-      const priorities = await storedPriorities(doc, table, [{ runId, opts }]);
-      await send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId))));
+      await enqueueMany([{ runId, opts }]);
     },
 
-    async enqueueMany(requests) {
-      const rows = distinctEnqueues(requests);
-      const priorities = await storedPriorities(
-        doc,
-        table,
-        rows.map(([runId, opts]) => ({ runId, opts })),
-      );
-      for (let i = 0; i < rows.length; i += ENQUEUE_CONCURRENCY) {
-        await Promise.all(
-          rows
-            .slice(i, i + ENQUEUE_CONCURRENCY)
-            .map(([runId, opts]) =>
-              send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId)))),
-            ),
-        );
-      }
-    },
+    enqueueMany,
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const t = at(now);

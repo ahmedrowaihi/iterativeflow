@@ -73,14 +73,13 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
   it("upgrades a database from an older release in place, keeping its runs", async () => {
     const be = createMysqlBackend(mysqlPool(pool));
     const { runId } = await be.store.startRun({ name: "old", version: 1, input: {} });
-    // An older release's tables: the columns added since were not there yet.
     await pool.query("ALTER TABLE `run` DROP COLUMN priority");
 
-    await applySchema(mysqlPool(pool)); // what a boot on the new release does
-    await applySchema(mysqlPool(pool)); // and it must be idempotent on every boot after
+    await applySchema(mysqlPool(pool));
+    await applySchema(mysqlPool(pool));
 
     await be.queue.enqueue(runId);
     const [lease] = await be.queue.claim({ limit: 1, leaseMs: 60_000 });
-    expect(lease.runId).toBe(runId); // the pre-upgrade run is still dispatchable
+    expect(lease.runId).toBe(runId);
   });
 });
