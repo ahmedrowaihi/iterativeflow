@@ -24,7 +24,7 @@ import { type SqlStorage, applySchema, createDurableObjectBackend } from "#index
  */
 const nodeSqliteStorage = (db: DatabaseSync): SqlStorage => ({
   exec: (query, ...bindings) => ({
-    toArray: () => db.prepare(query).all(...(bindings as never[])) as Record<string, unknown>[],
+    toArray: () => db.prepare(query).all(...bindings),
   }),
 });
 

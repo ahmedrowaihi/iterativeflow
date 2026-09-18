@@ -6,7 +6,7 @@ import {
 } from "@iterativeflow/core/backend";
 import { j } from "#codec";
 import type { Tables } from "#schema";
-import type { Sql } from "#sql";
+import type { Sql, WriteResult } from "#sql";
 
 // 4 binds per row, under MySQL's 65535 placeholder ceiling.
 const ENQUEUE_ROWS_PER_STATEMENT = 1000;
@@ -46,7 +46,12 @@ export const enqueueStmt = (
 ): Promise<void> => enqueueManyStmt(sql, t, [{ runId, opts }]);
 
 /** @internal */
-export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): Promise<unknown> =>
+export const scheduleStmt = (
+  sql: Sql,
+  t: Tables,
+  runId: string,
+  fireAt: Date,
+): Promise<WriteResult> =>
   sql.exec(
     `INSERT INTO ${t.timer} (run_id, fire_at) VALUES (?, ?)
      ON DUPLICATE KEY UPDATE fire_at = VALUES(fire_at)`,

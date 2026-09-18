@@ -18,6 +18,7 @@ import {
   TERMINAL_STATUSES,
   ACTIVE_STATUSES,
   isOrphaned,
+  isRunStatus,
   purgeMatcher,
   runSetStatuses,
   statusList,
@@ -25,7 +26,7 @@ import {
 } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
-import { ENQUEUE_FN, luaRunner } from "#scripts";
+import { ENQUEUE_FN, luaRunner, replyList, replyNumber, replyText } from "#scripts";
 import {
   cronRowFromSpec,
   decodeCron,
@@ -37,8 +38,6 @@ import {
   runFields,
   toRunRow,
 } from "#codec";
-
-type Hash = Record<string, string>;
 
 // Field names come from the pinned RUN/JOB maps; only status VALUES (`running`, `pending`, …) are
 // literals here, exactly as in the memory oracle.
@@ -220,14 +219,10 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
   ): Promise<RunRow[]> => {
     const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
     if (statuses.size === 0) return [];
-    const ids = await client.zrange(keys.runIndex, 0, -1);
-    if (ids.length === 0) return [];
-    const pipe = client.pipeline();
-    for (const runId of ids) pipe.hgetall(keys.run(runId));
-    const res = await pipe.exec();
     const out: RunRow[] = [];
-    for (let i = 0; i < ids.length && out.length < limit; i++) {
-      const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+    for (const hash of await allRunHashes()) {
+      if (out.length >= limit) break;
+      const row = toRunRow(hash);
       if (
         row &&
         statuses.has(row.status) &&
@@ -238,13 +233,6 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         out.push(row);
       }
     }
-    return out;
-  };
-
-  const flatFields = (spec: RunSpec, runId: string): string[] => {
-    const f = runFields(spec, runId);
-    const out: string[] = [];
-    for (const [k, v] of Object.entries(f)) out.push(k, v);
     return out;
   };
 
@@ -260,14 +248,13 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       runAtMs: opts?.runAt ? opts.runAt.getTime() : 0,
       priority: opts?.priority,
     });
-    const blob: Record<string, unknown> = {};
-    if (fx.spawn?.length) {
-      blob.spawn = fx.spawn.map((s) => {
+    return JSON.stringify({
+      spawn: fx.spawn?.map((s) => {
         const e = enq(s.runId, s.enqueue);
         return {
           runKey: keys.run(s.runId),
           childId: s.runId,
-          fields: flatFields(s.spec, s.runId),
+          fields: runFields(s.spec, s.runId),
           childrenKey:
             s.spec.parentRunId !== undefined ? keys.children(s.spec.parentRunId) : undefined,
           idemField:
@@ -278,30 +265,29 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           runAtMs: e.runAtMs,
           priority: e.priority,
         };
-      });
-    }
-    if (fx.joinTarget) {
-      blob.joinTarget = { runKey: keys.run(fx.joinTarget.runId), count: fx.joinTarget.count };
-    }
-    if (fx.enqueue?.length) blob.enqueue = fx.enqueue.map((x) => enq(x.runId, x.opts));
-    if (fx.timers?.length) {
-      blob.timers = fx.timers.map((t) => ({ runId: t.runId, fireAtMs: t.fireAt.getTime() }));
-    }
-    if (fx.cancelTimers?.length) blob.cancelTimers = [...fx.cancelTimers];
-    if (fx.consumeSignals?.length) blob.consumeSignals = [...fx.consumeSignals];
-    return JSON.stringify(blob);
+      }),
+      joinTarget: fx.joinTarget && {
+        runKey: keys.run(fx.joinTarget.runId),
+        count: fx.joinTarget.count,
+      },
+      enqueue: fx.enqueue?.map((x) => enq(x.runId, x.opts)),
+      timers: fx.timers?.map((t) => ({ runId: t.runId, fireAtMs: t.fireAt.getTime() })),
+      cancelTimers: fx.cancelTimers,
+      consumeSignals: fx.consumeSignals,
+    });
   };
 
   const loadRunRow = async (runId: string): Promise<RunRow | undefined> =>
-    toRunRow((await client.hgetall(keys.run(runId))) as Hash);
+    toRunRow(await client.hgetall(keys.run(runId)));
 
-  const loadRunRows = async (runIds: readonly string[]): Promise<(RunRow | undefined)[]> => {
-    if (runIds.length === 0) return [];
-    const pipe = client.pipeline();
-    for (const runId of runIds) pipe.hgetall(keys.run(runId));
-    const res = await pipe.exec();
-    return runIds.map((_, i) => toRunRow((res?.[i]?.[1] ?? {}) as Hash));
-  };
+  // Fetched raw, so a scan that stops at its limit decodes only the runs it keeps.
+  const allRunHashes = async (): Promise<Record<string, string>[]> =>
+    Promise.all(
+      (await client.zrange(keys.runIndex, 0, -1)).map((runId) => client.hgetall(keys.run(runId))),
+    );
+
+  const loadRunRows = async (runIds: readonly string[]): Promise<(RunRow | undefined)[]> =>
+    Promise.all(runIds.map(loadRunRow));
 
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
@@ -310,13 +296,17 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         ? idemIdentity(spec.name, spec.version, spec.idempotencyKey)
         : "";
     const childrenKey = spec.parentRunId !== undefined ? keys.children(spec.parentRunId) : "";
-    const res = await evalLua<[string, string?]>(
-      START_LUA,
-      [keys.run(runId), keys.runIndex, keys.seq, keys.idem],
-      [idemField, JSON.stringify(flatFields(spec, runId)), runId, childrenKey],
+    const [verdict, existingId] = replyList(
+      await evalLua(
+        START_LUA,
+        [keys.run(runId), keys.runIndex, keys.seq, keys.idem],
+        [idemField, JSON.stringify(runFields(spec, runId)), runId, childrenKey],
+      ),
     );
-    if (res[0] === "new") return { runId, created: true, status: "pending" };
-    const existingId = res[1] as string;
+    if (verdict === "new") return { runId, created: true, status: "pending" };
+    if (verdict !== "hit" || existingId === undefined) {
+      throw new Error(`startRun: unexpected script verdict ${verdict}`);
+    }
     const row = await loadRunRow(existingId);
     if (!row) throw new Error("startRun: idempotency index points at a missing run");
     return { runId: existingId, created: false, status: row.status };
@@ -324,14 +314,10 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
 
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const matches = purgeMatcher(filter);
-    const ids = await client.zrange(keys.runIndex, 0, -1);
-    if (ids.length === 0) return 0;
-    const pipe = client.pipeline();
-    for (const runId of ids) pipe.hgetall(keys.run(runId));
-    const res = await pipe.exec();
     const victims: RunRow[] = [];
-    for (let i = 0; i < ids.length && victims.length < limit; i++) {
-      const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+    for (const hash of await allRunHashes()) {
+      if (victims.length >= limit) break;
+      const row = toRunRow(hash);
       if (row && matches(row)) victims.push(row);
     }
     if (victims.length === 0) return 0;
@@ -363,13 +349,11 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     },
 
     async loadRun(runId) {
-      const [[, rawRun], [, rawSteps], [, rawSignals]] = (await client
-        .pipeline()
-        .hgetall(keys.run(runId))
-        .hgetall(keys.steps(runId))
-        .lrange(keys.inbox(runId), 0, -1)
-        .exec()) as [[Error | null, Hash], [Error | null, Hash], [Error | null, string[]]];
-      const run = toRunRow(rawRun);
+      const [run, rawSteps, rawSignals] = await Promise.all([
+        loadRunRow(runId),
+        client.hgetall(keys.steps(runId)),
+        client.lrange(keys.inbox(runId), 0, -1),
+      ]);
       if (!run) return undefined;
       const steps = new Map<string, StepOutcome>();
       for (const [cursor, v] of Object.entries(rawSteps)) steps.set(cursor, decodeStep(v));
@@ -381,22 +365,23 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     loadRunRows,
 
     async arriveAtJoin(parentRunId) {
-      const res = await evalLua<number | null>(ARRIVE_LUA, [keys.run(parentRunId)], []);
-      return res === null ? undefined : res;
+      return replyNumber(await evalLua(ARRIVE_LUA, [keys.run(parentRunId)], []));
     },
 
     async postSignal(runId, name, payload, opts) {
-      const delivered = await evalLua<number>(
-        POST_SIGNAL_LUA,
-        [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue, keys.run(runId)],
-        [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, ""],
+      const delivered = replyNumber(
+        await evalLua(
+          POST_SIGNAL_LUA,
+          [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue, keys.run(runId)],
+          [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, ""],
+        ),
       );
       return { delivered: delivered === 1 };
     },
 
     async markRunning(runId) {
-      const res = await evalLua<number | null>(MARK_RUNNING_LUA, [keys.run(runId)], []);
-      if (res === null) throw new Error(`markRunning: run ${runId} not found`);
+      const res = replyNumber(await evalLua(MARK_RUNNING_LUA, [keys.run(runId)], []));
+      if (res === undefined) throw new Error(`markRunning: run ${runId} not found`);
       return res;
     },
 
@@ -406,10 +391,10 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         result: c.result,
         error: c.error,
         attempts: c.attempts,
-        shape: c.shape,
+        call: c.call,
       };
       const encoded = encodeStep(outcome);
-      const res = await evalLua<[string, string?]>(
+      const res = await evalLua(
         CHECKPOINT_LUA,
         [
           keys.run(c.runId),
@@ -429,14 +414,16 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           fx?.requireVersion !== undefined ? String(fx.requireVersion) : "",
         ],
       );
-      if (res[0] === "noRun") throw new Error(`checkpointStep: run ${c.runId} not found`);
-      if (res[0] === "hit") return decodeStep(res[1] as string);
-      if (res[0] === "skip") return { status: c.status, attempts: c.attempts, committed: false };
-      return decodeStep(encoded);
+      const [verdict, stored] = replyList(res);
+      if (verdict === "noRun") throw new Error(`checkpointStep: run ${c.runId} not found`);
+      if (verdict === "hit" && stored !== undefined) return decodeStep(stored);
+      if (verdict === "skip") return { status: c.status, attempts: c.attempts, committed: false };
+      if (verdict === "ok") return decodeStep(encoded);
+      throw new Error(`checkpointStep: unexpected script verdict ${verdict}`);
     },
 
     async suspendRun(runId, status: SuspendStatus, fx?: Outbox) {
-      const res = await evalLua<string>(
+      const res = await evalLua(
         SUSPEND_LUA,
         [
           keys.run(runId),
@@ -449,13 +436,13 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         ],
         [status, status !== "retrying" ? "1" : "0", serializeOutbox(fx)],
       );
-      if (res === "noRun") throw new Error(`suspendRun: run ${runId} not found`);
+      if (replyText(res) === "noRun") throw new Error(`suspendRun: run ${runId} not found`);
     },
 
     async markTerminal(runId, outcome: TerminalOutcome, fx?: Outbox) {
-      const hasOutput = outcome.status === "done" && outcome.output !== undefined;
-      const hasError = outcome.status !== "done" && outcome.error !== undefined;
-      const res = await evalLua<string>(
+      const output = outcome.status === "done" ? outcome.output : undefined;
+      const error = outcome.status === "done" ? undefined : outcome.error;
+      const res = await evalLua(
         MARK_TERMINAL_LUA,
         [
           keys.run(runId),
@@ -468,14 +455,14 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         ],
         [
           outcome.status,
-          hasOutput ? "1" : "0",
-          hasOutput ? JSON.stringify((outcome as { output: unknown }).output) : "",
-          hasError ? "1" : "0",
-          hasError ? JSON.stringify((outcome as { error: unknown }).error) : "",
+          output !== undefined ? "1" : "0",
+          output !== undefined ? JSON.stringify(output) : "",
+          error !== undefined ? "1" : "0",
+          error !== undefined ? JSON.stringify(error) : "",
           serializeOutbox(fx),
         ],
       );
-      if (res === "noRun") throw new Error(`markTerminal: run ${runId} not found`);
+      if (replyText(res) === "noRun") throw new Error(`markTerminal: run ${runId} not found`);
     },
 
     async listRuns(filter: RunFilter, page: Page) {
@@ -500,17 +487,11 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           window,
         );
         if (flat.length === 0) break;
-        const ids: string[] = [];
-        const scores: number[] = [];
-        for (let i = 0; i < flat.length; i += 2) {
-          ids.push(flat[i] as string);
-          scores.push(Number(flat[i + 1]));
-        }
-        const pipe = client.pipeline();
-        for (const runId of ids) pipe.hgetall(keys.run(runId));
-        const res = await pipe.exec();
+        const ids = flat.filter((_, i) => i % 2 === 0);
+        const scores = flat.filter((_, i) => i % 2 === 1).map(Number);
+        const fetched = await loadRunRows(ids);
         for (let i = 0; i < ids.length && rows.length < page.limit; i++) {
-          const row = toRunRow((res?.[i]?.[1] ?? {}) as Hash);
+          const row = fetched[i];
           if (!row) continue;
           if (statuses && !statuses.includes(row.status)) continue;
           if (filter.name && row.name !== filter.name) continue;
@@ -550,40 +531,33 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       const stats = zeroRunStats();
       const ids = await client.zrange(keys.runIndex, 0, -1);
       if (ids.length === 0) return stats;
-      const pipe = client.pipeline();
-      for (const runId of ids) pipe.hget(keys.run(runId), RUN.status);
-      const res = await pipe.exec();
-      for (const r of res ?? []) {
-        const s = r?.[1] as RunStatus | null;
-        if (s) stats[s] += 1;
-      }
+      const statuses = await Promise.all(
+        ids.map((runId) => client.hget(keys.run(runId), RUN.status)),
+      );
+      for (const s of statuses) if (s !== null && isRunStatus(s)) stats[s] += 1;
       return stats;
     },
 
     async orphanedRuns(limit) {
       const ids = await client.zrange(keys.runIndex, 0, -1);
       if (ids.length === 0) return [];
-      const hp = client.pipeline();
-      const jp = client.pipeline();
-      const tp = client.pipeline();
-      for (const runId of ids) {
-        hp.hgetall(keys.run(runId));
-        jp.exists(keys.job(runId));
-        tp.zscore(keys.timers, runId);
-      }
-      const [hr, jr, tr] = await Promise.all([hp.exec(), jp.exec(), tp.exec()]);
+      const [hr, jr, tr] = await Promise.all([
+        loadRunRows(ids),
+        Promise.all(ids.map((runId) => client.exists(keys.job(runId)))),
+        Promise.all(ids.map((runId) => client.zscore(keys.timers, runId))),
+      ]);
       const all: RunRow[] = [];
       const byId = new Map<string, RunRow>();
       const jobbed = new Set<string>();
       const timered = new Set<string>();
       ids.forEach((runId, i) => {
-        const row = toRunRow((hr?.[i]?.[1] ?? {}) as Hash);
+        const row = hr[i];
         if (row) {
           all.push(row);
           byId.set(runId, row);
         }
-        if (jr?.[i]?.[1] === 1) jobbed.add(runId);
-        if (tr?.[i]?.[1] != null) timered.add(runId);
+        if (jr[i] === 1) jobbed.add(runId);
+        if (tr[i] !== null) timered.add(runId);
       });
       const view: OrphanView = {
         hasJob: (runId) => jobbed.has(runId),
@@ -602,10 +576,8 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async retryRun(runId) {
-      const res = await evalLua<number>(
-        RETRY_LUA,
-        [keys.run(runId), keys.job(runId), keys.queue],
-        [runId, 0, ""],
+      const res = replyNumber(
+        await evalLua(RETRY_LUA, [keys.run(runId), keys.job(runId), keys.queue], [runId, 0, ""]),
       );
       if (res === -1) throw new Error(`retryRun: run ${runId} not found`);
       return { retried: res === 1 };
@@ -629,32 +601,14 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         limit,
       );
       if (names.length === 0) return [];
-      const pipe = client.pipeline();
-      for (const name of names) pipe.hget(keys.crons, name);
-      const res = await pipe.exec();
-      return names.flatMap((_, i) => {
-        const raw = res?.[i]?.[1] as string | null;
-        if (!raw) return [];
-        const c = decodeCron(raw);
-        return [
-          {
-            ...c,
-            nextRunAt: new Date(c.nextRunAt),
-            lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
-          },
-        ];
-      });
+      const raws = await client.hmget(keys.crons, ...names);
+      return raws.flatMap((raw) => (raw ? [decodeCron(raw)] : []));
     },
 
     async listCrons() {
       const all = await client.hgetall(keys.crons);
-      return Object.values(all ?? {})
-        .map((raw) => decodeCron(raw))
-        .map((c) => ({
-          ...c,
-          nextRunAt: new Date(c.nextRunAt),
-          lastRunAt: c.lastRunAt === undefined ? undefined : new Date(c.lastRunAt),
-        }))
+      return Object.values(all)
+        .map(decodeCron)
         .sort((a, b) => a.name.localeCompare(b.name));
     },
 
@@ -669,19 +623,12 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       if (!wanted) return client.zcount(keys.cronsDue, "-inf", now.getTime());
       const due = await client.zrangebyscore(keys.cronsDue, "-inf", now.getTime());
       if (due.length === 0) return 0;
-      const pipe = client.pipeline();
-      for (const name of due) pipe.hget(keys.crons, name);
-      const res = (await pipe.exec()) ?? [];
-      let n = 0;
-      for (let i = 0; i < due.length; i++) {
-        const raw = res[i]?.[1] as string | null;
-        if (raw && wanted.has(decodeCron(raw).flowName)) n += 1;
-      }
-      return n;
+      const raws = await client.hmget(keys.crons, ...due);
+      return raws.filter((raw) => raw && wanted.has(decodeCron(raw).flowName)).length;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
-      const res = await evalLua<number>(
+      const res = await evalLua(
         ADVANCE_CRON_LUA,
         [keys.crons, keys.cronsDue],
         [
@@ -692,7 +639,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
           lastRunAt.toISOString(),
         ],
       );
-      return res === 1;
+      return replyNumber(res) === 1;
     },
   };
   return store;

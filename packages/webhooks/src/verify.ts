@@ -101,14 +101,12 @@ export function hmacVerifier(opts: HmacVerifierOptions): WebhookVerifier {
 }
 
 function headerGet(headers: HeaderInput, name: string): string | undefined {
-  if (typeof (headers as Headers).get === "function") {
-    return (headers as Headers).get(name) ?? undefined;
-  }
-  const record = headers as Record<string, string | string[] | undefined>;
+  // Structural, not `instanceof`: a polyfilled or other-realm Headers is still iterable.
+  if (Symbol.iterator in headers) return headers.get(name) ?? undefined;
   const lower = name.toLowerCase();
-  for (const key of Object.keys(record)) {
+  for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === lower) {
-      const value = record[key];
+      const value = headers[key];
       return Array.isArray(value) ? value[0] : value;
     }
   }

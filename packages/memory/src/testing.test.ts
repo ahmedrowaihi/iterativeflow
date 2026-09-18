@@ -1,16 +1,27 @@
-import { defineFlow, signalType } from "@iterativeflow/core";
+import { type SignalSchema, defineFlow } from "@iterativeflow/core";
 import { createTestHarness } from "@iterativeflow/core/testing";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
 
 const DAY = 24 * 60 * 60_000;
 
+const surveySchema: SignalSchema<{ score: number }> = {
+  "~standard": {
+    version: 1,
+    vendor: "test",
+    validate: (v) =>
+      v instanceof Object && "score" in v && Number.isFinite(v.score)
+        ? { value: { score: Number(v.score) } }
+        : { issues: [{ message: "score must be a number" }] },
+  },
+};
+
 describe("test harness — virtual time over a real engine", () => {
   it("settles a flow that sleeps for three days, without waiting", async () => {
     const onboard = defineFlow({
       name: "onboard",
       version: 1,
-      signals: { survey: signalType<{ score: number }>() },
+      signals: { survey: surveySchema },
       run: async (ctx, input: { userId: string }): Promise<{ score: number }> => {
         await ctx.step("create-account", () => input.userId);
         await ctx.sleep(3 * DAY);

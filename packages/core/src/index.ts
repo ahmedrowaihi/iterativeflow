@@ -23,14 +23,7 @@ export { isRunStatus } from "#status";
 /** The backend `createEngine` runs on; construct one with a backend package (or the SPI). */
 export type { Backend } from "#ports/outbox";
 
-export {
-  defineContract,
-  defineFlow,
-  registry,
-  signalType,
-  validateInput,
-  validateSignal,
-} from "#engine/flow";
+export { defineContract, defineFlow, registry, validateInput, validateSignal } from "#engine/flow";
 export type {
   AnyFlow,
   Contract,
@@ -39,6 +32,7 @@ export type {
   FlowPolicy,
   FlowRegistry,
   InputSchema,
+  OutputSchema,
   InvokeSpec,
   InvokeSpecFor,
   NoSignals,
@@ -46,12 +40,11 @@ export type {
   SignalSchema,
   SignalSchemas,
 } from "#engine/flow";
-export { builder, FlowBuilder } from "#engine/builder";
 export { systemClock } from "#engine/context";
 export type { Clock, Ctx, StepArg, StepPolicy } from "#engine/context";
 
 export { createEngine } from "#engine/engine";
-export type { Engine, EngineOpts, Liveness, RunLoopOpts } from "#engine/engine";
+export type { Engine, EngineOpts, Liveness, ResultWait, RunLoopOpts } from "#engine/engine";
 export type { QueueDepth } from "#ports/queue";
 export {
   submit,
@@ -69,6 +62,7 @@ export {
 } from "#engine/worker";
 export type {
   OnDuplicate,
+  ResultOpts,
   RunHandle,
   RunResult,
   SubmitSpec,

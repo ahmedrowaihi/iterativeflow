@@ -14,7 +14,7 @@ export const pendingWorkPipeline = (
   now: Date | number,
   opts: { prefix?: string } = {},
 ): Document[] => {
-  const at = typeof now === "number" ? now : now.getTime();
+  const at = now instanceof Date ? now.getTime() : now;
   const n = names(opts.prefix ?? "");
   return [
     {

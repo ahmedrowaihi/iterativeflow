@@ -14,7 +14,7 @@ const makeDriver = (failBegins: number, error = "SQLITE_BUSY: database is locked
         begins++;
         if (begins <= failBegins) throw new Error(error);
       }
-      return { rows: [] as Record<string, unknown>[] };
+      return { rows: [] };
     },
   };
 };

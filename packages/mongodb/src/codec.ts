@@ -1,10 +1,11 @@
-import type {
-  CronRow,
-  DeliveredSignal,
-  FlowError,
-  RunRow,
-  RunSpec,
-  StepOutcome,
+import {
+  type CronRow,
+  type DeliveredSignal,
+  type FlowError,
+  type RunRow,
+  type RunSpec,
+  type StepOutcome,
+  durable,
 } from "@iterativeflow/core/backend";
 import { ObjectId } from "mongodb";
 
@@ -28,12 +29,14 @@ export interface RunDoc {
   ord: ObjectId;
 }
 
-/**
- * Normalize a value to what a JSON-storing backend would keep. BSON preserves a `Date` (and other
- * rich types) that every other backend turns into a string, so without this the same flow gets a
- * different runtime type on MongoDB than on Postgres — the memo contract has to be uniform.
- */
-export const durable = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+/** @internal */
+export const durableError = (e: FlowError): FlowError => ({
+  code: e.code,
+  message: e.message,
+  // An absent field must stay absent: the driver would store `undefined` as `null`.
+  ...(e.stack !== undefined && { stack: e.stack }),
+  ...(e.cause !== undefined && { cause: e.cause }),
+});
 
 export interface StepDoc {
   _id: string;
@@ -43,7 +46,7 @@ export interface StepDoc {
   result?: unknown;
   error?: FlowError;
   attempts: number;
-  shape?: string;
+  call?: string;
 }
 
 export interface SignalDoc {
@@ -90,7 +93,7 @@ export const mapStep = (d: StepDoc): StepOutcome => ({
   result: d.result,
   error: d.error,
   attempts: d.attempts,
-  shape: d.shape,
+  call: d.call,
 });
 
 /** @internal */

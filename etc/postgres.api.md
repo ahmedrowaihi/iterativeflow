@@ -5,9 +5,16 @@
 ## index.d.mts
 
 ```ts
-import { Backend, EventSink, FlowEvent, IdGen, Wakeup } from "@iterativeflow/core/backend";
+import { Backend, EventSink, FlowEvent, IdGen, Json, Wakeup } from "@iterativeflow/core/backend";
 import { Pool } from "pg";
 //#region src/sql.d.ts
+type SqlScalar = string | number | boolean | Date | null;
+/** A value bound to a `$n` placeholder; an array binds as a Postgres array. */
+type SqlParam = SqlScalar | readonly SqlScalar[];
+/** A column value as node-postgres returns it: `jsonb` parsed, `timestamptz` as a `Date`, `bigint` as text. */
+type SqlValue = Json | Date;
+/** One result row, keyed by column name. */
+type SqlRow = Readonly<Record<string, SqlValue>>;
 /**
  * The minimal SQL surface the backend needs: parameterized `query` and a `tx` that runs a
  * unit of work on one connection. Abstracting it keeps the backend driver-agnostic (a Neon
@@ -18,7 +25,7 @@ import { Pool } from "pg";
  * behind RDS Proxy / PgBouncer transaction pooling.
  */
 interface Sql {
-  query<R = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
+  query(text: string, params?: readonly SqlParam[]): Promise<SqlRow[]>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
 /** Adapt a node-postgres {@link Pool} to {@link Sql}. `tx` checks out one client for the unit. */
@@ -57,7 +64,7 @@ declare const applySchema: (sql: Sql, schema?: string) => Promise<void>;
  * @example
  * await ctx.step("write", writeRow, { classify: pgClassify });
  */
-declare const pgClassify: (error: unknown) => "transient" | "permanent";
+declare const pgClassify: (cause: unknown) => "transient" | "permanent";
 //#endregion
 //#region src/drizzle.d.ts
 /**
@@ -177,5 +184,5 @@ declare const createPgEventSink: (sql: Sql, schema?: string) => EventSink;
 /** Read a run's event timeline, oldest first — the dashboard detail view. */
 declare const listEvents: (sql: Sql, runId: string, schema?: string) => Promise<FlowEvent[]>;
 //#endregion
-export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pendingWorkDdl, pgClassify, pgPool, progressDdl };
+export { type ListenerState, type PgBackendOpts, type PgListener, type PgListenerOpts, type ProgressEvent, type Sql, type SqlParam, type SqlRow, type SqlValue, applyNotifyTriggers, applyProgressTrigger, applySchema, createPgBackend, createPgEventSink, createPgListener, ddl, drizzleSchema, inTx, listEvents, notifyDdl, pendingWorkDdl, pgClassify, pgPool, progressDdl };
 ```

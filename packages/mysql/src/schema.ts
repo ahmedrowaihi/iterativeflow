@@ -1,4 +1,5 @@
 import { assertSqlIdentifier } from "@iterativeflow/core/backend";
+import { int } from "#codec";
 import type { Sql } from "#sql";
 
 /** @internal */
@@ -129,12 +130,12 @@ export const ddl = (prefix = ""): string[] => {
 
 // MySQL has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
 const addColumn = async (sql: Sql, table: string, column: string, def: string): Promise<void> => {
-  const cols = await sql.query<{ n: number }>(
+  const [cols] = await sql.query(
     `SELECT COUNT(*) AS n FROM information_schema.columns
       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
     [table.replace(/`/g, ""), column],
   );
-  if (Number(cols[0]?.n ?? 0) > 0) return;
+  if (int(cols, "n") > 0) return;
   await sql.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
 };
 

@@ -1,4 +1,5 @@
 import { assertSqlIdentifier } from "@iterativeflow/core/backend";
+import { text } from "#codec";
 import type { Sql } from "#sql";
 
 /** @internal */
@@ -115,8 +116,8 @@ export interface ApplySchemaOpts {
 
 // SQLite has no `ADD COLUMN IF NOT EXISTS`, and applySchema runs on every boot, so check first.
 const addColumn = async (sql: Sql, table: string, column: string, decl: string): Promise<void> => {
-  const cols = await sql.query<{ name: string }>(`PRAGMA table_info(${table})`);
-  if (cols.some((c) => c.name === column)) return;
+  const cols = await sql.query(`PRAGMA table_info(${table})`);
+  if (cols.some((c) => text(c, "name") === column)) return;
   await sql.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 };
 

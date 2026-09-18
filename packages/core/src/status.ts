@@ -9,7 +9,7 @@ export const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[] = TERMINAL_STAT
 
 /** Whether a run has settled and must never be resurrected. Narrows to the terminal subset. */
 export const isTerminal = (status: RunStatus): status is TerminalStatus =>
-  (TERMINAL_STATUSES as readonly string[]).includes(status);
+  TERMINAL_STATUSES.some((s) => s === status);
 
 /** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */
 export const ACTIVE_STATUSES: readonly RunStatus[] = RUN_STATUSES.filter((s) => !isTerminal(s));
@@ -24,23 +24,23 @@ export const RECONCILABLE_STATUSES: readonly RunStatus[] = ACTIVE_STATUSES.filte
 );
 
 /** Type guard for an untrusted string (query params, external input). */
-export const isRunStatus = (s: string): s is RunStatus =>
-  (RUN_STATUSES as readonly string[]).includes(s);
+export const isRunStatus = (s: string): s is RunStatus => RUN_STATUSES.some((r) => r === s);
 
 /** A fresh all-zero per-status counter — completeness is enforced by `Record<RunStatus, …>`. */
-export const zeroRunStats = (): Record<RunStatus, number> => ({
-  pending: 0,
-  running: 0,
-  sleeping: 0,
-  awaiting_signal: 0,
-  awaiting_child: 0,
-  retrying: 0,
-  parked: 0,
-  done: 0,
-  failed: 0,
-  canceled: 0,
-});
+export const zeroRunStats = () =>
+  ({
+    pending: 0,
+    running: 0,
+    sleeping: 0,
+    awaiting_signal: 0,
+    awaiting_child: 0,
+    retrying: 0,
+    parked: 0,
+    done: 0,
+    failed: 0,
+    canceled: 0,
+  }) satisfies Record<RunStatus, number>;
 
 /** Normalize a `RunFilter.status` (one, several, or none) to an array — or `undefined`. */
 export const statusList = (status?: RunStatus | readonly RunStatus[]): RunStatus[] | undefined =>
-  status === undefined ? undefined : Array.isArray(status) ? [...status] : [status as RunStatus];
+  status === undefined ? undefined : [status].flat();

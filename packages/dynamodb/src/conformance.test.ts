@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { BatchWriteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchWriteCommand, ScanCommand, type ScanCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   claimFilterConformance,
   shardedClaimConformance,
@@ -24,7 +24,6 @@ import {
   tickOnce,
 } from "@iterativeflow/core";
 import {
-  type Doc,
   DEFAULT_TABLE,
   REQUIRED_IAM_ACTIONS,
   createDynamoBackend,
@@ -40,20 +39,24 @@ const TABLE = DEFAULT_TABLE;
 
 describe.skipIf(skip)("dynamodb backend", () => {
   let container: StartedTestContainer;
+  let endpoint: string;
   let low: DynamoDBClient;
   let doc: ReturnType<typeof docClient>;
+
+  const connect = (): DynamoDBClient =>
+    new DynamoDBClient({
+      endpoint,
+      region: "us-east-1",
+      credentials: { accessKeyId: "local", secretAccessKey: "local" },
+    });
 
   beforeAll(async () => {
     container = await new GenericContainer("amazon/dynamodb-local:latest")
       .withExposedPorts(8000)
       .withCommand(["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"])
       .start();
-    const endpoint = `http://${container.getHost()}:${container.getMappedPort(8000)}`;
-    low = new DynamoDBClient({
-      endpoint,
-      region: "us-east-1",
-      credentials: { accessKeyId: "local", secretAccessKey: "local" },
-    });
+    endpoint = `http://${container.getHost()}:${container.getMappedPort(8000)}`;
+    low = connect();
     doc = docClient(low);
     await ensureTable(low, TABLE);
   }, 180_000);
@@ -65,7 +68,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
 
   /** Delete every item so each test starts from an empty table. */
   const clearTable = async (): Promise<void> => {
-    let ExclusiveStartKey: Record<string, unknown> | undefined;
+    let ExclusiveStartKey: ScanCommandInput["ExclusiveStartKey"];
     do {
       const res = await doc.send(
         new ScanCommand({ TableName: TABLE, ProjectionExpression: "pk, sk", ExclusiveStartKey }),
@@ -116,7 +119,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
               { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
               { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
             )
-            .then((o) => o.result as string),
+            .then((o) => o.result),
         ),
       );
 
@@ -135,15 +138,15 @@ describe.skipIf(skip)("dynamodb backend", () => {
 
       // Reject the checkpoint's TransactWriteItems (it carries a JOB# enqueue). A non-atomic
       // backend would have already written the step; an atomic one writes nothing.
-      const faulty: Doc = {
-        send: (cmd: unknown) => {
-          const anyCmd = cmd as { input?: unknown };
-          if (JSON.stringify(anyCmd.input ?? {}).includes('"JOB#')) {
-            return Promise.reject(new Error("injected fault"));
-          }
-          return (doc.send as (c: unknown) => Promise<unknown>)(cmd);
+      const faultyLow = connect();
+      const faulty = docClient(faultyLow);
+      faulty.middlewareStack.add(
+        (next) => async (args) => {
+          if (JSON.stringify(args.input).includes('"JOB#')) throw new Error("injected fault");
+          return next(args);
         },
-      };
+        { step: "initialize", name: "injectFault" },
+      );
       const faultyBackend = createDynamoBackend(faulty, { table: TABLE });
 
       await expect(
@@ -152,6 +155,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
           { enqueue: [{ runId }] },
         ),
       ).rejects.toThrow();
+      faultyLow.destroy();
       const snap = await clean.store.loadRun(runId);
       expect(snap?.steps.has("x")).toBe(false); // step did NOT leak past the failed outbox
     });

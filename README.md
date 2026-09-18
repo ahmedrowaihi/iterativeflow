@@ -11,14 +11,17 @@ four-port `Backend` interface — **Postgres, SQLite, MySQL, MongoDB, Redis, Dyn
 Durable Objects, or in-memory** — resident or serverless. Published under the `@iterativeflow/*` scope.
 
 ```ts
-import { createEngine, defineFlow, signalType } from "@iterativeflow/core";
+import { createEngine, defineFlow } from "@iterativeflow/core";
 import { createPgBackend, pgPool } from "@iterativeflow/postgres";
 import { Pool } from "pg";
+import { z } from "zod";
+
+const Survey = z.object({ score: z.number() });
 
 const onboard = defineFlow({
   name: "onboard",
   version: 1,
-  signals: { survey: signalType<{ score: number }>() }, // declare the signal's payload type
+  signals: { survey: Survey }, // any Standard Schema: typed and validated
   run: async (ctx, input: { userId: string }): Promise<{ score: number }> => {
     await ctx.step("create-account", () => createAccount(input.userId));
     await ctx.sleep(3 * 24 * 60 * 60_000); // 3 days, durable
@@ -33,7 +36,7 @@ const stop = engine.run(); // resident worker loop; returns a stop fn
 const handle = await engine.submit(onboard, { userId: "u_1" });
 // 3 days later, from a webhook:
 await engine.signal(handle, "survey", { score: 9 });
-const { output } = await engine.result(handle, { timeoutMs: 30_000 }); // { score: 9 }
+const { output } = await engine.result(handle, { timeoutMs: 30_000, output: Survey }); // { score: 9 }
 await stop();
 ```
 
@@ -44,8 +47,8 @@ memoized `create-account` step instead of re-running it.
 - **Steps** memoized by `(runId, cursor)` — `ctx.step(label, fn)`, the unit of at-least-once execution
 - **Sleeps** and external **signals** lasting days — `ctx.sleep(ms)` / `ctx.signal(name)`
 - **`ctx.invoke(child, input)`** for child flows, and `ctx.invoke([…])` for parallel fan-out + join
-- **Typed contracts** — `submit` returns a `RunHandle<Output, Signals>`; outputs and signal payloads
-  are typed end to end
+- **Typed contracts** — signal payloads and outputs are typed by Standard Schemas that also validate
+  them, and `engine.signal` checks signal names and payloads at compile time
 - **At-least-once** via a transactional outbox committed with each step; a reconciler re-drives
   anything stranded by a crash
 - **Serverless or resident** — `engine.run()` for a worker loop, or `serverlessTick` for one bounded

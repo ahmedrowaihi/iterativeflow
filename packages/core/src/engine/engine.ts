@@ -17,6 +17,7 @@ import {
   type Contract,
   type Flow,
   type NoSignals,
+  type OutputSchema,
   type SignalMap,
   type SignalName,
   type SignalPayload,
@@ -42,6 +43,7 @@ import {
   submit,
   submitMany,
   tickOnce,
+  type ResultOpts,
 } from "#engine/worker";
 
 /** A liveness snapshot: dispatch-queue health plus per-status run counts. */
@@ -53,10 +55,12 @@ export interface Liveness {
 /** Fires when either input does. Returns a `release` because the loop calls this once per idle tick:
  *  a `{ once: true }` listener that never fires is never collected, so without it the long-lived stop
  *  signal accumulates one listener per iteration for the life of the process. */
-const anySignal = (
-  a: AbortSignal,
-  b: AbortSignal,
-): { signal: AbortSignal; release: () => void } => {
+interface LinkedSignal {
+  signal: AbortSignal;
+  release: () => void;
+}
+
+const anySignal = (a: AbortSignal, b: AbortSignal): LinkedSignal => {
   const out = new AbortController();
   const stop = (): void => out.abort();
   if (a.aborted || b.aborted) {
@@ -139,8 +143,11 @@ export interface EngineOpts {
   pollTimeoutMs?: number;
 }
 
-const byteSize = (value: unknown): number =>
+const byteSize = <T>(value: T): number =>
   value === undefined ? 0 : new TextEncoder().encode(JSON.stringify(value)).length;
+
+/** How long `engine.result` waits for a run to settle, and how often it re-reads. */
+export type ResultWait = Omit<ResultOpts, "now">;
 
 /** Options for the resident worker loop. */
 export interface RunLoopOpts {
@@ -187,9 +194,10 @@ export interface Engine<N extends string = string> {
   retry(runId: string): Promise<boolean>;
   cancelMany(filter: RunFilter<N>, limit?: number): Promise<number>;
   retryMany(filter: RunFilter<N>, limit?: number): Promise<number>;
-  result<O = unknown>(
+  result(runId: string, opts?: ResultWait): Promise<RunResult<unknown>>;
+  result<O>(
     runId: RunHandle<O> | string,
-    opts?: { timeoutMs?: number; pollMs?: number },
+    opts: ResultWait & { output: OutputSchema<O> },
   ): Promise<RunResult<O>>;
 
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
@@ -303,11 +311,23 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
     gate = new AbortController();
   };
   const cap = opts.maxPayloadBytes;
-  const guard = (what: string, payload: unknown): void => {
+  const guard = <T>(what: string, payload: T): void => {
     if (cap !== undefined && byteSize(payload) > cap) {
       throw new Error(`${what}: payload exceeds maxPayloadBytes (${cap})`);
     }
   };
+
+  function engineResult(runId: string, wait?: ResultWait): Promise<RunResult<unknown>>;
+  function engineResult<O>(
+    runId: RunHandle<O> | string,
+    wait: ResultWait & { output: OutputSchema<O> },
+  ): Promise<RunResult<O>>;
+  function engineResult<O>(
+    runId: string,
+    wait?: ResultWait & { output?: OutputSchema<O> },
+  ): Promise<RunResult<unknown>> {
+    return result(backend, runId, wait);
+  }
 
   return {
     backend,
@@ -320,7 +340,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       for (const it of items) guard("submitMany", it.input);
       return submitMany(backend, items, clock);
     },
-    signal: (runId: string, name: string, payload: unknown, o?: { idempotencyKey?: string }) => {
+    signal: (runId, name, payload, o) => {
       guard("signal", payload);
       return signalRun(backend, runId, name, payload, o);
     },
@@ -328,7 +348,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
     retry: (runId) => retryRun(backend, runId),
     cancelMany: (filter, limit = 1000) => backend.store.cancelRuns(filter, limit),
     retryMany: (filter, limit = 1000) => backend.store.retryRuns(filter, limit),
-    result: (runId, o) => result(backend, runId, o),
+    result: engineResult,
 
     status: (runId) => backend.store.loadRun(runId),
     listRuns: (filter, page) => backend.store.listRuns(filter, page),
@@ -395,7 +415,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       const waitForWork = loop?.waitForWork ?? backend.queue.waitForWork?.bind(backend.queue);
       const stop = new AbortController();
       const { signal } = stop;
-      const onTickError = (err: unknown): void => reportError(opts.observe?.metrics, err);
+      const onTickError = (cause: unknown): void => reportError(opts.observe?.metrics, cause);
       // Self-tuning claim loop across the whole duty cycle: a FULL batch means more work is almost
       // certainly waiting, so re-claim immediately (saturated → max throughput); a PARTIAL batch
       // waits the floor `tickMs`; an EMPTY batch backs off geometrically toward `maxIdleMs` (idle →

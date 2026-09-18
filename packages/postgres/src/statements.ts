@@ -9,14 +9,14 @@ import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 
 /** @internal */
-export const enqueueManyStmt = (
+export const enqueueManyStmt = async (
   sql: Sql,
   t: Tables,
   requests: readonly EnqueueRequest[],
-): Promise<unknown> => {
+): Promise<void> => {
   const rows = distinctEnqueues(requests);
-  if (rows.length === 0) return Promise.resolve();
-  return sql.query(
+  if (rows.length === 0) return;
+  await sql.query(
     `INSERT INTO ${t.job} AS j (run_id, run_at, priority, version)
      SELECT e.run_id, COALESCE(e.run_at, 'epoch'::timestamptz), COALESCE(e.priority, r.priority, 0), 1
        FROM unnest($1::text[], $2::timestamptz[], $3::int[]) AS e(run_id, run_at, priority)
@@ -37,15 +37,21 @@ export const enqueueStmt = (
   t: Tables,
   runId: string,
   opts?: EnqueueOpts,
-): Promise<unknown> => enqueueManyStmt(sql, t, [{ runId, opts }]);
+): Promise<void> => enqueueManyStmt(sql, t, [{ runId, opts }]);
 
 /** @internal */
-export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): Promise<unknown> =>
-  sql.query(
+export const scheduleStmt = async (
+  sql: Sql,
+  t: Tables,
+  runId: string,
+  fireAt: Date,
+): Promise<void> => {
+  await sql.query(
     `INSERT INTO ${t.timer} (run_id, fire_at) VALUES ($1, $2)
      ON CONFLICT (run_id) DO UPDATE SET fire_at = EXCLUDED.fire_at`,
     [runId, fireAt],
   );
+};
 
 /** @internal */
 export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void> => {

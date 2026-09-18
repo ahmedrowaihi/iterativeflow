@@ -10,7 +10,7 @@
 > What actually shipped vs. this manifesto: **eight backends**, not the three sketched here (memory,
 > postgres, dynamodb, redis, sqlite, mysql, mongodb, durable-objects), plus `@iterativeflow/webhooks`
 > and `@iterativeflow/dashboard`; the **node-graph builder + static determinism guard was dropped**
-> for a **linear builder + imperative `defineFlow`** guarded at **runtime** (the drift guard,
+> for the **imperative `defineFlow`** guarded at **runtime** (the drift guard,
 > `CONTRACTS.md`); and the "crash/partition harness" + "time-skip testing" below are **not yet built**
 > (crashes are simulated ad-hoc in tests). Port sketches in §4 are illustrative — the shipped port
 > interfaces live in `packages/core/src/ports/`.
@@ -53,12 +53,12 @@ portable**, and **cheap at high step counts** — not feature-parity with a clus
 ## 3. The core
 
 A backend-free durable-execution engine that speaks **only** to the four ports below.
-It owns: the run state machine, step memoization + cursor sequencing, the flow builder,
+It owns: the run state machine, step memoization + cursor sequencing, flow definition,
 the replay loop, retry/backoff policy, and the reconciler. It knows nothing about
 Postgres, DynamoDB, graphile, HTTP, or Lambda.
 
 ```
-        authoring (builder / defineFlow)
+        authoring (defineFlow)
                      │
             ┌────────▼─────────┐
             │  durable core     │  state machine · memoization · replay · reconcile
@@ -149,10 +149,8 @@ interface Wakeup {
 ## 5. Recovery & determinism
 
 Memoized-step, read-last-completed (the cheap camp — DBOS/Restate/Hatchet). On resume:
-`loadRun` → re-enter the body → completed steps short-circuit from the memo. The
-**builder guarantees** non-determinism lives inside `.step()`, so the between-steps
-determinism tax that bites free-form imperative engines doesn't apply to builder flows.
-The imperative `defineFlow` escape hatch carries an **explicit determinism contract**
+`loadRun` → re-enter the body → completed steps short-circuit from the memo.
+`defineFlow` carries an **explicit determinism contract**
 (documented + an optional lint rule), because we won't ship a Node sandbox and CRIU is
 too heavy for a self-hostable lib.
 
@@ -167,8 +165,7 @@ too heavy for a self-hostable lib.
 
 ## 7. DX
 
-- **Linear builder + imperative `defineFlow`** both ship as first-class authoring APIs.
-  Determinism is guarded at **runtime** by the drift guard (`CONTRACTS.md`), not
+- **Imperative `defineFlow`** is the one authoring API. Determinism is guarded at **runtime** by the drift guard (`CONTRACTS.md`), not
   structurally by a node graph (the original graph builder was dropped — see `PARITY.md`).
 - **Typed signals** (shipped) — Standard-Schema payload contracts, typed on both ends.
 - **Time-skip testing** (Temporal's test env) — advance timers in-memory, assert outcomes
@@ -252,6 +249,6 @@ Mechanics:
 
 - **Package layout → monorepo.** Shipped as separate `@iterativeflow/*` packages (`core`, one per
   backend, `webhooks`, `dashboard`, `conformance`), so backends are opt-in deps.
-- **`defineFlow` ships now.** Both authoring APIs are first-class: the fluent `builder()` and the
-  imperative `defineFlow` (both exported from `@iterativeflow/core`).
+- **`defineFlow` is the one authoring API.** The fluent `builder()` shipped in early v2 and was
+  removed: everything it did is a plain `ctx.step` sequence.
 - Lease/heartbeat defaults and the batch-claim knob are settled in each backend's `Queue` impl.

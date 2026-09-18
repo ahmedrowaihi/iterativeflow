@@ -8,6 +8,14 @@
 import { Backend, IdGen } from "@iterativeflow/core/backend";
 import { Client } from "@libsql/client";
 //#region src/sql.d.ts
+/** A value bound to a positional `?`. `undefined` binds as NULL. */
+type SqlParam = string | number | null | undefined;
+/** A value as it reaches the driver, after `undefined` became NULL. */
+type SqlBinding = Exclude<SqlParam, undefined>;
+/** A column value as any supported SQLite driver (libsql, op-sqlite, Durable Objects) returns it. */
+type SqlValue = string | number | bigint | boolean | null | ArrayBuffer | ArrayBufferView;
+/** One result row, keyed by column name. */
+type SqlRow = Readonly<Record<string, SqlValue>>;
 /**
  * The minimal SQL surface the backend needs: positional-`?` `query` and a `tx` that runs a unit of
  * work atomically. Abstracting it keeps the backend driver-agnostic — a local file, Turso, or a
@@ -15,9 +23,11 @@ import { Client } from "@libsql/client";
  * importantly, runs every outbox side-effect inside one transaction.
  */
 interface Sql {
-  query<R = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
+  query(text: string, params?: readonly SqlParam[]): Promise<SqlRow[]>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
+/** SQLite bindings reject `undefined`; map it to NULL. Shared by every {@link Sql} driver adapter. */
+declare const mapParams: (params?: readonly SqlParam[]) => SqlBinding[];
 /** Adapt a `@libsql/client` {@link Client} to {@link Sql}. `tx` opens one write transaction. */
 declare const libsqlDb: (client: Client) => Sql;
 //#endregion
@@ -59,7 +69,7 @@ declare const applySchema: (sql: Sql, prefix?: string, opts?: ApplySchemaOpts) =
 //#endregion
 //#region src/op-sqlite.d.ts
 interface OpSqliteResult {
-  rows: Record<string, unknown>[];
+  rows: SqlRow[];
 }
 /**
  * The minimal op-sqlite database surface this adapter uses — declared structurally so the package
@@ -67,7 +77,7 @@ interface OpSqliteResult {
  * (JSI) and async on web, so it may return the result or a promise of it; the adapter awaits either.
  */
 interface OpSqliteDB {
-  execute(sql: string, params?: unknown[]): OpSqliteResult | Promise<OpSqliteResult>;
+  execute(sql: string, params?: SqlBinding[]): OpSqliteResult | Promise<OpSqliteResult>;
 }
 /**
  * Adapt an [op-sqlite](https://op-engineering.github.io/op-sqlite) database to the sqlite backend's
@@ -101,5 +111,5 @@ declare const createOpSqliteBackend: (db: OpSqliteDB, opts?: SqliteBackendOpts) 
  */
 declare const inTx: <T>(client: Client, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: SqliteBackendOpts) => Promise<T>;
 //#endregion
-export { type OpSqliteDB, type Sql, type SqliteBackendOpts, applySchema, createOpSqliteBackend, createSqliteBackend, ddl, inTx, libsqlDb, opSqliteDb };
+export { type OpSqliteDB, type Sql, type SqlBinding, type SqlParam, type SqlRow, type SqlValue, type SqliteBackendOpts, applySchema, createOpSqliteBackend, createSqliteBackend, ddl, inTx, libsqlDb, mapParams, opSqliteDb };
 ```

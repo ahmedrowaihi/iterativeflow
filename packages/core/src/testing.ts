@@ -10,7 +10,7 @@
  */
 
 import { type Engine, type EngineOpts, createEngine } from "#engine/engine";
-import type { AnyFlow } from "#engine/flow";
+import type { AnyFlow, OutputSchema } from "#engine/flow";
 import type { RunHandle, RunResult } from "#engine/worker";
 import type { Backend } from "#ports/outbox";
 import { isTerminal } from "#status";
@@ -48,9 +48,14 @@ export interface TestHarness {
    *
    * @throws {Error} if the run parks with no deadline to jump to — waiting on a signal or a child
    * that nothing will deliver. The message names what it is waiting on, because that is nearly
-   * always a missing `engine.signal(...)` in the test rather than a bug in the flow.
+   * always a missing `engine.signal(...)` in the test rather than a bug in the flow. The output is
+   * `unknown` unless you pass the flow's `output` schema, exactly as with `engine.result`.
    */
-  settle<O>(handle: RunHandle<O> | string): Promise<RunResult<O>>;
+  settle(handle: string): Promise<RunResult<unknown>>;
+  settle<O>(
+    handle: RunHandle<O> | string,
+    opts: { output: OutputSchema<O> },
+  ): Promise<RunResult<O>>;
 }
 
 /**
@@ -105,6 +110,34 @@ export const createTestHarness = (
     return `run ${runId} is ${status} with nothing scheduled to wake it`;
   };
 
+  function settle(handle: string): Promise<RunResult<unknown>>;
+  function settle<O>(
+    handle: RunHandle<O> | string,
+    parse: { output: OutputSchema<O> },
+  ): Promise<RunResult<O>>;
+  async function settle<O>(
+    handle: string,
+    parse?: { output?: OutputSchema<O> },
+  ): Promise<RunResult<unknown>> {
+    for (let i = 0; i < MAX_WAKES_PER_SETTLE; i++) {
+      await drain();
+      const run = await backend.store.loadRunRow(handle);
+      if (!run) throw new Error(`settle: run ${handle} not found`);
+      if (isTerminal(run.status)) {
+        return parse?.output
+          ? engine.result(handle, { output: parse.output })
+          : engine.result(handle);
+      }
+      if (run.status === "parked") throw new Error(`settle: ${await stallReason(handle)}`);
+      const next = await engine.nextWakeAt();
+      if (!next) throw new Error(`settle: ${await stallReason(handle)}`);
+      await advanceTo(next);
+    }
+    throw new Error(
+      `settle: run ${handle} did not settle within ${MAX_WAKES_PER_SETTLE} wakes — it may be sleeping in a loop`,
+    );
+  }
+
   return {
     engine,
 
@@ -122,23 +155,6 @@ export const createTestHarness = (
       return true;
     },
 
-    async settle<O>(handle: RunHandle<O> | string): Promise<RunResult<O>> {
-      const runId = handle as string;
-      for (let i = 0; i < MAX_WAKES_PER_SETTLE; i++) {
-        await drain();
-        const run = await backend.store.loadRunRow(runId);
-        if (!run) throw new Error(`settle: run ${runId} not found`);
-        if (isTerminal(run.status)) {
-          return { status: run.status, output: run.output as O, error: run.error };
-        }
-        if (run.status === "parked") throw new Error(`settle: ${await stallReason(runId)}`);
-        const next = await engine.nextWakeAt();
-        if (!next) throw new Error(`settle: ${await stallReason(runId)}`);
-        await advanceTo(next);
-      }
-      throw new Error(
-        `settle: run ${runId} did not settle within ${MAX_WAKES_PER_SETTLE} wakes — it may be sleeping in a loop`,
-      );
-    },
+    settle,
   };
 };

@@ -6,8 +6,8 @@ export interface InputSchema<I> {
   readonly "~standard": {
     readonly version: 1;
     readonly vendor: string;
-    readonly validate: (
-      value: unknown,
+    readonly validate: <V>(
+      value: V,
     ) =>
       | { value: I; issues?: undefined }
       | { issues: ReadonlyArray<{ message: string }> }
@@ -16,7 +16,7 @@ export interface InputSchema<I> {
 }
 
 /** A flow's signal contract: signal name → payload type. Threads typed send + await. */
-export type SignalMap = Record<string, unknown>;
+export type SignalMap = object;
 
 /** No declared signals — the default. `ctx.signal(name)` then takes any name, payload `unknown`. */
 export type NoSignals = Record<never, never>;
@@ -25,40 +25,36 @@ export type NoSignals = Record<never, never>;
  * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
  * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
  * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
- * it. Use {@link signalType} when you want the type without runtime validation.
+ * it — so a typed signal is always a checked one.
  */
 export type SignalSchema<T> = InputSchema<T>;
-
-/**
- * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: signalType<{ by: string }>() }`.
- * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
- * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
- */
-export const signalType = <T>(): SignalSchema<T> => ({
-  "~standard": {
-    version: 1,
-    vendor: "iterativeflow",
-    validate: (value) => ({ value: value as T }),
-  },
-});
 
 /** The `signals` field's shape for a given map — one Standard-Schema validator per name. */
 export type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalSchema<S[K]> };
 
-/** Validate a signal payload against its declared schema. Throws with the collected issues. */
-export const validateSignal = async <T>(
-  schema: SignalSchema<T>,
-  name: string,
-  payload: unknown,
+/** A flow's output contract — any Standard-Schema validator. Pass it to `result()` to get a checked,
+ *  typed output back instead of `unknown`. */
+export type OutputSchema<T> = InputSchema<T>;
+
+/** @internal */
+export const parseWith = async <T, V>(
+  schema: InputSchema<T>,
+  value: V,
+  what: string,
 ): Promise<T> => {
-  const r = await schema["~standard"].validate(payload);
+  const r = await schema["~standard"].validate(value);
   if (r.issues) {
-    throw new Error(
-      `signal "${name}" payload failed validation: ${r.issues.map((i) => i.message).join("; ")}`,
-    );
+    throw new Error(`${what} failed validation: ${r.issues.map((i) => i.message).join("; ")}`);
   }
   return r.value;
 };
+
+/** Validate a signal payload against its declared schema. Throws with the collected issues. */
+export const validateSignal = <T, P>(
+  schema: SignalSchema<T>,
+  name: string,
+  payload: P,
+): Promise<T> => parseWith(schema, payload, `signal "${name}" payload`);
 
 /** Valid signal names for a map: the declared keys, or any string when none are declared. */
 export type SignalName<S extends SignalMap> = [keyof S] extends [never] ? string : keyof S & string;
@@ -85,8 +81,8 @@ export interface Flow<
   /** Optional Standard-Schema validator for the input, checked at submit time. */
   input?: InputSchema<I>;
   /**
-   * Declares the signals this flow awaits (name → payload type). Type-only: it drives typed
-   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link signalType}.
+   * The signals this flow awaits: name → Standard-Schema validator. It types `ctx.signal` and
+   * `engine.signal`, and each payload is validated as the flow consumes it.
    */
   signals?: SignalSchemas<S>;
   /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
@@ -108,18 +104,9 @@ export interface FlowPolicy {
 export const validateInput = async <I>(
   flow: { name: string; input?: InputSchema<I> },
   input: I,
-): Promise<I> => {
-  if (!flow.input) return input;
-  const r = await flow.input["~standard"].validate(input);
-  if (r.issues) {
-    throw new Error(
-      `input validation failed for ${flow.name}: ${r.issues.map((i) => i.message).join("; ")}`,
-    );
-  }
-  return r.value;
-};
+): Promise<I> => (flow.input ? parseWith(flow.input, input, `input for ${flow.name}`) : input);
 
-/** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
+/** Define a durable flow. */
 export const defineFlow = <I, O, S extends SignalMap = NoSignals, N extends string = string>(
   flow: Flow<I, O, S, N>,
 ): Flow<I, O, S, N> => flow;
@@ -181,7 +168,7 @@ export const registry = (flows: readonly AnyFlow[]): FlowRegistry => {
   for (const f of flows) {
     const key = flowKey(f.name, f.version);
     // Silently keeping the last one would run the wrong body for every run of the first, and the
-    // drift guard can't catch it: the shape fingerprint is `kind:label`, not the body.
+    // drift guard can't catch it: the call fingerprint is `kind:label`, not the body.
     if (reg.has(key)) throw new Error(`registry: two flows registered as ${key}`);
     reg.set(key, f);
   }

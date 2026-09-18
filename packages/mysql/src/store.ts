@@ -2,7 +2,6 @@ import {
   type IdGen,
   type PurgeFilter,
   type RunSpec,
-  type RunStatus,
   type StartResult,
   type Store,
   type SuspendStatus,
@@ -17,20 +16,10 @@ import {
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
-import {
-  type CronRecord,
-  type RunRecord,
-  type SignalRecord,
-  type StepRecord,
-  j,
-  mapCron,
-  mapRun,
-  mapSignal,
-  mapStep,
-} from "#codec";
+import { STEP_COLUMNS, int, j, mapCron, mapRun, mapSignal, mapStep, runStatus, text } from "#codec";
 import type { Tables } from "#schema";
 import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
-import type { Sql } from "#sql";
+import type { Sql, SqlParam } from "#sql";
 
 const sqlTuple = (statuses: readonly string[]): string =>
   `(${statuses.map((s) => `'${s}'`).join(",")})`;
@@ -50,8 +39,8 @@ const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").j
 /** @internal */
 export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
   const loadStep = async (exec: Sql, runId: string, cursorKey: string) => {
-    const rows = await exec.query<StepRecord>(
-      `SELECT status, result, error, attempts, shape FROM ${t.step} WHERE run_id = ? AND cursor_key = ?`,
+    const rows = await exec.query(
+      `SELECT ${STEP_COLUMNS} FROM ${t.step} WHERE run_id = ? AND cursor_key = ?`,
       [runId, cursorKey],
     );
     const row = rows[0];
@@ -81,11 +70,11 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         ],
       );
       if (ins.affectedRows === 1) return { runId, created: true, status: "pending" };
-      const hit = await exec.query<{ id: string; status: RunStatus }>(
+      const hit = await exec.query(
         `SELECT id, status FROM ${t.run} WHERE name = ? AND version = ? AND idempotency_key = ?`,
         [spec.name, spec.version, spec.idempotencyKey],
       );
-      return { runId: hit[0].id, created: false, status: hit[0].status };
+      return { runId: text(hit[0], "id"), created: false, status: runStatus(hit[0]) };
     }
     await exec.exec(
       `INSERT INTO ${t.run}
@@ -115,13 +104,13 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
       const ids = (
-        await tx.query<{ id: string }>(
+        await tx.query(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
              ${order} LIMIT ?`,
           params,
         )
-      ).map((r) => r.id);
+      ).map((r) => text(r, "id"));
       if (ids.length === 0) return 0;
       const inIds = inList(ids.length);
       // step/signal reference the run — delete them before the run itself.
@@ -149,12 +138,9 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
 
     async loadRun(runId) {
       const [runRows, stepRows, sigRows] = await Promise.all([
-        sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = ?`, [runId]),
-        sql.query<StepRecord & { cursor_key: string }>(
-          `SELECT cursor_key, status, result, error, attempts, shape FROM ${t.step} WHERE run_id = ?`,
-          [runId],
-        ),
-        sql.query<SignalRecord>(
+        sql.query(`SELECT * FROM ${t.run} WHERE id = ?`, [runId]),
+        sql.query(`SELECT cursor_key, ${STEP_COLUMNS} FROM ${t.step} WHERE run_id = ?`, [runId]),
+        sql.query(
           `SELECT id, name, payload FROM ${t.signal} WHERE run_id = ? AND consumed = 0 ORDER BY seq`,
           [runId],
         ),
@@ -163,23 +149,23 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       if (!runRow) return undefined;
       return {
         run: mapRun(runRow),
-        steps: new Map(stepRows.map((r) => [r.cursor_key, mapStep(r)])),
+        steps: new Map(stepRows.map((r) => [text(r, "cursor_key"), mapStep(r)])),
         signals: sigRows.map(mapSignal),
       };
     },
 
     async loadRunRow(runId) {
-      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = ?`, [runId]);
+      const rows = await sql.query(`SELECT * FROM ${t.run} WHERE id = ?`, [runId]);
       return rows[0] ? mapRun(rows[0]) : undefined;
     },
 
     async loadRunRows(runIds) {
       if (runIds.length === 0) return [];
-      const rows = await sql.query<RunRecord>(
+      const rows = await sql.query(
         `SELECT * FROM ${t.run} WHERE id IN ${inList(runIds.length)}`,
         runIds,
       );
-      const byId = new Map(rows.map((r) => [r.id, mapRun(r)]));
+      const byId = new Map(rows.map(mapRun).map((run) => [run.id, run]));
       return runIds.map((runId) => byId.get(runId));
     },
 
@@ -190,11 +176,10 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           [parentRunId],
         );
         if (res.affectedRows === 0) return undefined;
-        const rows = await tx.query<{ join_remaining: number | string }>(
-          `SELECT join_remaining FROM ${t.run} WHERE id = ?`,
-          [parentRunId],
-        );
-        return rows[0] ? Number(rows[0].join_remaining) : undefined;
+        const rows = await tx.query(`SELECT join_remaining FROM ${t.run} WHERE id = ?`, [
+          parentRunId,
+        ]);
+        return rows[0] ? int(rows[0], "join_remaining") : undefined;
       });
     },
 
@@ -212,13 +197,13 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
 
     markRunning(runId) {
       return sql.tx(async (tx) => {
-        const cur = await tx.query<{ status: RunStatus; attempts: number | string }>(
+        const [cur] = await tx.query(
           `SELECT status, attempts FROM ${t.run} WHERE id = ? FOR UPDATE`,
           [runId],
         );
-        if (!cur[0]) throw new Error(`markRunning: run ${runId} not found`);
-        const attempts = Number(cur[0].attempts);
-        if (isTerminal(cur[0].status)) return attempts;
+        if (!cur) throw new Error(`markRunning: run ${runId} not found`);
+        const attempts = int(cur, "attempts");
+        if (isTerminal(runStatus(cur))) return attempts;
         await tx.exec(
           `UPDATE ${t.run} SET status = 'running', attempts = attempts + 1 WHERE id = ?`,
           [runId],
@@ -238,11 +223,10 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
             [c.runId, c.cursorKey],
           );
           if (existing.length === 0) {
-            const job = await tx.query<{ version: number | string }>(
-              `SELECT version FROM ${t.job} WHERE run_id = ? FOR UPDATE`,
-              [c.runId],
-            );
-            if (!job[0] || Number(job[0].version) !== fx.requireVersion) {
+            const job = await tx.query(`SELECT version FROM ${t.job} WHERE run_id = ? FOR UPDATE`, [
+              c.runId,
+            ]);
+            if (!job[0] || int(job[0], "version") !== fx.requireVersion) {
               return { status: c.status, attempts: c.attempts, committed: false };
             }
           }
@@ -250,7 +234,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         const ins = await tx.exec(
           `INSERT IGNORE INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
+          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.call ?? null],
         );
         if (ins.affectedRows === 1 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
         return loadStep(tx, c.runId, c.cursorKey);
@@ -284,7 +268,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     async listRuns(filter, page) {
       const statuses = statusList(filter.status);
       const where: string[] = [];
-      const params: unknown[] = [];
+      const params: SqlParam[] = [];
       if (statuses) {
         where.push(`status IN ${inList(statuses.length)}`);
         params.push(...statuses);
@@ -307,13 +291,13 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       }
       params.push(page.limit);
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-      const rows = await sql.query<RunRecord & { seq: number | string }>(
+      const rows = await sql.query(
         `SELECT * FROM ${t.run} ${clause} ORDER BY seq DESC LIMIT ?`,
         params,
       );
       const last = rows[rows.length - 1];
-      const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
-      return { runs: rows.map((r) => mapRun(r)), cursor };
+      const cursor = rows.length === page.limit && last ? text(last, "seq") : undefined;
+      return { runs: rows.map(mapRun), cursor };
     },
 
     async cancelRuns(filter, limit) {
@@ -322,11 +306,8 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       const params = [...q.params, limit];
       return sql.tx(async (tx) => {
         const ids = (
-          await tx.query<{ id: string }>(
-            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`,
-            params,
-          )
-        ).map((r) => r.id);
+          await tx.query(`SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`, params)
+        ).map((r) => text(r, "id"));
         if (ids.length === 0) return 0;
         const inIds = inList(ids.length);
         await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
@@ -341,11 +322,8 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       const params = [...q.params, limit];
       return sql.tx(async (tx) => {
         const ids = (
-          await tx.query<{ id: string }>(
-            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`,
-            params,
-          )
-        ).map((r) => r.id);
+          await tx.query(`SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`, params)
+        ).map((r) => text(r, "id"));
         if (ids.length === 0) return 0;
         const inIds = inList(ids.length);
         await tx.exec(
@@ -362,23 +340,19 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     async childrenOf(runId) {
-      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE parent_run_id = ?`, [
-        runId,
-      ]);
-      return rows.map((r) => mapRun(r));
+      const rows = await sql.query(`SELECT * FROM ${t.run} WHERE parent_run_id = ?`, [runId]);
+      return rows.map(mapRun);
     },
 
     async runStats() {
-      const rows = await sql.query<{ status: RunStatus; n: number | string }>(
-        `SELECT status, count(*) AS n FROM ${t.run} GROUP BY status`,
-      );
+      const rows = await sql.query(`SELECT status, count(*) AS n FROM ${t.run} GROUP BY status`);
       const stats = zeroRunStats();
-      for (const r of rows) stats[r.status] = Number(r.n);
+      for (const r of rows) stats[runStatus(r)] = int(r, "n");
       return stats;
     },
 
     async orphanedRuns(limit) {
-      const rows = await sql.query<{ id: string }>(
+      const rows = await sql.query(
         orphanedRunsSql({
           run: t.run,
           job: t.job,
@@ -391,7 +365,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         }),
         [limit],
       );
-      return rows.map((r) => r.id);
+      return rows.map((r) => text(r, "id"));
     },
 
     deleteRuns,
@@ -437,7 +411,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     async dueCrons(now, limit) {
-      const rows = await sql.query<CronRecord>(
+      const rows = await sql.query(
         `SELECT * FROM ${t.cron} WHERE next_run_at <= ? ORDER BY next_run_at LIMIT ?`,
         [now.getTime(), limit],
       );
@@ -445,7 +419,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     async listCrons() {
-      const rows = await sql.query<CronRecord>(`SELECT * FROM ${t.cron} ORDER BY name`);
+      const rows = await sql.query(`SELECT * FROM ${t.cron} ORDER BY name`);
       return rows.map(mapCron);
     },
 
@@ -458,11 +432,11 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
       if (names && names.length === 0) return 0;
       const namePredicate = names ? ` AND flow_name IN ${inList(names.length)}` : "";
       const params = names ? [now.getTime(), ...names] : [now.getTime()];
-      const rows = await sql.query<{ n: number | string }>(
+      const [row] = await sql.query(
         `SELECT count(*) AS n FROM ${t.cron} WHERE next_run_at <= ?${namePredicate}`,
         params,
       );
-      return Number(rows[0]?.n ?? 0);
+      return int(row, "n");
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {

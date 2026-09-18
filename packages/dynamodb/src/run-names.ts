@@ -1,25 +1,22 @@
 import { BatchGetCommand } from "@aws-sdk/lib-dynamodb";
 import type { EnqueueRequest } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import type { DocItem } from "#codec";
 import { key } from "#schema";
 
-const runAttr = async <T>(
+const runsProjecting = async (
   doc: Doc,
   table: string,
   runIds: readonly string[],
-  attr: string,
-): Promise<Map<string, T>> => {
-  const send = <R = unknown>(cmd: unknown): Promise<R> => doc.send(cmd) as Promise<R>;
-  const byId = new Map<string, T>();
+  attr: "name" | "priority",
+): Promise<DocItem[]> => {
+  const items: DocItem[] = [];
   // BatchGetItem rejects duplicate keys in one request.
   const ids = [...new Set(runIds)];
   for (let i = 0; i < ids.length; i += 100) {
-    let keys = ids.slice(i, i + 100).map((rid) => key.run(rid));
+    let keys: DocItem[] = ids.slice(i, i + 100).map((rid) => key.run(rid));
     while (keys.length > 0) {
-      const res = await send<{
-        Responses?: Record<string, ({ id: string } & Record<string, unknown>)[]>;
-        UnprocessedKeys?: Record<string, { Keys?: { pk: string; sk: string }[] }>;
-      }>(
+      const res = await doc.send(
         new BatchGetCommand({
           RequestItems: {
             [table]: {
@@ -31,21 +28,22 @@ const runAttr = async <T>(
           },
         }),
       );
-      for (const r of res.Responses?.[table] ?? []) {
-        if (r[attr] !== undefined) byId.set(r.id, r[attr] as T);
-      }
+      items.push(...(res.Responses?.[table] ?? []));
       keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
     }
   }
-  return byId;
+  return items;
 };
 
 /** @internal */
-export const runNames = (
+export const runNames = async (
   doc: Doc,
   table: string,
   runIds: readonly string[],
-): Promise<Map<string, string>> => runAttr<string>(doc, table, runIds, "name");
+): Promise<Map<string, string>> => {
+  const runs = await runsProjecting(doc, table, runIds, "name");
+  return new Map(runs.map((r): [string, string] => [r.id, r.name]));
+};
 
 /** @internal */
 export const storedPriorities = async (
@@ -54,5 +52,9 @@ export const storedPriorities = async (
   requests: readonly EnqueueRequest[],
 ): Promise<Map<string, number>> => {
   const ids = requests.filter((r) => r.opts?.priority === undefined).map((r) => r.runId);
-  return ids.length === 0 ? new Map() : runAttr<number>(doc, table, ids, "priority");
+  if (ids.length === 0) return new Map();
+  const runs = await runsProjecting(doc, table, ids, "priority");
+  return new Map(
+    runs.filter((r) => r.priority !== undefined).map((r): [string, number] => [r.id, r.priority]),
+  );
 };

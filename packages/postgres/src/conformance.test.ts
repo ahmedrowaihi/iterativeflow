@@ -76,7 +76,7 @@ describe.skipIf(skip)("postgres backend", () => {
               { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
               { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
             )
-            .then((o) => o.result as string),
+            .then((o) => o.result),
         ),
       );
 
@@ -149,7 +149,7 @@ describe.skipIf(skip)("postgres backend", () => {
         run: async () => 1,
       });
       const orderCount = async (): Promise<number> =>
-        (await pool.query("SELECT count(*)::int AS n FROM app_orders")).rows[0].n as number;
+        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM app_orders")).rows[0].n;
       const runCount = async (): Promise<number> =>
         (await backend.store.listRuns({}, { limit: 10 })).runs.length;
 

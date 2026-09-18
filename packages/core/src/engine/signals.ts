@@ -27,8 +27,10 @@ export class AwaitSignalSignal {
 
 export type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
 
-export const isControlSignal = (e: unknown): e is ControlSignal =>
-  e instanceof SleepSignal || e instanceof AwaitChildSignal || e instanceof AwaitSignalSignal;
+export const isControlSignal = (cause: unknown): cause is ControlSignal =>
+  cause instanceof SleepSignal ||
+  cause instanceof AwaitChildSignal ||
+  cause instanceof AwaitSignalSignal;
 
 /** An error carrying a stable machine-readable `code`, distinct from the class name. */
 export abstract class CodedError extends Error {

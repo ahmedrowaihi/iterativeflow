@@ -6,7 +6,7 @@ import type { DriftPolicy, FlowError, SuspendStatus, TerminalOutcome } from "#ty
 import { cancelDescendants, cancelRun } from "#engine/cancel";
 import { type Clock, type SuspendHolder, makeCtx, systemClock } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
-import { type EventType, type ObserveOpts, makeObserver } from "#engine/observe";
+import { type ObserveOpts, makeObserver } from "#engine/observe";
 import {
   AwaitChildSignal,
   AwaitSignalSignal,
@@ -106,12 +106,22 @@ const causeChain = (e: Error): string | undefined => {
   return parts.length ? parts.join(" ← ") : undefined;
 };
 
-const toFlowError = (e: unknown): FlowError => {
-  if (e instanceof CodedError)
-    return { code: e.code, message: e.message, stack: e.stack, cause: causeChain(e) };
-  if (e instanceof Error)
-    return { code: e.name || "ERROR", message: e.message, stack: e.stack, cause: causeChain(e) };
-  return { code: "ERROR", message: String(e) };
+const toFlowError = (cause: unknown): FlowError => {
+  if (cause instanceof CodedError)
+    return {
+      code: cause.code,
+      message: cause.message,
+      stack: cause.stack,
+      cause: causeChain(cause),
+    };
+  if (cause instanceof Error)
+    return {
+      code: cause.name || "ERROR",
+      message: cause.message,
+      stack: cause.stack,
+      cause: causeChain(cause),
+    };
+  return { code: "ERROR", message: String(cause) };
 };
 
 const backoff = (attempt: number, p: RetryPolicy, now: Date): Date =>
@@ -189,16 +199,18 @@ export const runTick = async (
         };
 
   const finish = async (
-    status: "done" | "failed",
-    outcome: TerminalOutcome,
-    event: EventType,
-    meta?: Record<string, unknown>,
+    outcome: Exclude<TerminalOutcome, { status: "canceled" }>,
   ): Promise<TickResult> => {
+    const { status } = outcome;
     await store.markTerminal(run.id, outcome);
     // cancelDescendants is idempotent and no-ops when childrenOf is empty, so a childless failure
     // costs one empty query on the rare failure path — cheaper than scanning every tick's memo.
     if (status === "failed") await cancelDescendants(backend, run.id);
-    await obs.event(event, run.id, now(), meta);
+    if (outcome.status === "failed") {
+      await obs.event("run.failed", run.id, now(), { error: outcome.error });
+    } else {
+      await obs.event("run.completed", run.id, now());
+    }
     obs.metrics.runSettled?.(run.id, status, flowLabel, {
       durationMs: run.createdAt ? now().getTime() - run.createdAt.getTime() : undefined,
       errorCode: outcome.status === "failed" ? outcome.error.code : undefined,
@@ -230,7 +242,7 @@ export const runTick = async (
   };
 
   // The deployed code can't advance this run yet — the flow isn't registered (`unknown_flow`) or its
-  // shape drifted under it (`flow_drift`). `parked` is not a failure, so it doesn't spend the
+  // calls drifted under it (`flow_drift`). `parked` is not a failure, so it doesn't spend the
   // dead-letter budget: the run waits, visibly, for a redeploy or a version bump.
   const parkForRedeploy = (
     tickStatus: "unknown_flow" | "flow_drift",
@@ -265,18 +277,13 @@ export const runTick = async (
   // worker (uncatchable — the catch below never runs) would otherwise re-claim forever. Once
   // attempts pass the cap, fail terminally without executing, bounding the poison pill.
   if (attempt > retry.maxAttempts) {
-    return finish(
-      "failed",
-      {
-        status: "failed",
-        error: {
-          code: "RUN_ATTEMPTS_EXHAUSTED",
-          message: `run exceeded ${retry.maxAttempts} attempts`,
-        },
+    return finish({
+      status: "failed",
+      error: {
+        code: "RUN_ATTEMPTS_EXHAUSTED",
+        message: `run exceeded ${retry.maxAttempts} attempts`,
       },
-      "run.failed",
-      { code: "RUN_ATTEMPTS_EXHAUSTED" },
-    );
+    });
   }
   if (attempt === 1) {
     await obs.event("run.started", run.id, now());
@@ -285,7 +292,11 @@ export const runTick = async (
 
   // `snap` was loaded after the claim, so it already holds every durable step + signal; the
   // exclusive lease means nothing else writes them mid-tick. No second load needed.
-  const suspendState: SuspendHolder = {};
+  const suspendState: SuspendHolder = { inflight: new Set() };
+  // A branch still running after a sibling settled can issue further calls; wait for those too.
+  const settleInflight = async (): Promise<void> => {
+    while (suspendState.inflight.size > 0) await Promise.allSettled(suspendState.inflight);
+  };
   const ctx = makeCtx({
     backend,
     snap,
@@ -302,22 +313,18 @@ export const runTick = async (
   });
 
   try {
-    const output = await flow.run(ctx, run.input);
+    const output = await flow.run(ctx, run.input).finally(settleInflight);
     // The body returned — but if it caught and swallowed a suspend without issuing another ctx call,
     // honour the suspend instead of completing at the wrong point.
     if (suspendState.signal) throw suspendState.signal;
-    return finish("done", { status: "done", output }, "run.completed");
+    return finish({ status: "done", output });
   } catch (e) {
-    if (e instanceof SleepSignal) {
-      return suspend("sleeping", "sleeping", { timers: [{ runId: run.id, fireAt: e.wakeAt }] });
-    }
-    if (e instanceof AwaitChildSignal) return suspend("awaiting_child", "awaiting_child");
-    if (e instanceof AwaitSignalSignal)
-      return suspend(
-        "awaiting_signal",
-        "awaiting_signal",
-        e.deadline ? { timers: [{ runId: run.id, fireAt: e.deadline }] } : undefined,
-      );
+    const wake = suspendState.wakeAt && {
+      timers: [{ runId: run.id, fireAt: suspendState.wakeAt }],
+    };
+    if (e instanceof SleepSignal) return suspend("sleeping", "sleeping", wake);
+    if (e instanceof AwaitChildSignal) return suspend("awaiting_child", "awaiting_child", wake);
+    if (e instanceof AwaitSignalSignal) return suspend("awaiting_signal", "awaiting_signal", wake);
     if (isControlSignal(e)) throw e; // future signals must be handled explicitly
 
     if (e instanceof FlowDriftError) {
@@ -325,7 +332,7 @@ export const runTick = async (
         return parkForRedeploy("flow_drift", { cursorKey: e.cursorKey });
       }
       const err = toFlowError(e);
-      return finish("failed", { status: "failed", error: err }, "run.failed", { error: err });
+      return finish({ status: "failed", error: err });
     }
 
     if (attempt < retry.maxAttempts && !(e instanceof StepFailedError)) {
@@ -338,6 +345,6 @@ export const runTick = async (
     }
 
     const error = toFlowError(e);
-    return finish("failed", { status: "failed", error }, "run.failed", { error });
+    return finish({ status: "failed", error });
   }
 };

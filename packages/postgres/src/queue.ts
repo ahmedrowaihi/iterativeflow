@@ -6,16 +6,10 @@ import {
   type QueueDepth,
   queueDepthOf,
 } from "@iterativeflow/core/backend";
+import { date, int, optDate, text } from "#codec";
 import { type Tables, tables } from "#schema";
 import { enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
-
-interface LeaseRow {
-  run_id: string;
-  lease_token: string;
-  lease_expires: Date;
-  version: number;
-}
 
 /** @internal */
 export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
@@ -33,7 +27,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       if (names?.length === 0) return [];
-      const rows = await sql.query<LeaseRow>(
+      const rows = await sql.query(
         `UPDATE ${t.job}
            SET lease_token = $4 || ':' || run_id,
                lease_expires = $1::timestamptz + ($2 * interval '1 millisecond')
@@ -50,22 +44,22 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
         [at(now), leaseMs, limit, id(), names ?? null],
       );
       return rows.map((r) => ({
-        runId: r.run_id,
-        token: r.lease_token,
-        expiresAt: r.lease_expires,
-        version: Number(r.version),
+        runId: text(r, "run_id"),
+        token: text(r, "lease_token"),
+        expiresAt: date(r, "lease_expires"),
+        version: int(r, "version"),
       }));
     },
 
     async heartbeat(lease: Lease, { leaseMs, now }) {
-      const rows = await sql.query<{ lease_expires: Date }>(
+      const rows = await sql.query(
         `UPDATE ${t.job} SET lease_expires = $1::timestamptz + ($2 * interval '1 millisecond')
          WHERE run_id = $3 AND lease_token = $4 AND lease_expires > $1::timestamptz
          RETURNING lease_expires`,
         [at(now), leaseMs, lease.runId, lease.token],
       );
       if (!rows[0]) throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
-      return { ...lease, expiresAt: rows[0].lease_expires };
+      return { ...lease, expiresAt: date(rows[0], "lease_expires") };
     },
 
     async ack(lease: Lease, opts) {
@@ -90,7 +84,7 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
       // a run-less job is unownable, so it passes every name filter (see Queue.claim)
       const named = `($2::text[] IS NULL OR r.name IS NULL OR r.name = ANY($2))`;
       const claimable = `j.run_at <= $1::timestamptz AND (j.lease_expires IS NULL OR j.lease_expires <= $1::timestamptz) AND ${named}`;
-      const rows = await sql.query<{ claimable: number; leased: number; oldest: Date | null }>(
+      const rows = await sql.query(
         `SELECT count(*) FILTER (WHERE ${claimable})::int AS claimable,
                 count(*) FILTER (WHERE j.lease_expires > $1::timestamptz AND ${named})::int AS leased,
                 min(j.run_at) FILTER (WHERE ${claimable}) AS oldest
@@ -98,10 +92,12 @@ export const createPgQueue = (sql: Sql, schema: string, id: IdGen): Queue => {
         [at(now), names ?? null],
       );
       const r = rows[0];
+      if (!r) throw new Error("depth: an aggregate returned no row");
+      const oldest = optDate(r, "oldest");
       return {
-        claimable: r.claimable,
-        leased: r.leased,
-        oldestClaimableAgeMs: r.oldest ? now.getTime() - r.oldest.getTime() : null,
+        claimable: int(r, "claimable"),
+        leased: int(r, "leased"),
+        oldestClaimableAgeMs: oldest ? now.getTime() - oldest.getTime() : null,
       };
     },
   };

@@ -18,8 +18,9 @@ import {
   submit,
   submitMany,
   tickOnce,
-  signalType,
+  type SignalSchema,
 } from "@iterativeflow/core";
+import { createTestHarness } from "@iterativeflow/core/testing";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
 
@@ -260,63 +261,86 @@ describe("engine — end to end on the memory backend", () => {
     expect(errors.length).toBeGreaterThan(0); // surfaced as a tick error, not as a flow failure
   });
 
-  it("a suspend inside a step bypasses classify and does not burn a retry", async () => {
-    let bodyRuns = 0;
-    const classified: string[] = [];
-    const flow = defineFlow<Record<string, never>, string>({
-      name: "suspend-vs-policy",
+  it("a parallel branch still starts, and keeps its sleep, when a sibling suspends first", async () => {
+    const goSchema: SignalSchema<string> = {
+      "~standard": { version: 1, vendor: "test", validate: (v) => ({ value: String(v) }) },
+    };
+    const flow = defineFlow<Record<string, never>, string, { go: string }>({
+      name: "parallel-suspends",
       version: 1,
-      run: async (ctx) =>
-        ctx.step(
-          "gate",
-          async () => {
-            bodyRuns += 1;
-            await ctx.sleep(1_000);
-            return "through";
-          },
-          {
-            retries: 3,
-            retryDelayMs: 1,
-            // the recipe the docs suggest: anything unrecognised is permanent
-            classify: (e) => {
-              classified.push(String((e as Error)?.name ?? e));
-              return "permanent";
-            },
-          },
-        ),
+      signals: { go: goSchema },
+      run: async (ctx) => {
+        const [go, slept] = await Promise.all([
+          ctx.signal("go"),
+          ctx.sleep(1_000).then(() => ctx.step("b", () => "slept")),
+        ]);
+        return `${go}+${slept}`;
+      },
     });
-    const backend = createMemoryBackend();
-    const settled = await driveToSettle(backend, registry([flow]), await submit(backend, flow, {}));
+    // A real database answers after the first suspend has already rejected `Promise.all`.
+    const base = createMemoryBackend();
+    const slowWrites: Backend = {
+      ...base,
+      store: {
+        ...base.store,
+        checkpointStep: async (c, fx) => {
+          await new Promise((r) => setTimeout(r, 5));
+          return base.store.checkpointStep(c, fx);
+        },
+      },
+    };
+    const t = createTestHarness(slowWrites, [flow]);
+    const handle = await t.engine.submit(flow, {});
 
-    expect(settled).toMatchObject({ status: "done", output: "through" });
-    expect(classified).toEqual([]); // the SleepSignal never reached classify
-    expect(bodyRuns).toBe(2); // ran once, parked, resumed once — the retry budget was not spent
+    expect(await t.advanceToNextWake()).toBe(true);
+    await t.engine.signal(handle, "go", "now");
+    expect(await t.settle(handle)).toMatchObject({ status: "done", output: "now+slept" });
   });
 
-  it("a ctx.* call nested inside a step body survives a later replay", async () => {
-    let napRuns = 0;
+  it("parallel steps keep their keys across a replay, so no body re-runs", async () => {
+    const ran: string[] = [];
     const flow = defineFlow<Record<string, never>, number>({
-      name: "nested-ctx",
+      name: "parallel-steps",
       version: 1,
       run: async (ctx) => {
-        await ctx.step("a", () => 1);
-        await ctx.step("nap", async () => {
-          napRuns += 1;
-          await ctx.sleep(1_000); // nested suspend — the shape the builder docs use
-          return 2;
-        });
-        await ctx.sleep(1_000); // a further replay AFTER "nap" committed its memo
-        return await ctx.step("b", () => 3);
+        const [a, b] = await Promise.all([
+          ctx.step("a", async () => (ran.push("a"), 1)),
+          ctx.step("b", async () => (ran.push("b"), 2)),
+        ]);
+        await ctx.sleep(1_000); // forces a replay of both steps on resume
+        return a + b;
       },
     });
     const backend = createMemoryBackend();
-    const flows = registry([flow]);
     const runId = await submit(backend, flow, {});
-    const settled = await driveToSettle(backend, flows, runId);
+    const settled = await driveToSettle(backend, registry([flow]), runId);
 
-    // regression: "b"'s key used to collide with the nested sleep's memo
     expect(settled).toMatchObject({ status: "done", output: 3 });
-    expect(napRuns).toBe(2); // the body re-runs from the top on resume — nesting does not memoize it
+    expect(ran).toEqual(["a", "b"]);
+    expect([...((await backend.store.loadRun(runId))?.steps.keys() ?? [])]).toEqual([
+      "s0",
+      "s1",
+      "s2",
+    ]);
+  });
+
+  it("a step body that calls the flow's ctx parks as drifted on replay", async () => {
+    const flow = defineFlow<Record<string, never>, number>({
+      name: "outer-ctx-in-step",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.step("wrong", async () => {
+          await ctx.sleep(1_000);
+          return 1;
+        });
+        await ctx.sleep(1_000);
+        return ctx.step("after", () => 2);
+      },
+    });
+    const t = createTestHarness(createMemoryBackend(), [flow]);
+    const handle = await t.engine.submit(flow, {});
+
+    await expect(t.settle(handle)).rejects.toThrow(/parked/);
   });
 
   it("holds the lease across ONE long step, so a second worker cannot re-claim it", async () => {
@@ -445,10 +469,20 @@ describe("engine — end to end on the memory backend", () => {
   });
 
   it("waits for an external signal and resumes with its payload", async () => {
+    const reviewSchema: SignalSchema<{ approved: boolean }> = {
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate: (v) =>
+          v instanceof Object && "approved" in v
+            ? { value: { approved: v.approved === true } }
+            : { issues: [{ message: "approved is required" }] },
+      },
+    };
     const flow = defineFlow({
       name: "approval",
       version: 1,
-      signals: { review: signalType<{ approved: boolean }>() },
+      signals: { review: reviewSchema },
       run: async (ctx): Promise<string> => {
         const decision = await ctx.signal("review");
         return decision.approved ? "shipped" : "rejected";
@@ -875,11 +909,10 @@ describe("engine — end to end on the memory backend", () => {
     expect((await backend.store.loadRunRow(runId))?.status).toBe("done");
     const logs = events.filter((e) => e.type === "run.log");
     // "before sleep" must appear exactly once despite the body re-running on the wake replay.
-    expect(logs.map((l) => (l.data as { message: string }).message)).toEqual([
-      "before sleep",
-      "after sleep",
+    expect(logs.map((l) => l.data)).toEqual([
+      { message: "before sleep", data: { n: 1 } },
+      { message: "after sleep", data: undefined },
     ]);
-    expect((logs[0].data as { data: unknown }).data).toEqual({ n: 1 });
   });
 
   it("tracer emits one stable-id span per executed step and stays silent on replay", async () => {
@@ -1138,8 +1171,8 @@ describe("engine — end to end on the memory backend", () => {
   });
 
   it("metrics carry the flow label and duration, so a callback can label without a store read", async () => {
-    const settledCalls: unknown[][] = [];
-    const startedCalls: unknown[][] = [];
+    const settledCalls: Parameters<NonNullable<Metrics["runSettled"]>>[] = [];
+    const startedCalls: Parameters<NonNullable<Metrics["runStarted"]>>[] = [];
     const flow = defineFlow<Record<string, never>, number>({
       name: "labelled",
       version: 3,
@@ -1158,7 +1191,7 @@ describe("engine — end to end on the memory backend", () => {
     expect(startedCalls[0][1]).toEqual({ name: "labelled", version: 3 });
     expect(settledCalls[0][1]).toBe("done");
     expect(settledCalls[0][2]).toEqual({ name: "labelled", version: 3 });
-    expect((settledCalls[0][3] as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
+    expect(settledCalls[0][3]?.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("pause stops the resident loop claiming; resume wakes it without a restart", async () => {

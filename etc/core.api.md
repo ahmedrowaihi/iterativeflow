@@ -5,7 +5,7 @@
 ## backend.d.mts
 
 ```ts
-import { A as DeliveredSignal, B as RunSpec, C as Lease, D as queueDepthOf, E as distinctEnqueues, F as RUN_STATUSES, G as SuspendStatus, H as StepCheckpoint, I as RunFilter, J as TerminalStatus, K as TERMINAL_STATUSES, L as RunPage, M as FlowError, N as Page, O as CronRow, P as PurgeFilter, R as RunRow, S as EnqueueRequest, T as QueueDepth, U as StepOutcome, V as RunStatus, W as StepStatus, _ as Wakeup, a as EventType, b as ClaimOpts, d as StartResult, f as Store, g as TimerRequest, h as SpawnRequest, i as EventSink, k as CronSpec, m as Outbox, n as newId, o as FlowEvent, p as Backend, q as TerminalOutcome, t as IdGen, v as Timer, w as Queue, x as EnqueueOpts, y as TimerDueOpts, z as RunSnapshot } from "./id-<hash>.mjs";
+import { $ as TerminalStatus, A as CRON_OVERLAPS, B as RunFilter, C as EnqueueOpts, D as QueueDepth, E as Queue, G as RunStatus, H as RunRow, I as FlowError, J as StepOutcome, K as STEP_STATUSES, L as Page, M as CronRow, N as CronSpec, O as distinctEnqueues, P as DeliveredSignal, Q as TerminalOutcome, R as PurgeFilter, S as ClaimOpts, T as Lease, U as RunSnapshot, V as RunPage, W as RunSpec, X as SuspendStatus, Y as StepStatus, Z as TERMINAL_STATUSES, _ as SpawnRequest, a as EventSink, b as Timer, f as isEventType, g as Outbox, h as Backend, j as CronOverlap, k as queueDepthOf, m as Store, n as newId, o as EventType, p as StartResult, q as StepCheckpoint, r as EVENT_TYPES, s as FlowEvent, t as IdGen, v as TimerRequest, w as EnqueueRequest, x as TimerDueOpts, y as Wakeup, z as RUN_STATUSES } from "./id-<hash>.mjs";
 import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, o as statusList, r as RECONCILABLE_STATUSES, s as zeroRunStats, t as ACTIVE_STATUSES } from "./status-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
@@ -17,6 +17,34 @@ import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, 
  * re-reads the store every tick regardless.
  */
 declare const createLocalWakeup: () => Wakeup;
+//#endregion
+//#region src/json.d.ts
+/** A JSON value: what every backend stores a run's input, step results and signal payloads as. */
+type Json = string | number | boolean | null | Json[] | {
+  [key: string]: Json;
+};
+/**
+ * Round-trip a value through JSON. A backend that keeps rich types (memory, BSON) uses this so a
+ * `Date`, `Map` or `Set` comes back exactly as it would from a JSON column on every other backend.
+ */
+declare const durable: <T>(value: T) => Json | undefined;
+/** Whether a stored JSON value is a string. */
+declare const isJsonString: (value: Json | undefined) => value is string;
+/**
+ * Decode a stored {@link FlowError}. `where` names the column or field for the error message.
+ * @throws when the value is present but isn't a flow error.
+ */
+declare const decodeFlowError: (value: Json | undefined, where: string) => FlowError | undefined;
+/**
+ * Decode a stored tag list.
+ * @throws when the value is present but isn't a list of strings.
+ */
+declare const decodeTags: (value: Json | undefined, where: string) => string[] | undefined;
+/**
+ * Narrow a stored string to one of `allowed` (a status list such as `RUN_STATUSES`).
+ * @throws when the value is not in the list.
+ */
+declare const decodeOneOf: <T extends string>(allowed: readonly T[], value: string, where: string) => T;
 //#endregion
 //#region src/purge.d.ts
 /**
@@ -55,16 +83,16 @@ declare const purgeMatcher: (filter: PurgeFilter) => ((run: PurgeRun) => boolean
  * filter intersects to no usable status — the caller then touches nothing rather than emitting an
  * empty `IN ()`. Statuses render as literals for the reason on {@link PurgeSqlOpts.statusTuple}.
  */
-declare const runSetWhereSql: (filter: RunFilter, allowed: readonly RunStatus[], op: string, o: PurgeSqlOpts) => {
+declare const runSetWhereSql: <Time>(filter: RunFilter, allowed: readonly RunStatus[], op: string, o: PurgeSqlOpts<Time>) => {
   where: string;
-  params: unknown[];
+  params: (string | number)[];
 } | undefined;
 /** Dialect specifics for {@link purgeWhereSql}. */
-interface PurgeSqlOpts {
+interface PurgeSqlOpts<Time> {
   /** Renders the nth (1-based) bind placeholder: `` (n) => `$${n}` `` for Postgres, `() => "?"` else. */
   placeholder: (n: number) => string;
   /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
-  time: (at: Date) => unknown;
+  time: (at: Date) => Time;
   /** Renders a status set as a SQL literal tuple, e.g. `('done','failed')`. Literals, not binds:
    *  a partial index over the terminal statuses is only usable when the planner can prove the
    *  query's predicate implies the index's, which it cannot do through a bind parameter. */
@@ -79,9 +107,9 @@ interface PurgeSqlOpts {
  * rather than emitting an empty `IN ()`. Binds are numbered from 1, so a trailing `LIMIT` takes
  * `placeholder(params.length + 1)`.
  */
-declare const purgeWhereSql: (filter: PurgeFilter, o: PurgeSqlOpts) => {
+declare const purgeWhereSql: <Time>(filter: PurgeFilter, o: PurgeSqlOpts<Time>) => {
   where: string;
-  params: unknown[];
+  params: (string | number | Time)[];
 } | undefined;
 //#endregion
 //#region src/orphan.d.ts
@@ -139,13 +167,13 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
  */
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, type ClaimOpts, type CronRow, type CronSpec, type DeliveredSignal, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, distinctEnqueues, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, CRON_OVERLAPS, type ClaimOpts, type CronOverlap, type CronRow, type CronSpec, type DeliveredSignal, EVENT_TYPES, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Json, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, STEP_STATUSES, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, decodeFlowError, decodeOneOf, decodeTags, distinctEnqueues, durable, isEventType, isJsonString, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
 ```
 
 ## engine-<hash>.d.mts
 
 ```ts
-import { C as Lease, I as RunFilter, L as RunPage, M as FlowError, N as Page, O as CronRow, P as PurgeFilter, T as QueueDepth, V as RunStatus, c as ObserveOpts, j as DriftPolicy, p as Backend, t as IdGen, x as EnqueueOpts, z as RunSnapshot } from "./id-<hash>.mjs";
+import { B as RunFilter, C as EnqueueOpts, D as QueueDepth, F as DriftPolicy, G as RunStatus, I as FlowError, L as Page, M as CronRow, R as PurgeFilter, T as Lease, U as RunSnapshot, V as RunPage, h as Backend, l as ObserveOpts, t as IdGen } from "./id-<hash>.mjs";
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -171,7 +199,7 @@ interface StepPolicy {
    * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
    * 4xx/validation errors and retry 5xx/timeouts.
    */
-  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
+  classify?: (cause: unknown, attempt: number) => "transient" | "permanent";
 }
 /** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
 type SignalOutcome<T> = {
@@ -195,13 +223,15 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * Run `fn` once and memoize its result. On replay the stored result is returned and `fn`
    * is NOT re-run. `fn` is at-least-once across a crash BEFORE the checkpoint commits, so
    * keep its side-effects idempotent; the memo is exactly-once. `policy` adds in-invocation
-   * retries, a timeout, and error classification; `fn` receives an {@link StepArg} (abort
-   * signal + attempt). Durable long backoff is still the run-level retry.
+   * retries, a timeout, and error classification. Durable long backoff is still the run-level retry.
+   *
+   * A step is a leaf: its body must not call `ctx`. Durable waits and child runs belong in the flow
+   * body, and nested durable work belongs in a child flow (`ctx.invoke`). A body that closes over
+   * `ctx` shifts the cursor on its first run only, so the run parks as drifted on replay.
    *
    * The memo round-trips through the backend's JSON, so `T` describes what `fn` returns, not
-   * necessarily what a replay hands back: a `Date` returns as an ISO string on every backend that
-   * serializes (the in-memory one keeps it, which is why this only shows up in production). Return
-   * JSON-native values, and parse at the boundary.
+   * necessarily what a replay hands back: a `Date` returns as an ISO string. Return JSON-native
+   * values, and parse at the boundary.
    */
   step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, policy?: StepPolicy): Promise<T>;
   /** Durably park the run for `ms`, releasing the worker. Resumes after the deadline. */
@@ -226,8 +256,8 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
    * payload without re-waiting.
    *
-   * When the flow declares a `signals` map, only those names compile and each returns its declared
-   * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
+   * When the flow declares a `signals` map, only those names compile and each returns its
+   * validated payload. A flow with no `signals` map takes any name, and the payload is `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
   /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
@@ -242,7 +272,7 @@ interface Ctx<S extends SignalMap = SignalMap> {
    * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
    * no sink is wired or the observe `level` is `lifecycle`/`off`.
    */
-  log(message: string, data?: unknown): void;
+  log<D>(message: string, data?: D): void;
 }
 /** The clock the executor threads in — injectable for deterministic tests. */
 type Clock = () => Date;
@@ -255,7 +285,7 @@ interface InputSchema<I> {
   readonly "~standard": {
     readonly version: 1;
     readonly vendor: string;
-    readonly validate: (value: unknown) => {
+    readonly validate: <V>(value: V) => {
       value: I;
       issues?: undefined;
     } | {
@@ -273,26 +303,23 @@ interface InputSchema<I> {
   };
 }
 /** A flow's signal contract: signal name → payload type. Threads typed send + await. */
-type SignalMap = Record<string, unknown>;
+type SignalMap = object;
 /** No declared signals — the default. `ctx.signal(name)` then takes any name, payload `unknown`. */
 type NoSignals = Record<never, never>;
 /**
  * A signal's payload contract — any Standard-Schema validator (zod / valibot / arktype), exactly
  * like a flow's `input`. Declared in a flow's `signals` map, it types both `ctx.signal(name)` (await)
  * and `engine.signal(handle, name, payload)` (send), AND validates the payload when the flow consumes
- * it. Use {@link signalType} when you want the type without runtime validation.
+ * it — so a typed signal is always a checked one.
  */
 type SignalSchema<T> = InputSchema<T>;
-/**
- * Declare a signal's payload type WITHOUT runtime validation: `signals: { approve: signalType<{ by: string }>() }`.
- * Returns a Standard-Schema identity validator (accepts any value), so it slots into the same
- * `signals` map as a real zod/valibot schema — reach for a real schema when you want the payload checked.
- */
-declare const signalType: <T>() => SignalSchema<T>;
 /** The `signals` field's shape for a given map — one Standard-Schema validator per name. */
 type SignalSchemas<S extends SignalMap> = { [K in keyof S]: SignalSchema<S[K]>; };
+/** A flow's output contract — any Standard-Schema validator. Pass it to `result()` to get a checked,
+ *  typed output back instead of `unknown`. */
+type OutputSchema<T> = InputSchema<T>;
 /** Validate a signal payload against its declared schema. Throws with the collected issues. */
-declare const validateSignal: <T>(schema: SignalSchema<T>, name: string, payload: unknown) => Promise<T>;
+declare const validateSignal: <T, P>(schema: SignalSchema<T>, name: string, payload: P) => Promise<T>;
 /** Valid signal names for a map: the declared keys, or any string when none are declared. */
 type SignalName<S extends SignalMap> = [keyof S] extends [never] ? string : keyof S & string;
 /** The payload type for signal `K` in map `S` — the declared type, or `unknown` when undeclared. */
@@ -311,8 +338,8 @@ interface Flow<I = unknown, O = unknown, S extends SignalMap = NoSignals, N exte
   /** Optional Standard-Schema validator for the input, checked at submit time. */
   input?: InputSchema<I>;
   /**
-   * Declares the signals this flow awaits (name → payload type). Type-only: it drives typed
-   * `ctx.signal` / `engine.signal` and is never read at runtime. Build it with {@link signalType}.
+   * The signals this flow awaits: name → Standard-Schema validator. It types `ctx.signal` and
+   * `engine.signal`, and each payload is validated as the flow consumes it.
    */
   signals?: SignalSchemas<S>;
   /** Per-flow overrides of the engine's operational policy — e.g. a critical flow that must `"fail"` on drift. */
@@ -333,7 +360,7 @@ declare const validateInput: <I>(flow: {
   name: string;
   input?: InputSchema<I>;
 }, input: I) => Promise<I>;
-/** Define a durable flow. Ships alongside the builder API; both produce a {@link Flow}. */
+/** Define a durable flow. */
 declare const defineFlow: <I, O, S extends SignalMap = NoSignals, N extends string = string>(flow: Flow<I, O, S, N>) => Flow<I, O, S, N>;
 /**
  * A flow's submit-side contract — its identity (`name`/`version`) plus typed input, output, and
@@ -500,17 +527,25 @@ interface RunResult<O = unknown> {
  * failure re-runs. A no-op on a run that isn't `failed`. Returns whether it retried.
  */
 declare const retryRun: (backend: Backend, runId: string) => Promise<boolean>;
+/** How {@link result} waits: `timeoutMs` bounds it, `pollMs` spaces the reads. */
+interface ResultOpts {
+  timeoutMs?: number;
+  pollMs?: number;
+  now?: Clock;
+}
 /**
  * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
  * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
  * default — no `LISTEN` pinned. With no `timeoutMs` it waits INDEFINITELY, polling every `pollMs`
  * (default 500) — pass one in a request handler. Throws on timeout.
+ *
+ * The output is read back from the database, so it is `unknown` unless you pass the flow's
+ * `output` schema — then it is validated, and a mismatch throws.
  */
-declare const result: <O = unknown>(backend: Backend, runId: RunHandle<O> | string, opts?: {
-  timeoutMs?: number;
-  pollMs?: number;
-  now?: Clock;
-}) => Promise<RunResult<O>>;
+declare function result(backend: Backend, runId: string, opts?: ResultOpts): Promise<RunResult<unknown>>;
+declare function result<O>(backend: Backend, runId: RunHandle<O> | string, opts: ResultOpts & {
+  output: OutputSchema<O>;
+}): Promise<RunResult<O>>;
 /** Move every due timer back onto the queue. Returns how many were re-enqueued. */
 declare const drainTimers: (backend: Backend, opts: {
   limit: number;
@@ -651,6 +686,8 @@ interface EngineOpts {
    */
   pollTimeoutMs?: number;
 }
+/** How long `engine.result` waits for a run to settle, and how often it re-reads. */
+type ResultWait = Omit<ResultOpts, "now">;
 /** Options for the resident worker loop. */
 interface RunLoopOpts {
   /** Claim-cycle cadence (ms) when there's work — the busy/floor interval. Default 200. */
@@ -687,9 +724,9 @@ interface Engine<N extends string = string> {
   retry(runId: string): Promise<boolean>;
   cancelMany(filter: RunFilter<N>, limit?: number): Promise<number>;
   retryMany(filter: RunFilter<N>, limit?: number): Promise<number>;
-  result<O = unknown>(runId: RunHandle<O> | string, opts?: {
-    timeoutMs?: number;
-    pollMs?: number;
+  result(runId: string, opts?: ResultWait): Promise<RunResult<unknown>>;
+  result<O>(runId: RunHandle<O> | string, opts: ResultWait & {
+    output: OutputSchema<O>;
   }): Promise<RunResult<O>>;
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
@@ -768,7 +805,7 @@ interface Engine<N extends string = string> {
 }
 declare const createEngine: <const F extends readonly AnyFlow[]>(backend: Backend, flows: F, opts?: EngineOpts) => Engine<F[number]["name"]>;
 //#endregion
-export { Clock as $, TickResult as A, InputSchema as B, tickOnce as C, runDueCrons as D, registerCron as E, Contract as F, SignalSchema as G, InvokeSpecFor as H, Flow as I, defineFlow as J, SignalSchemas as K, FlowOutputs as L, defaultRetry as M, runTick as N, RetryPolicy as O, AnyFlow as P, validateSignal as Q, FlowPolicy as R, submitMany as S, cronTag as T, NoSignals as U, InvokeSpec as V, SignalMap as W, signalType as X, registry as Y, validateInput as Z, result as _, createEngine as a, signalRun as b, RunResult as c, SweepResult as d, Ctx as et, TickOnceOpts as f, reconcile as g, purge as h, RunLoopOpts as i, TickStatus as j, TickOpts as k, SubmitOpts as l, prune as m, EngineOpts as n, StepPolicy as nt, OnDuplicate as o, drainTimers as p, defineContract as q, Liveness as r, systemClock as rt, RunHandle as s, Engine as t, StepArg as tt, SubmitSpec as u, retryRun as v, CronDef as w, submit as x, serverlessTick as y, FlowRegistry as z };
+export { validateInput as $, RetryPolicy as A, FlowPolicy as B, submit as C, cronTag as D, CronDef as E, runTick as F, NoSignals as G, InputSchema as H, AnyFlow as I, SignalSchema as J, OutputSchema as K, Contract as L, TickResult as M, TickStatus as N, registerCron as O, defaultRetry as P, registry as Q, Flow as R, signalRun as S, tickOnce as T, InvokeSpec as U, FlowRegistry as V, InvokeSpecFor as W, defineContract as X, SignalSchemas as Y, defineFlow as Z, purge as _, RunLoopOpts as a, systemClock as at, retryRun as b, ResultOpts as c, SubmitOpts as d, validateSignal as et, SubmitSpec as f, prune as g, drainTimers as h, ResultWait as i, StepPolicy as it, TickOpts as j, runDueCrons as k, RunHandle as l, TickOnceOpts as m, EngineOpts as n, Ctx as nt, createEngine as o, SweepResult as p, SignalMap as q, Liveness as r, StepArg as rt, OnDuplicate as s, Engine as t, Clock as tt, RunResult as u, reconcile as v, submitMany as w, serverlessTick as x, result as y, FlowOutputs as z };
 ```
 
 ## id-<hash>.d.mts
@@ -813,7 +850,8 @@ interface RunSpec {
 }
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
  *  successful steps are ever written (their existence IS the success marker). */
-type StepStatus = "ok";
+type StepStatus = (typeof STEP_STATUSES)[number];
+declare const STEP_STATUSES: readonly ["ok"];
 /** The durable memo of a completed step — the one thing that must survive a crash. */
 interface StepOutcome {
   status: StepStatus;
@@ -827,7 +865,7 @@ interface StepOutcome {
    * flow body was reordered/refactored under a live run (drift). Absent on memos written before the
    * drift guard existed, in which case the check is skipped.
    */
-  shape?: string;
+  call?: string;
 }
 /** A step checkpoint request — the single durable write per step. */
 interface StepCheckpoint extends StepOutcome {
@@ -907,10 +945,13 @@ interface CronRow {
   flowName: string;
   flowVersion: number;
   input: unknown;
-  overlap: "allow" | "skip";
+  overlap: CronOverlap;
   nextRunAt: Date;
   lastRunAt?: Date;
 }
+/** What a cron does when its previous run is still live: start another (`allow`) or skip (`skip`). */
+type CronOverlap = (typeof CRON_OVERLAPS)[number];
+declare const CRON_OVERLAPS: readonly ["allow", "skip"];
 /** Register/upsert payload for a cron — `nextRunAt` is computed by the engine from `schedule`. */
 interface CronSpec {
   name: string;
@@ -918,7 +959,7 @@ interface CronSpec {
   flowName: string;
   flowVersion: number;
   input?: unknown;
-  overlap?: "allow" | "skip";
+  overlap?: CronOverlap;
   nextRunAt: Date;
 }
 /** A terminal transition. */
@@ -1258,7 +1299,7 @@ interface Store {
    * `idempotencyKey` (scoped to the run) — a retried delivery lands once. Returns whether the
    * signal was newly delivered (`false` = idempotent duplicate).
    */
-  postSignal(runId: string, name: string, payload: unknown, opts?: {
+  postSignal<P>(runId: string, name: string, payload: P, opts?: {
     idempotencyKey?: string;
   }): Promise<{
     delivered: boolean;
@@ -1384,7 +1425,10 @@ interface Store {
  *  `ctx.log`. Default `all` — wiring a sink is the opt-in; this only turns the volume down. */
 type EventLevel = "all" | "lifecycle" | "off";
 /** The durable event kinds the sink records — run lifecycle transitions, per-step completion, and `ctx.log`. */
-type EventType = "run.started" | "run.completed" | "run.failed" | "run.suspended" | "step.finished" | "run.log";
+type EventType = (typeof EVENT_TYPES)[number];
+/** Every {@link EventType}, for a sink that reads events back and must check what it stored. */
+declare const EVENT_TYPES: readonly ["run.started", "run.completed", "run.failed", "run.suspended", "step.finished", "run.log"];
+declare const isEventType: (s: string) => s is EventType;
 /** One durable audit-log entry — the dashboard timeline reads these. */
 interface FlowEvent {
   runId: string;
@@ -1438,7 +1482,7 @@ interface Metrics {
   stepFinished?(runId: string, cursorKey: string, extra?: {
     durationMs?: number;
   }): void;
-  tickError?(err: unknown): void;
+  tickError?(cause: unknown): void;
 }
 /** Observability wiring passed to the worker. All optional — omit for zero overhead. */
 interface ObserveOpts {
@@ -1455,15 +1499,15 @@ type IdGen = () => string;
  *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { DeliveredSignal as A, RunSpec as B, Lease as C, queueDepthOf as D, distinctEnqueues as E, RUN_STATUSES as F, SuspendStatus as G, StepCheckpoint as H, RunFilter as I, TerminalStatus as J, TERMINAL_STATUSES as K, RunPage as L, FlowError as M, Page as N, CronRow as O, PurgeFilter as P, RunRow as R, EnqueueRequest as S, QueueDepth as T, StepOutcome as U, RunStatus as V, StepStatus as W, Wakeup as _, EventType as a, ClaimOpts as b, ObserveOpts as c, StartResult as d, Store as f, TimerRequest as g, SpawnRequest as h, EventSink as i, DriftPolicy as j, CronSpec as k, Span as l, Outbox as m, newId as n, FlowEvent as o, Backend as p, TerminalOutcome as q, EventLevel as r, Metrics as s, IdGen as t, Tracer as u, Timer as v, Queue as w, EnqueueOpts as x, TimerDueOpts as y, RunSnapshot as z };
+export { TerminalStatus as $, CRON_OVERLAPS as A, RunFilter as B, EnqueueOpts as C, QueueDepth as D, Queue as E, DriftPolicy as F, RunStatus as G, RunRow as H, FlowError as I, StepOutcome as J, STEP_STATUSES as K, Page as L, CronRow as M, CronSpec as N, distinctEnqueues as O, DeliveredSignal as P, TerminalOutcome as Q, PurgeFilter as R, ClaimOpts as S, Lease as T, RunSnapshot as U, RunPage as V, RunSpec as W, SuspendStatus as X, StepStatus as Y, TERMINAL_STATUSES as Z, SpawnRequest as _, EventSink as a, Timer as b, Metrics as c, Tracer as d, isEventType as f, Outbox as g, Backend as h, EventLevel as i, CronOverlap as j, queueDepthOf as k, ObserveOpts as l, Store as m, newId as n, EventType as o, StartResult as p, StepCheckpoint as q, EVENT_TYPES as r, FlowEvent as s, IdGen as t, Span as u, TimerRequest as v, EnqueueRequest as w, TimerDueOpts as x, Wakeup as y, RUN_STATUSES as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { A as DeliveredSignal, F as RUN_STATUSES, I as RunFilter, J as TerminalStatus, L as RunPage, M as FlowError, N as Page, P as PurgeFilter, R as RunRow, T as QueueDepth, U as StepOutcome, V as RunStatus, W as StepStatus, a as EventType, c as ObserveOpts, i as EventSink, j as DriftPolicy, l as Span, n as newId, o as FlowEvent, p as Backend, r as EventLevel, s as Metrics, t as IdGen, u as Tracer, z as RunSnapshot } from "./id-<hash>.mjs";
+import { $ as TerminalStatus, B as RunFilter, D as QueueDepth, F as DriftPolicy, G as RunStatus, H as RunRow, I as FlowError, J as StepOutcome, L as Page, P as DeliveredSignal, R as PurgeFilter, U as RunSnapshot, V as RunPage, Y as StepStatus, a as EventSink, c as Metrics, d as Tracer, h as Backend, i as EventLevel, l as ObserveOpts, n as newId, o as EventType, s as FlowEvent, t as IdGen, u as Span, z as RUN_STATUSES } from "./id-<hash>.mjs";
 import { i as isRunStatus } from "./status-<hash>.mjs";
-import { $ as Clock, A as TickResult, B as InputSchema, C as tickOnce, D as runDueCrons, E as registerCron, F as Contract, G as SignalSchema, H as InvokeSpecFor, I as Flow, J as defineFlow, K as SignalSchemas, L as FlowOutputs, M as defaultRetry, N as runTick, O as RetryPolicy, P as AnyFlow, Q as validateSignal, R as FlowPolicy, S as submitMany, T as cronTag, U as NoSignals, V as InvokeSpec, W as SignalMap, X as signalType, Y as registry, Z as validateInput, _ as result, a as createEngine, b as signalRun, c as RunResult, d as SweepResult, et as Ctx, f as TickOnceOpts, g as reconcile, h as purge, i as RunLoopOpts, j as TickStatus, k as TickOpts, l as SubmitOpts, m as prune, n as EngineOpts, nt as StepPolicy, o as OnDuplicate, p as drainTimers, q as defineContract, r as Liveness, rt as systemClock, s as RunHandle, t as Engine, tt as StepArg, u as SubmitSpec, v as retryRun, w as CronDef, x as submit, y as serverlessTick, z as FlowRegistry } from "./engine-<hash>.mjs";
+import { $ as validateInput, A as RetryPolicy, B as FlowPolicy, C as submit, D as cronTag, E as CronDef, F as runTick, G as NoSignals, H as InputSchema, I as AnyFlow, J as SignalSchema, K as OutputSchema, L as Contract, M as TickResult, N as TickStatus, O as registerCron, P as defaultRetry, Q as registry, R as Flow, S as signalRun, T as tickOnce, U as InvokeSpec, V as FlowRegistry, W as InvokeSpecFor, X as defineContract, Y as SignalSchemas, Z as defineFlow, _ as purge, a as RunLoopOpts, at as systemClock, b as retryRun, c as ResultOpts, d as SubmitOpts, et as validateSignal, f as SubmitSpec, g as prune, h as drainTimers, i as ResultWait, it as StepPolicy, j as TickOpts, k as runDueCrons, l as RunHandle, m as TickOnceOpts, n as EngineOpts, nt as Ctx, o as createEngine, p as SweepResult, q as SignalMap, r as Liveness, rt as StepArg, s as OnDuplicate, t as Engine, tt as Clock, u as RunResult, v as reconcile, w as submitMany, x as serverlessTick, y as result, z as FlowOutputs } from "./engine-<hash>.mjs";
 //#region src/engine/signals.d.ts
 /**
  * Control-flow signals thrown by the context to unwind a flow invocation without it being
@@ -1490,7 +1534,7 @@ declare class AwaitSignalSignal {
   constructor(name: string, deadline?: Date | undefined);
 }
 type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
-declare const isControlSignal: (e: unknown) => e is ControlSignal;
+declare const isControlSignal: (cause: unknown) => cause is ControlSignal;
 /** An error carrying a stable machine-readable `code`, distinct from the class name. */
 declare abstract class CodedError extends Error {
   abstract readonly code: string;
@@ -1530,35 +1574,6 @@ declare class PollTimeoutError extends Error {
   constructor(ms: number);
 }
 //#endregion
-//#region src/engine/builder.d.ts
-type Acc<I> = {
-  input: I;
-};
-interface StepDef {
-  name: string;
-  fn: (acc: Record<string, unknown>, ctx: Ctx) => unknown;
-  policy?: StepPolicy;
-}
-/**
- * Fluent, fully-typed flow builder. It compiles down to the SAME `Flow.run` + `ctx.step` the
- * imperative `defineFlow` uses — the builder is sugar for wiring typed steps, not a second
- * execution path. Steps run in declared order; their names become the accumulator keys.
- */
-declare class FlowBuilder<I, A extends Acc<I>> {
-  private readonly flowName;
-  private readonly version;
-  private readonly steps;
-  constructor(flowName: string, version: number, steps: readonly StepDef[]);
-  /** Append a named step. Its result is added to the accumulator under `name` for later steps. */
-  step<N extends string, R>(name: N, fn: (acc: A, ctx: Ctx) => R | Promise<R>, policy?: StepPolicy): FlowBuilder<I, A & { [K in N]: R; }>;
-  /** Finalize with an explicit output projection over the full accumulator. */
-  output<O>(fn: (acc: A, ctx: Ctx) => O | Promise<O>): Flow<I, O>;
-  /** Finalize with the whole accumulator as the output. */
-  build(): Flow<I, A>;
-}
-/** Start a typed flow builder. Reserve the accumulator key `input` — it holds the run input. */
-declare const builder: <I>(name: string, version: number) => FlowBuilder<I, Acc<I>>;
-//#endregion
 //#region src/engine/cancel.d.ts
 /**
  * Cancel a run and cascade to its non-terminal descendants. Cancel is sticky and clears the run's
@@ -1577,13 +1592,13 @@ declare const cancelRun: (backend: Backend, runId: string) => Promise<void>;
 declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowBuilder, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, builder, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, signalType, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type OutputSchema, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type ResultOpts, type ResultWait, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```
 
 ## status-<hash>.d.mts
 
 ```ts
-import { J as TerminalStatus, V as RunStatus } from "./id-<hash>.mjs";
+import { $ as TerminalStatus, G as RunStatus } from "./id-<hash>.mjs";
 //#region src/status.d.ts
 /** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
 declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];
@@ -1600,7 +1615,18 @@ declare const RECONCILABLE_STATUSES: readonly RunStatus[];
 /** Type guard for an untrusted string (query params, external input). */
 declare const isRunStatus: (s: string) => s is RunStatus;
 /** A fresh all-zero per-status counter — completeness is enforced by `Record<RunStatus, …>`. */
-declare const zeroRunStats: () => Record<RunStatus, number>;
+declare const zeroRunStats: () => {
+  pending: number;
+  running: number;
+  sleeping: number;
+  awaiting_signal: number;
+  awaiting_child: number;
+  retrying: number;
+  parked: number;
+  done: number;
+  failed: number;
+  canceled: number;
+};
 /** Normalize a `RunFilter.status` (one, several, or none) to an array — or `undefined`. */
 declare const statusList: (status?: RunStatus | readonly RunStatus[]) => RunStatus[] | undefined;
 //#endregion
@@ -1610,8 +1636,8 @@ export { isTerminal as a, isRunStatus as i, NON_SUCCESS_TERMINAL_STATUSES as n, 
 ## testing.d.mts
 
 ```ts
-import { p as Backend } from "./id-<hash>.mjs";
-import { P as AnyFlow, c as RunResult, n as EngineOpts, s as RunHandle, t as Engine } from "./engine-<hash>.mjs";
+import { h as Backend } from "./id-<hash>.mjs";
+import { I as AnyFlow, K as OutputSchema, l as RunHandle, n as EngineOpts, t as Engine, u as RunResult } from "./engine-<hash>.mjs";
 //#region src/testing.d.ts
 /** A virtual-time engine plus the controls to move its clock. Build one with {@link createTestHarness}. */
 interface TestHarness {
@@ -1637,9 +1663,13 @@ interface TestHarness {
    *
    * @throws {Error} if the run parks with no deadline to jump to — waiting on a signal or a child
    * that nothing will deliver. The message names what it is waiting on, because that is nearly
-   * always a missing `engine.signal(...)` in the test rather than a bug in the flow.
+   * always a missing `engine.signal(...)` in the test rather than a bug in the flow. The output is
+   * `unknown` unless you pass the flow's `output` schema, exactly as with `engine.result`.
    */
-  settle<O>(handle: RunHandle<O> | string): Promise<RunResult<O>>;
+  settle(handle: string): Promise<RunResult<unknown>>;
+  settle<O>(handle: RunHandle<O> | string, opts: {
+    output: OutputSchema<O>;
+  }): Promise<RunResult<O>>;
 }
 /**
  * Build a {@link TestHarness} over `backend`, running `flows` on a clock that starts at `startAt`

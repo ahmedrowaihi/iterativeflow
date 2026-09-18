@@ -68,7 +68,7 @@ describe.skipIf(skip)("redis backend", () => {
               { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
               { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
             )
-            .then((o) => o.result as string),
+            .then((o) => o.result),
         ),
       );
 

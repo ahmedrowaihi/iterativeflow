@@ -1,6 +1,6 @@
 import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
-import type { RunRow, RunSnapshot, StepOutcome } from "#types";
+import type { DeliveredSignal, RunRow, RunSnapshot, RunSpec } from "#types";
 import {
   type AnyFlow,
   type Flow,
@@ -10,7 +10,7 @@ import {
   type SignalMap,
   type SignalName,
   type SignalPayload,
-  type SignalSchemas,
+  type SignalSchema,
   flowKey,
   validateSignal,
 } from "#engine/flow";
@@ -51,7 +51,7 @@ export interface StepPolicy {
    * retries as configured. `attempt` is the 1-indexed in-invocation try. Use it to fail fast on
    * 4xx/validation errors and retry 5xx/timeouts.
    */
-  classify?: (error: unknown, attempt: number) => "transient" | "permanent";
+  classify?: (cause: unknown, attempt: number) => "transient" | "permanent";
 }
 
 /** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
@@ -73,13 +73,15 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * Run `fn` once and memoize its result. On replay the stored result is returned and `fn`
    * is NOT re-run. `fn` is at-least-once across a crash BEFORE the checkpoint commits, so
    * keep its side-effects idempotent; the memo is exactly-once. `policy` adds in-invocation
-   * retries, a timeout, and error classification; `fn` receives an {@link StepArg} (abort
-   * signal + attempt). Durable long backoff is still the run-level retry.
+   * retries, a timeout, and error classification. Durable long backoff is still the run-level retry.
+   *
+   * A step is a leaf: its body must not call `ctx`. Durable waits and child runs belong in the flow
+   * body, and nested durable work belongs in a child flow (`ctx.invoke`). A body that closes over
+   * `ctx` shifts the cursor on its first run only, so the run parks as drifted on replay.
    *
    * The memo round-trips through the backend's JSON, so `T` describes what `fn` returns, not
-   * necessarily what a replay hands back: a `Date` returns as an ISO string on every backend that
-   * serializes (the in-memory one keeps it, which is why this only shows up in production). Return
-   * JSON-native values, and parse at the boundary.
+   * necessarily what a replay hands back: a `Date` returns as an ISO string. Return JSON-native
+   * values, and parse at the boundary.
    */
   step<T>(name: string, fn: (arg: StepArg) => Promise<T> | T, policy?: StepPolicy): Promise<T>;
 
@@ -111,8 +113,8 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * one is delivered (`engine.signal`). Consumption is memoized, so a replay returns the same
    * payload without re-waiting.
    *
-   * When the flow declares a `signals` map, only those names compile and each returns its declared
-   * payload type. A flow with no `signals` map is unchanged — any name, payload `unknown`.
+   * When the flow declares a `signals` map, only those names compile and each returns its
+   * validated payload. A flow with no `signals` map takes any name, and the payload is `unknown`.
    */
   signal<K extends SignalName<S>>(name: K): Promise<SignalPayload<S, K>>;
   /** Await a signal with a deadline. Resolves `{ received: true, payload }` if it arrives within
@@ -129,7 +131,7 @@ export interface Ctx<S extends SignalMap = SignalMap> {
    * prefix, so a line logs once even though the body re-runs on every crash/wake resume. A no-op when
    * no sink is wired or the observe `level` is `lifecycle`/`off`.
    */
-  log(message: string, data?: unknown): void;
+  log<D>(message: string, data?: D): void;
 }
 
 /** The clock the executor threads in — injectable for deterministic tests. */
@@ -143,16 +145,36 @@ const MAX_FAN_OUT = 10_000;
 const MAX_DEPTH = 32;
 
 // Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
-// chunk count and memo shapes are identical on every backend — a backend's transaction budget must
-// not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
+// chunk count and memo fingerprints are identical on every backend — a backend's transaction budget
+// must not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
 // atomic-write budget; each backend guards its own limit at checkpoint time.
 const FAN_OUT_CHUNK = 40;
 
+/** A child run's join state: `done` once it succeeded, with its output. */
+interface ChildOutcome {
+  done: boolean;
+  output?: unknown;
+}
+
+/** Anything carrying a value this run already wrote to its durable log, or a child run's output. */
+interface Logged {
+  readonly result?: unknown;
+}
+
+// SAFETY: every logged value came from flow code registered under the name and version the call
+// names — a step's return, a schema-validated signal payload, or the output of a child run of that
+// exact flow version — and the drift guard has checked that the call at this cursor wrote it. That
+// is the replay contract the whole engine rests on.
+const fromLog = <T>(entry: Logged): T => entry.result as T;
+
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const errCode = (e: unknown): string =>
-  e instanceof Error ? e.name || "STEP_FAILED" : "STEP_FAILED";
-const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errCode = (cause: unknown): string =>
+  cause instanceof Error ? cause.name || "STEP_FAILED" : "STEP_FAILED";
+const errMsg = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+
+const childIdsOf = (entry: Logged): string[] =>
+  Array.isArray(entry.result) ? entry.result.map(String) : [];
 
 const withTimeout = async <T>(
   run: (arg: StepArg) => Promise<T> | T,
@@ -221,13 +243,18 @@ const runWithPolicy = async <T>(
 };
 
 /**
- * Records the control signal a suspend threw, so a swallowed suspend re-propagates. The executor
+ * Records the suspends a run's calls threw, so a swallowed suspend re-propagates. The executor
  * owns the holder and re-throws `signal` if the flow body returns with one still pending (a `catch`
- * that ate the suspend and never issued another `ctx.*` call).
+ * that ate the suspend and never issued another `ctx.*` call). Concurrent branches can each
+ * suspend; `wakeAt` is the earliest deadline among them, so none of their timers is lost.
+ * `inflight` holds every ctx call not yet settled: the executor waits for them before it decides,
+ * because `Promise.all` rejects on the first suspend while its siblings are still writing.
  * @internal
  */
 export interface SuspendHolder {
   signal?: ControlSignal;
+  wakeAt?: Date;
+  inflight: Set<Promise<unknown>>;
 }
 
 /** @internal */
@@ -244,7 +271,7 @@ export interface CtxDeps {
   now: Clock;
   id: IdGen;
   obs: Observer;
-  signals?: SignalSchemas<SignalMap>;
+  signals?: Readonly<Record<string, SignalSchema<unknown>>>;
   maxFanOut?: number;
   maxDepth?: number;
   suspend: SuspendHolder;
@@ -270,105 +297,42 @@ export const makeCtx = ({
   const runId = snap.run.id;
   const depth = snap.run.depth ?? 0;
   const traceId = obs.tracer ? traceIdOf(runId) : "";
-  let cursor = 0;
-  // A ctx.* call issued INSIDE a step body keys off that step rather than the flat cursor, so the
-  // body's calls can't shift the keys of everything after it. Without this the outer step's memo
-  // commits at a key the nested calls already advanced past, and the next replay — which returns
-  // that memo without re-running the body — lands the following call on the nested memo and drifts.
-  const scope: { prefix: string; n: number }[] = [];
+  const consumed = new Set<string>();
 
   // Record a suspend's control signal in the shared holder and hand it back to `throw`, so every
   // suspend path records-then-throws through one idiom — the executor re-throws a recorded-but-
   // swallowed signal, and record + throw can never diverge.
-  const arm = (sig: ControlSignal): ControlSignal => (suspend.signal = sig);
-
-  // Advance the cursor and fetch the memo at it. `shape` is the `kind:label` of the call being made
-  // now; if a memo recorded a different shape here, the flow body drifted under this run.
-  const memoAt = (shape: string): { key: string; memo: StepOutcome | undefined } => {
-    // A prior sleep/signal/invoke suspended by throwing a control signal that the flow body caught
-    // and swallowed. Re-throw it (before advancing the cursor) so the suspend still reaches the
-    // engine and the run parks — a `try/catch` around `ctx.*` can't strand a run.
-    if (suspend.signal) throw suspend.signal;
-    const inner = scope[scope.length - 1];
-    const key = inner ? `${inner.prefix}.${inner.n++}` : `s${cursor++}`;
-    const memo = snap.steps.get(key);
-    if (memo?.shape !== undefined && memo.shape !== shape) {
-      throw new FlowDriftError(key, memo.shape, shape);
-    }
-    return { key, memo };
-  };
-  // True while the cursor is still reproducing the already-durable step prefix (a crash/wake replay).
-  const replayingPrefix = (): boolean => cursor < snap.steps.size;
-  const consumed = new Set<string>();
-
-  const step = async <T>(
-    name: string,
-    fn: (arg: StepArg) => Promise<T> | T,
-    policy?: StepPolicy,
-  ): Promise<T> => {
-    const shape = `step:${name}`;
-    const { key, memo } = memoAt(shape);
-    if (memo) return memo.result as T;
-    const startedAt = now();
-    const spanId = obs.tracer ? spanIdOf(runId, key) : "";
-    let result: T;
-    try {
-      scope.push({ prefix: key, n: 0 });
-      try {
-        result = await withLeaseHeld(() => runWithPolicy(fn, policy), keepalive, policy?.timeoutMs);
-      } finally {
-        scope.pop();
-      }
-    } catch (e) {
-      obs.tracer?.span({
-        runId,
-        traceId,
-        spanId,
-        name,
-        startedAt,
-        endedAt: now(),
-        error: { code: errCode(e), message: errMsg(e) },
+  // A suspend armed in the current synchronous turn doesn't stop siblings issued in that same turn
+  // (`Promise.all([...])`) from starting; only a call made after the turn ends has seen it swallowed.
+  let armedThisTurn = false;
+  const arm = (sig: ControlSignal): ControlSignal => {
+    if (!suspend.signal) {
+      suspend.signal = sig;
+      armedThisTurn = true;
+      queueMicrotask(() => {
+        armedThisTurn = false;
       });
-      throw e;
     }
-    const stored = await backend.store.checkpointStep({
-      runId,
-      cursorKey: key,
-      status: "ok",
-      result,
-      attempts: attempt,
-      shape,
-    });
-    await keepalive?.renew();
-    obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
-    await obs.event("step.finished", runId, now(), { cursorKey: key });
-    obs.metrics.stepFinished?.(runId, key, { durationMs: now().getTime() - startedAt.getTime() });
-    return stored.result as T;
+    const at =
+      sig instanceof SleepSignal
+        ? sig.wakeAt
+        : sig instanceof AwaitSignalSignal
+          ? sig.deadline
+          : undefined;
+    if (at && (!suspend.wakeAt || at < suspend.wakeAt)) suspend.wakeAt = at;
+    return sig;
   };
 
-  // Pin a deadline into a memo once (as an ISO string) so replay/re-park reuse the same instant
-  // instead of recomputing it and sliding it forward. Shared by ctx.sleep and a timed ctx.signal.
-  const pinDeadline = async (shape: string, wakeAt: Date): Promise<Date> => {
-    const { key, memo } = memoAt(shape);
-    if (memo) return new Date(memo.result as string);
-    await backend.store.checkpointStep({
-      runId,
-      cursorKey: key,
-      status: "ok",
-      result: wakeAt.toISOString(),
-      attempts: attempt,
-      shape,
-    });
-    return wakeAt;
+  let n = 0;
+
+  const track = <T>(op: Promise<T>): Promise<T> => {
+    suspend.inflight.add(op);
+    const done = (): void => void suspend.inflight.delete(op);
+    op.then(done, done);
+    return op;
   };
 
-  const parkUntil = async (wakeAt: Date): Promise<void> => {
-    const at = await pinDeadline("sleep", wakeAt);
-    if (now().getTime() >= at.getTime()) return;
-    throw arm(new SleepSignal(at));
-  };
-
-  const spawnSpec = (flow: Flow<unknown, unknown, any>, input: unknown, key: string) => ({
+  const spawnSpec = <I>(flow: AnyFlow, input: I, key: string): RunSpec => ({
     name: flow.name,
     version: flow.version,
     input,
@@ -387,7 +351,7 @@ export const makeCtx = ({
 
   // A child's join outcome. Throws StepFailedError on a failed/canceled child (fast-fail); `done`
   // false means the child is still running (or not yet visible), so the caller parks.
-  const childOutcome = (row: RunRow | undefined): { done: boolean; output?: unknown } => {
+  const childOutcome = (row: RunRow | undefined): ChildOutcome => {
     if (!row) return { done: false };
     if (row.status === "failed" || row.status === "canceled") {
       throw new StepFailedError(
@@ -398,61 +362,155 @@ export const makeCtx = ({
     return row.status === "done" ? { done: true, output: row.output } : { done: false };
   };
 
-  const invokeOne = async (flow: Flow<unknown, unknown, any>, input: unknown): Promise<unknown> => {
+  const pendingFor = (name: string): DeliveredSignal | undefined =>
+    snap.signals.find((s) => s.name === name && !consumed.has(s.id));
+
+  // Validate a consumed payload against its declared schema; `consumed` stops a later wait in this
+  // invocation from draining the same signal.
+  const validated = async (pending: DeliveredSignal): Promise<DeliveredSignal> => {
+    consumed.add(pending.id);
+    const schema = signals?.[pending.name];
+    if (!schema) return pending;
+    try {
+      return { ...pending, payload: await validateSignal(schema, pending.name, pending.payload) };
+    } catch (e) {
+      // Permanent — the inbox payload won't change on retry, so fail the run.
+      throw new StepFailedError("SIGNAL_INVALID", errMsg(e));
+    }
+  };
+
+  // Advance the cursor and fetch the memo at it. `call` is the `kind:label` of the call
+  // being made now; if a memo recorded a different call here, the flow body drifted under this run.
+  const memoAt = (call: string) => {
+    // A prior suspend was caught and swallowed by the flow body. Re-throw it before advancing, so
+    // the suspend still reaches the engine and a `try/catch` around `ctx.*` can't strand a run.
+    if (suspend.signal && !armedThisTurn) throw suspend.signal;
+    const key = `s${n++}`;
+    const memo = snap.steps.get(key);
+    if (memo?.call !== undefined && memo.call !== call) {
+      throw new FlowDriftError(key, memo.call, call);
+    }
+    return { key, memo };
+  };
+
+  const step = async <T>(
+    name: string,
+    fn: (arg: StepArg) => Promise<T> | T,
+    policy?: StepPolicy,
+  ): Promise<T> => {
+    const call = `step:${name}`;
+    const { key, memo } = memoAt(call);
+    if (memo) return fromLog<T>(memo);
+    const startedAt = now();
+    const spanId = obs.tracer ? spanIdOf(runId, key) : "";
+    let result: T;
+    try {
+      result = await withLeaseHeld(() => runWithPolicy(fn, policy), keepalive, policy?.timeoutMs);
+    } catch (e) {
+      obs.tracer?.span({
+        runId,
+        traceId,
+        spanId,
+        name,
+        startedAt,
+        endedAt: now(),
+        error: { code: errCode(e), message: errMsg(e) },
+      });
+      throw e;
+    }
+    const stored = await backend.store.checkpointStep({
+      runId,
+      cursorKey: key,
+      status: "ok",
+      result,
+      attempts: attempt,
+      call,
+    });
+    await keepalive?.renew();
+    obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
+    await obs.event("step.finished", runId, now(), { cursorKey: key });
+    obs.metrics.stepFinished?.(runId, key, { durationMs: now().getTime() - startedAt.getTime() });
+    return fromLog<T>(stored);
+  };
+
+  // Pin a deadline into a memo once (as an ISO string) so replay/re-park reuse the same instant
+  // instead of recomputing it and sliding it forward. Shared by ctx.sleep and a timed ctx.signal.
+  const pinDeadline = async (call: string, wakeAt: Date): Promise<Date> => {
+    const { key, memo } = memoAt(call);
+    if (memo) return new Date(String(memo.result));
+    await backend.store.checkpointStep({
+      runId,
+      cursorKey: key,
+      status: "ok",
+      result: wakeAt.toISOString(),
+      attempts: attempt,
+      call,
+    });
+    return wakeAt;
+  };
+
+  const parkUntil = async (wakeAt: Date): Promise<void> => {
+    const at = await pinDeadline("sleep", wakeAt);
+    if (now().getTime() >= at.getTime()) return;
+    throw arm(new SleepSignal(at));
+  };
+
+  const invokeOne = async <CO, I>(flow: AnyFlow, input: I): Promise<CO> => {
     guardDepth();
-    const shape = `invoke:${flowKey(flow.name, flow.version)}`;
-    const { key, memo } = memoAt(shape);
+    const call = `invoke:${flowKey(flow.name, flow.version)}`;
+    const { key, memo } = memoAt(call);
     let childId: string;
     if (memo) {
-      childId = memo.result as string;
+      childId = String(memo.result);
     } else {
+      // First-writer-wins: a concurrent invocation may already have spawned this step, in which
+      // case the checkpoint is a no-op returning THAT winner's childId — trust the returned value.
       const candidate = id();
-      // First-writer-wins: a concurrent invocation may already have spawned this step, in which case
-      // the checkpoint is a no-op returning THAT winner's childId — trust the returned value.
       const stored = await backend.store.checkpointStep(
-        { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, shape },
+        { runId, cursorKey: key, status: "ok", result: candidate, attempts: attempt, call },
         {
           spawn: [{ runId: candidate, spec: spawnSpec(flow, input, key) }],
           joinTarget: { runId, count: 1 },
         },
       );
-      childId = stored.result as string;
+      childId = String(stored.result);
     }
     const outcome = childOutcome(await backend.store.loadRunRow(childId));
     if (!outcome.done) throw arm(new AwaitChildSignal(childId));
-    return outcome.output;
+    return fromLog<CO>({ result: outcome.output });
   };
 
-  const invokeMany = async (specs: readonly InvokeSpec[]): Promise<unknown[]> => {
+  const invokeMany = async <const F extends readonly AnyFlow[]>(
+    specs: readonly InvokeSpec[],
+  ): Promise<FlowOutputs<F>> => {
     guardDepth();
     const cap = maxFanOut ?? MAX_FAN_OUT;
     if (specs.length > cap) {
       throw new Error(`ctx.invoke: fan-out of ${specs.length} exceeds the ${cap} cap`);
     }
-    const chunkSize = FAN_OUT_CHUNK;
     const childIds: string[] = [];
-    for (let i = 0; i < specs.length; i += chunkSize) {
-      const chunk = specs.slice(i, i + chunkSize);
-      const shape = `invokeAll:${i / chunkSize}:${chunk.length}`;
-      const { key, memo } = memoAt(shape);
+    for (let i = 0; i < specs.length; i += FAN_OUT_CHUNK) {
+      const chunk = specs.slice(i, i + FAN_OUT_CHUNK);
+      const call = `invokeAll:${i / FAN_OUT_CHUNK}:${chunk.length}`;
+      const { key, memo } = memoAt(call);
       if (memo) {
-        childIds.push(...(memo.result as string[]));
+        childIds.push(...childIdsOf(memo));
         continue;
       }
       const ids = chunk.map(() => id());
       const stored = await backend.store.checkpointStep(
-        { runId, cursorKey: key, status: "ok", result: ids, attempts: attempt, shape },
+        { runId, cursorKey: key, status: "ok", result: ids, attempts: attempt, call },
         {
           spawn: chunk.map((s, j) => ({ runId: ids[j], spec: spawnSpec(s.flow, s.input, key) })),
           joinTarget: i === 0 ? { runId, count: specs.length } : undefined,
         },
       );
-      childIds.push(...(stored.result as string[]));
+      childIds.push(...childIdsOf(stored));
       await keepalive?.renew();
     }
-    const joinShape = `invokeAllJoin:${specs.length}`;
-    const { key: joinKey, memo: joinMemo } = memoAt(joinShape);
-    if (joinMemo) return joinMemo.result as unknown[];
+    const joinCall = `invokeAllJoin:${specs.length}`;
+    const { key: joinKey, memo: joinMemo } = memoAt(joinCall);
+    if (joinMemo) return fromLog<FlowOutputs<F>>(joinMemo);
     const outcomes = (await backend.store.loadRunRows(childIds)).map(childOutcome);
     if (outcomes.some((o) => !o.done)) throw arm(new AwaitChildSignal(childIds[0] ?? runId));
     const stored = await backend.store.checkpointStep({
@@ -461,105 +519,114 @@ export const makeCtx = ({
       status: "ok",
       result: outcomes.map((o) => o.output),
       attempts: attempt,
-      shape: joinShape,
+      call: joinCall,
     });
-    return stored.result as unknown[];
+    return fromLog<FlowOutputs<F>>(stored);
   };
+
+  function invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
+  function invoke<const F extends readonly AnyFlow[]>(specs: {
+    readonly [K in keyof F]: InvokeSpecFor<F[K]>;
+  }): Promise<FlowOutputs<F>>;
+  function invoke<CI, CO>(
+    target: Flow<CI, CO, any> | readonly InvokeSpec[],
+    input?: CI,
+  ): Promise<CO> | Promise<FlowOutputs<readonly AnyFlow[]>> {
+    return "run" in target
+      ? track(invokeOne<CO, CI | undefined>(target, input))
+      : track(invokeMany(target));
+  }
+
+  // Unbounded wait: park until the signal arrives, then return its payload.
+  const awaitSignal = async <P>(name: string): Promise<P> => {
+    const call = `signal:${name}`;
+    const { key, memo } = memoAt(call);
+    if (memo) return fromLog<P>(memo);
+    const pending = pendingFor(name);
+    if (!pending) throw arm(new AwaitSignalSignal(name));
+    const delivered = await validated(pending);
+    const stored = await backend.store.checkpointStep(
+      {
+        runId,
+        cursorKey: key,
+        status: "ok",
+        result: delivered.payload,
+        attempts: attempt,
+        call,
+      },
+      { consumeSignals: [pending.id] },
+    );
+    return fromLog<P>(stored);
+  };
+
+  // Bounded wait: pin the deadline once, then resolve to the payload or a timeout.
+  const awaitSignalUntil = async <P>(
+    name: string,
+    timeoutMs: number,
+  ): Promise<SignalOutcome<P>> => {
+    const call = `signal:${name}`;
+    const deadline = await pinDeadline(`signalWait:${name}`, new Date(now().getTime() + timeoutMs));
+    const { key, memo } = memoAt(call);
+    if (memo) return fromLog<SignalOutcome<P>>(memo);
+    const pending = pendingFor(name);
+    if (pending) {
+      const delivered = await validated(pending);
+      const stored = await backend.store.checkpointStep(
+        {
+          runId,
+          cursorKey: key,
+          status: "ok",
+          result: { received: true, payload: delivered.payload },
+          attempts: attempt,
+          call,
+        },
+        { consumeSignals: [pending.id], cancelTimers: [runId] },
+      );
+      return fromLog<SignalOutcome<P>>(stored);
+    }
+    if (now().getTime() < deadline.getTime()) throw arm(new AwaitSignalSignal(name, deadline));
+    // Deadline passed with an empty snapshot inbox — commit the timeout, but only if no signal
+    // raced in since the snapshot; if one did, re-park so the next tick consumes it, not drops it.
+    const stored = await backend.store.checkpointStep(
+      {
+        runId,
+        cursorKey: key,
+        status: "ok",
+        result: { received: false },
+        attempts: attempt,
+        call,
+      },
+      { requireVersion: claimVersion },
+    );
+    if (stored.committed === false) throw arm(new AwaitSignalSignal(name, deadline));
+    return fromLog<SignalOutcome<P>>(stored);
+  };
+
+  function signal<K extends SignalName<SignalMap>>(name: K): Promise<SignalPayload<SignalMap, K>>;
+  function signal<K extends SignalName<SignalMap>>(
+    name: K,
+    opts: { timeoutMs: number },
+  ): Promise<SignalOutcome<SignalPayload<SignalMap, K>>>;
+  function signal<P>(
+    name: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<P> | Promise<SignalOutcome<P>> {
+    return opts?.timeoutMs === undefined
+      ? track(awaitSignal<P>(name))
+      : track(awaitSignalUntil<P>(name, opts.timeoutMs));
+  }
 
   return {
     runId,
     attempt,
-    step,
-    sleep: (ms) => parkUntil(new Date(now().getTime() + ms)),
-    sleepUntil: (date) => parkUntil(date),
-
-    invoke: ((flowOrSpecs: Flow<unknown, unknown, any> | readonly InvokeSpec[], input?: unknown) =>
-      Array.isArray(flowOrSpecs)
-        ? invokeMany(flowOrSpecs)
-        : invokeOne(flowOrSpecs as Flow<unknown, unknown, any>, input)) as Ctx["invoke"],
-
-    signal: (async (name: string, opts?: { timeoutMs?: number }) => {
-      const shape = `signal:${name}`;
-      const pendingFor = (): { id: string; payload: unknown } | undefined =>
-        snap.signals.find((s) => s.name === name && !consumed.has(s.id));
-      const consumePayload = async (pending: {
-        id: string;
-        payload: unknown;
-      }): Promise<unknown> => {
-        consumed.add(pending.id); // don't let a later wait in this invocation drain the same one
-        const schema = signals?.[name];
-        if (!schema) return pending.payload;
-        try {
-          return await validateSignal(schema, name, pending.payload);
-        } catch (e) {
-          // Permanent — the inbox payload won't change on retry, so fail the run.
-          throw new StepFailedError("SIGNAL_INVALID", e instanceof Error ? e.message : String(e));
-        }
-      };
-
-      // Unbounded wait: park until the signal arrives, then return its raw payload.
-      if (opts?.timeoutMs === undefined) {
-        const { key, memo } = memoAt(shape);
-        if (memo) return memo.result;
-        const pending = pendingFor();
-        if (!pending) throw arm(new AwaitSignalSignal(name));
-        const stored = await backend.store.checkpointStep(
-          {
-            runId,
-            cursorKey: key,
-            status: "ok",
-            result: await consumePayload(pending),
-            attempts: attempt,
-            shape,
-          },
-          { consumeSignals: [pending.id] },
-        );
-        return stored.result;
-      }
-
-      // Bounded wait: pin the deadline once, then resolve to the payload or a timeout.
-      const deadline = await pinDeadline(
-        `signalWait:${name}`,
-        new Date(now().getTime() + opts.timeoutMs),
-      );
-      const { key: resKey, memo: resMemo } = memoAt(shape);
-      if (resMemo) return resMemo.result as SignalOutcome<unknown>;
-      const pending = pendingFor();
-      if (pending) {
-        const stored = await backend.store.checkpointStep(
-          {
-            runId,
-            cursorKey: resKey,
-            status: "ok",
-            result: { received: true, payload: await consumePayload(pending) },
-            attempts: attempt,
-            shape,
-          },
-          { consumeSignals: [pending.id], cancelTimers: [runId] },
-        );
-        return stored.result as SignalOutcome<unknown>;
-      }
-      if (now().getTime() < deadline.getTime()) throw arm(new AwaitSignalSignal(name, deadline));
-      // Deadline passed with an empty snapshot inbox — commit the timeout, but only if no signal
-      // raced in since the snapshot; if one did, re-park so the next tick consumes it, not drops it.
-      const stored = await backend.store.checkpointStep(
-        {
-          runId,
-          cursorKey: resKey,
-          status: "ok",
-          result: { received: false },
-          attempts: attempt,
-          shape,
-        },
-        { requireVersion: claimVersion },
-      );
-      if (stored.committed === false) throw arm(new AwaitSignalSignal(name, deadline));
-      return stored.result as SignalOutcome<unknown>;
-    }) as Ctx["signal"],
-
+    step: (name, fn, policy) => track(step(name, fn, policy)),
+    sleep: (ms) => track(parkUntil(new Date(now().getTime() + ms))),
+    sleepUntil: (date) => track(parkUntil(date)),
+    invoke,
+    signal,
     log(message, data) {
       // Skip entirely when nothing records it, and while replaying the already-logged durable prefix.
-      if (!obs.records("run.log") || replayingPrefix()) return;
+      if (!obs.records("run.log") || n < snap.steps.size) return;
       void Promise.resolve(obs.event("run.log", runId, now(), { message, data })).catch(() => {});
     },
   };

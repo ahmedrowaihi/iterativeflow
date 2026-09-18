@@ -1,9 +1,9 @@
 import type { Backend } from "@iterativeflow/core/backend";
 import { type SqliteBackendOpts, createSqliteBackend } from "#backend";
-import { type Sql, mapParams } from "#sql";
+import { type Sql, type SqlBinding, type SqlRow, mapParams } from "#sql";
 
 interface OpSqliteResult {
-  rows: Record<string, unknown>[];
+  rows: SqlRow[];
 }
 
 /**
@@ -12,17 +12,14 @@ interface OpSqliteResult {
  * (JSI) and async on web, so it may return the result or a promise of it; the adapter awaits either.
  */
 export interface OpSqliteDB {
-  execute(sql: string, params?: unknown[]): OpSqliteResult | Promise<OpSqliteResult>;
+  execute(sql: string, params?: SqlBinding[]): OpSqliteResult | Promise<OpSqliteResult>;
 }
 
 const BUSY_RETRIES = 5;
 const BUSY_BASE_MS = 10;
 const BUSY_CAP_MS = 200;
 
-const isBusy = (e: unknown): boolean =>
-  /\bSQLITE_BUSY\b|database (?:is|table is) locked/i.test(
-    e instanceof Error ? e.message : String(e),
-  );
+const BUSY = /\bSQLITE_BUSY\b|database (?:is|table is) locked/i;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,10 +34,8 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * `BEGIN`), matching {@link libsqlDb}.
  */
 export const opSqliteDb = (db: OpSqliteDB): Sql => {
-  const query = async <R = Record<string, unknown>>(
-    text: string,
-    params?: readonly unknown[],
-  ): Promise<R[]> => (await db.execute(text, mapParams(params))).rows as R[];
+  const query: Sql["query"] = async (text, params) =>
+    (await db.execute(text, mapParams(params))).rows;
   const inFlight: Sql = { query, tx: (fn) => fn(inFlight) };
   return {
     query,
@@ -50,7 +45,8 @@ export const opSqliteDb = (db: OpSqliteDB): Sql => {
           await db.execute("BEGIN IMMEDIATE");
           break;
         } catch (e) {
-          if (!isBusy(e) || attempt >= BUSY_RETRIES) throw e;
+          const busy = BUSY.test(e instanceof Error ? e.message : String(e));
+          if (!busy || attempt >= BUSY_RETRIES) throw e;
           await sleep(Math.min(BUSY_BASE_MS * 2 ** attempt, BUSY_CAP_MS));
         }
       }

@@ -13,13 +13,13 @@ A versioned, registered piece of logic. Identified by `(name, version)`. A _defi
 One execution of a flow against a specific input. Has a `runId`, an input, an output (or error), and a status. A flow has many runs; a run belongs to one flow.
 
 **Step**
-One memoized side-effecting unit inside a run, declared via `ctx.step(name, fn)` or builder `.step(name, fn)`. Each step is identified by its **cursor key**. On replay, a completed step short-circuits to its persisted result.
+One memoized side-effecting unit inside a run, declared via `ctx.step(name, fn)`. A step is a leaf: its body makes no `ctx` calls. Each step is identified by its **cursor key**. On replay, a completed step short-circuits to its persisted result.
 
 **Sleep**
-A pause in a run until a future wall-clock instant, declared via `ctx.sleep(duration)` or builder `.sleep(duration)`. Persisted as a row in the `workflow.timers` table — but in the **public vocabulary** we say "sleep", not "timer". `timer` is implementation, `sleep` is intent.
+A pause in a run until a future wall-clock instant, declared via `ctx.sleep(duration)`. Persisted as a row in the `workflow.timers` table — but in the **public vocabulary** we say "sleep", not "timer". `timer` is implementation, `sleep` is intent.
 
 **Signal**
-A point at which the run suspends and waits for an external `engine.signal(runId, name, payload)` delivery, declared via `ctx.signal(name)` or builder `.signal(name)`. Persisted as a row in `workflow.signals`. (Historical name was "hook"; do not reintroduce it.)
+A point at which the run suspends and waits for an external `engine.signal(runId, name, payload)` delivery, declared via `ctx.signal(name)`. Persisted as a row in `workflow.signals`. (Historical name was "hook"; do not reintroduce it.)
 
 **Invoke**
 Starting a child flow from inside a parent run via `ctx.invoke(handle, input)`. The parent suspends until the child terminates. Child runs are linked to their parent via `parent_run_id` + `parent_cursor_key`.

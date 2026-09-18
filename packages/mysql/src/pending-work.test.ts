@@ -2,6 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
+import { int } from "#codec";
 import { applySchema } from "#schema";
 import { mysqlPool } from "#sql";
 import { startMysql, stopMysql } from "#test-container";
@@ -25,11 +26,11 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
   });
 
   const pendingAt = async (asOf: number, names?: readonly string[]): Promise<number> => {
-    const [rows] = await pool.query("SELECT `pending_work`(?, ?) AS pending", [
+    const [row] = await mysqlPool(pool).query("SELECT `pending_work`(?, ?) AS pending", [
       names ? JSON.stringify(names) : null,
       asOf,
     ]);
-    return Number((rows as unknown as { pending: number }[])[0].pending);
+    return int(row, "pending");
   };
 
   it("agrees with the summed port methods at a fixed instant, filtered by flow name", async () => {

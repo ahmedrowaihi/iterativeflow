@@ -10,13 +10,10 @@ import { CreateTableCommandInput, DynamoDBClient } from "@aws-sdk/client-dynamod
 import { Backend, IdGen } from "@iterativeflow/core/backend";
 //#region src/client.d.ts
 /**
- * The minimal send-surface the backend drives. The concrete {@link DynamoDBDocumentClient}
- * satisfies it, and so does any wrapper (e.g. a fault-injecting proxy in tests) — the backend
- * never depends on the client class, only on `send`.
+ * The send-surface the backend drives: the document client's own typed `send`. Wrap behaviour
+ * (fault injection, tracing) with client middleware rather than a hand-rolled proxy.
  */
-interface Doc {
-  send(command: unknown): Promise<unknown>;
-}
+type Doc = Pick<DynamoDBDocumentClient, "send">;
 /**
  * Wrap a low-level {@link DynamoDBClient} in a document client that (un)marshals plain JS.
  * `removeUndefinedValues` keeps optional attributes (lease token, error) off the item rather
@@ -61,8 +58,7 @@ interface DynamoBackendOpts {
 /**
  * The DynamoDB {@link Backend}: the four ports over one document client and one table. Store,
  * Queue, and Timer share that table, so an outbox commits as one `TransactWriteItems` — the
- * single transactional domain the seam requires. Pass a client from {@link docClient}, or any
- * object exposing `send`.
+ * single transactional domain the seam requires. Pass a client from {@link docClient}.
  */
 declare const createDynamoBackend: (doc: Doc, opts?: DynamoBackendOpts) => Backend;
 //#endregion

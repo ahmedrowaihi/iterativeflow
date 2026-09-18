@@ -1,26 +1,23 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DeleteCommand,
+  QueryCommand,
+  type QueryCommandInput,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type { ClaimOpts, EnqueueRequest, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import { type JobItem, parseJob } from "#codec";
 import { runNames, storedPriorities } from "#run-names";
 import { JOB_GSI_PK, key } from "#schema";
 import { enqueueParams } from "#statements";
-
-interface JobItem {
-  runId: string;
-  runAt: number;
-  priority: number;
-  version?: number;
-  leaseExpires?: number;
-}
 
 // Bounded so a large wake list can't open thousands of sockets at once.
 const ENQUEUE_CONCURRENCY = 25;
 
 /** @internal */
 export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => {
-  const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
   const at = (d?: Date): number => (d ?? new Date()).getTime();
 
   const enqueueMany = async (requests: readonly EnqueueRequest[]): Promise<void> => {
@@ -31,7 +28,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         rows
           .slice(i, i + ENQUEUE_CONCURRENCY)
           .map(([runId, opts]) =>
-            send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId)))),
+            doc.send(new UpdateCommand(enqueueParams(table, runId, opts, priorities.get(runId)))),
           ),
       );
     }
@@ -51,9 +48,9 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       // fill the ≤1MB page and bury due ones; page until we hold `limit`. PAGE_CAP bounds the reads.
       const PAGE_CAP = 10;
       const candidates: JobItem[] = [];
-      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
       for (let page = 0; page < PAGE_CAP; page++) {
-        const res = await send<{ Items?: JobItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+        const res = await doc.send(
           new QueryCommand({
             TableName: table,
             IndexName: "gsi1",
@@ -64,7 +61,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
             ExclusiveStartKey,
           }),
         );
-        candidates.push(...(res.Items ?? []));
+        candidates.push(...(res.Items ?? []).map(parseJob));
         ExclusiveStartKey = res.LastEvaluatedKey;
         // GSI is priority#runAt-ordered, so once we hold `limit`, later pages can't rank higher.
         if (!ExclusiveStartKey || candidates.length >= limit) break;
@@ -89,7 +86,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         const token = `${id()}:${j.runId}`;
         const expires = t + leaseMs;
         try {
-          const res = await send<{ Attributes?: { version?: number } }>(
+          const res = await doc.send(
             new UpdateCommand({
               TableName: table,
               Key: key.job(j.runId),
@@ -119,7 +116,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       const t = at(now);
       const expires = t + leaseMs;
       try {
-        await send(
+        await doc.send(
           new UpdateCommand({
             TableName: table,
             Key: key.job(lease.runId),
@@ -140,7 +137,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
     async ack(lease: Lease, opts) {
       const now = at(opts?.now);
       try {
-        await send(
+        await doc.send(
           new DeleteCommand({
             TableName: table,
             Key: key.job(lease.runId),
@@ -151,7 +148,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
       } catch (e) {
         if (!(e instanceof ConditionalCheckFailedException)) throw e;
         try {
-          await send(
+          await doc.send(
             new UpdateCommand({
               TableName: table,
               Key: key.job(lease.runId),
@@ -174,9 +171,9 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
     async depth(now, names) {
       const t = at(now);
       const jobs: JobItem[] = [];
-      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
       do {
-        const res = await send<{ Items?: JobItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+        const res = await doc.send(
           new QueryCommand({
             TableName: table,
             IndexName: "gsi1",
@@ -186,7 +183,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
             ExclusiveStartKey,
           }),
         );
-        jobs.push(...(res.Items ?? []));
+        jobs.push(...(res.Items ?? []).map(parseJob));
         ExclusiveStartKey = res.LastEvaluatedKey;
       } while (ExclusiveStartKey);
       if (names === undefined) return queueDepthOf(jobs, t);

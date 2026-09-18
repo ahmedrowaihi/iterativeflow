@@ -1,4 +1,4 @@
-import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
+import { type CancellationReason, TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { EnqueueOpts, Outbox, RunSpec, SpawnRequest } from "@iterativeflow/core/backend";
 import { enc, nextSeq } from "#codec";
@@ -14,7 +14,7 @@ export type TxItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[num
 export const MAX_TX_ITEMS = 100;
 
 /** @internal */
-export const buildRunItem = (spec: RunSpec, runId: string): Record<string, unknown> => {
+export const buildRunItem = (spec: RunSpec, runId: string) => {
   const seq = nextSeq();
   const createdAt = spec.createdAt ?? new Date();
   return {
@@ -105,7 +105,7 @@ const cancelTimerTx = (table: string, runId: string): TxItem => ({
 const SIG_ID_SEP = "\u0000";
 /** @internal */
 export const encodeSignalId = (pk: string, sk: string): string => `${pk}${SIG_ID_SEP}${sk}`;
-const decodeSignalId = (id: string): { pk: string; sk: string } => {
+const decodeSignalId = (id: string) => {
   const [pk, sk] = id.split(SIG_ID_SEP);
   return { pk, sk };
 };
@@ -131,7 +131,7 @@ export const outboxParts = (
   table: string,
   fx: Outbox | undefined,
   priorities: ReadonlyMap<string, number>,
-): { nonSpawn: TxItem[]; spawns: readonly SpawnRequest[] } => {
+) => {
   const nonSpawn: TxItem[] = [];
   for (const e of fx?.enqueue ?? [])
     nonSpawn.push(enqueueTx(table, e.runId, e.opts, priorities.get(e.runId)));
@@ -142,12 +142,12 @@ export const outboxParts = (
 };
 
 /** @internal */
-export const cancellationReasons = (e: unknown): { Code?: string }[] | undefined =>
-  e instanceof TransactionCanceledException ? (e.CancellationReasons ?? []) : undefined;
+export const cancellationReasons = (cause: unknown): CancellationReason[] | undefined =>
+  cause instanceof TransactionCanceledException ? (cause.CancellationReasons ?? []) : undefined;
 
-const failed = (r?: { Code?: string }): boolean => r?.Code === "ConditionalCheckFailed";
+const failed = (r?: CancellationReason): boolean => r?.Code === "ConditionalCheckFailed";
 /** @internal */
 export const conditionFailedAt = (
-  reasons: { Code?: string }[] | undefined,
+  reasons: CancellationReason[] | undefined,
   index: number,
 ): boolean => failed(reasons?.[index]);

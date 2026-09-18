@@ -5,14 +5,14 @@
 ## index.d.mts
 
 ```ts
-import { Sql, SqliteBackendOpts, ddl } from "@iterativeflow/sqlite";
+import { Sql, SqlBinding, SqlRow, SqliteBackendOpts, ddl } from "@iterativeflow/sqlite";
 import { Backend } from "@iterativeflow/core/backend";
 //#region src/storage.d.ts
 /** The subset of Cloudflare's `SqlStorage` (`ctx.storage.sql`) the adapter uses — structural, so no
  *  `@cloudflare/workers-types` dependency is required. */
 interface SqlStorage {
-  exec(query: string, ...bindings: unknown[]): {
-    toArray(): Record<string, unknown>[];
+  exec(query: string, ...bindings: SqlBinding[]): {
+    toArray(): SqlRow[];
   };
 }
 /**

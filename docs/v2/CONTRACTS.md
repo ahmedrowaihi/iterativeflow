@@ -1,42 +1,38 @@
 # Typed flows & signals
 
-v2 flows are typesafe end to end: the input type, the **output** type, and each **signal's** payload
-type all flow through `submit` / `result` / `signal` with no casts. This restores the per-flow
-type-safety v1 had via `FlowHandle<I, O>` / `FlowContract<I, O>`, and adds typed signals on top (v1
-signals were `unknown` on both ends).
+Every value that crosses the durable boundary — input, signal payloads, the output read back by
+`result` — is typed by a Standard Schema (zod, valibot, arktype, …) that also checks it at runtime.
+A type the engine can't check is a type it doesn't claim: without a schema, the value is `unknown`.
 
-## Output type — recovered at `result`
+## Output — typed by a schema at `result`
 
-`submit` returns a `RunHandle<O>` — a run id branded with the flow's output type. Pass it to `result`
-and the output comes back typed. (It is a `string` at runtime, so it works anywhere a `runId` does.)
+The output was written by whichever deploy ran the flow, then stored as JSON, so `result` can't
+promise its type on its own. Pass an `output` schema and it validates the stored value and types it;
+without one, `output` is `unknown`.
 
 ```ts
-const order = defineFlow({
-  name: "order",
-  version: 1,
-  run: async (ctx, input: { orderId: string }) => ({
-    total: 42,
-    currency: "USD",
-  }),
-});
+import { z } from "zod";
 
-const handle = await engine.submit(order, { orderId: "o1" }); // RunHandle<{ total; currency }>
-const r = await engine.result(handle);
-r.output?.total; // number ✅  (was `unknown` — you had to cast)
+const Order = z.object({ total: z.number(), currency: z.string() });
+
+const handle = await engine.submit(order, { orderId: "o1" });
+const r = await engine.result(handle, { output: Order });
+r.output?.total; // number, and checked against the schema
 ```
 
 ## Signals — typed on both ends
 
-Declare a flow's signals once with `type<T>()`. It is type-only (no runtime cost) and drives both the
-**await** side (`ctx.signal`) and the **send** side (`engine.signal`).
+Declare a flow's signals once as schemas. The map drives both the **await** side (`ctx.signal`) and the
+**send** side (`engine.signal`).
 
 ```ts
-import { defineFlow, type } from "@iterativeflow/core";
+import { defineFlow } from "@iterativeflow/core";
+import { z } from "zod";
 
 const approval = defineFlow({
   name: "approval",
   version: 1,
-  signals: { approve: type<{ by: string }>() },
+  signals: { approve: z.object({ by: z.string() }) },
   run: async (ctx, input: { orderId: string }) => {
     const decision = await ctx.signal("approve"); // inferred: { by: string } ✅ no cast
     return { orderId: input.orderId, approvedBy: decision.by };
@@ -54,30 +50,8 @@ Without a contract these are the two classic runtime bugs — a typo'd signal na
 run hangs forever) and a mismatched payload (the flow reads `undefined`). Both compile today; with the
 `signals` map they are caught at build time.
 
-### Signals are Standard-Schema, exactly like `input`
-
-A signal entry is any Standard-Schema validator — the same zod / valibot / arktype schema you'd use
-for a flow's `input`. When you give one, the payload is **validated (and parsed) as the flow consumes
-it**, and a bad payload fails the run with the validator's message — the same contract as `input` at
-submit. `type<T>()` is the escape hatch: a type-only identity validator for when you want the type
-without the runtime check.
-
-```ts
-import { z } from "zod";
-
-const approval = defineFlow({
-  name: "approval",
-  version: 1,
-  signals: {
-    approve: z.object({ by: z.string() }), // validated at consume — a bad payload fails the run
-    cancel: type<{ reason: string }>(), // type-only, no runtime validation
-  },
-  run: async (ctx) => {
-    const { by } = await ctx.signal("approve"); // { by: string }, already validated
-    // ...
-  },
-});
-```
+The payload is **validated (and parsed) as the flow consumes it**, and a bad payload fails the run
+with the validator's message — the same contract as `input` at submit.
 
 ## Strictness & compatibility
 
@@ -92,6 +66,9 @@ assertion anyway; the `signals` map replaces it with a real, both-ends-checked d
 
 `RunHandle` is a `string`, so code that stored a `runId`, or called `result(runId)` /
 `signal(runId, name, payload)` with a plain string, keeps working untyped.
+
+`signalType<T>()` (a type-only signal with no runtime check) is gone: it typed a payload that nothing
+verified. Replace each one with a schema.
 
 The memory package's `contract.test.ts` pins all of this — including the `@ts-expect-error` cases on
 both the send and await sides, which fail the build if the strictness ever regresses.

@@ -1,4 +1,16 @@
-import type { Client, InArgs, Transaction } from "@libsql/client";
+import type { Client, Transaction } from "@libsql/client";
+
+/** A value bound to a positional `?`. `undefined` binds as NULL. */
+export type SqlParam = string | number | null | undefined;
+
+/** A value as it reaches the driver, after `undefined` became NULL. */
+export type SqlBinding = Exclude<SqlParam, undefined>;
+
+/** A column value as any supported SQLite driver (libsql, op-sqlite, Durable Objects) returns it. */
+export type SqlValue = string | number | bigint | boolean | null | ArrayBuffer | ArrayBufferView;
+
+/** One result row, keyed by column name. */
+export type SqlRow = Readonly<Record<string, SqlValue>>;
 
 /**
  * The minimal SQL surface the backend needs: positional-`?` `query` and a `tx` that runs a unit of
@@ -7,26 +19,23 @@ import type { Client, InArgs, Transaction } from "@libsql/client";
  * importantly, runs every outbox side-effect inside one transaction.
  */
 export interface Sql {
-  query<R = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
+  query(text: string, params?: readonly SqlParam[]): Promise<SqlRow[]>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
 
 /** SQLite bindings reject `undefined`; map it to NULL. Shared by every {@link Sql} driver adapter. */
-export const mapParams = (params?: readonly unknown[]): unknown[] =>
-  (params ?? []).map((p) => (p === undefined ? null : p));
-
-const args = (params?: readonly unknown[]): InArgs => mapParams(params) as InArgs;
+export const mapParams = (params: readonly SqlParam[] = []): SqlBinding[] =>
+  params.map((p) => p ?? null);
 
 const onTx = (t: Transaction): Sql => ({
-  query: (text, params) =>
-    t.execute({ sql: text, args: args(params) }).then((r) => r.rows as unknown[] as never),
+  query: async (text, params) => (await t.execute({ sql: text, args: mapParams(params) })).rows,
   tx: (fn) => fn(onTx(t)),
 });
 
 /** Adapt a `@libsql/client` {@link Client} to {@link Sql}. `tx` opens one write transaction. */
 export const libsqlDb = (client: Client): Sql => ({
-  query: (text, params) =>
-    client.execute({ sql: text, args: args(params) }).then((r) => r.rows as unknown[] as never),
+  query: async (text, params) =>
+    (await client.execute({ sql: text, args: mapParams(params) })).rows,
   async tx(fn) {
     const t = await client.transaction("write");
     try {

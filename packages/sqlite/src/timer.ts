@@ -1,4 +1,5 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
+import { int, optInt, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 
@@ -16,12 +17,12 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
     async dueBatch({ now, limit }: TimerDueOpts) {
       const at = (now ?? new Date()).getTime();
       return sql.tx(async (tx) => {
-        const due = await tx.query<{ run_id: string }>(
+        const due = await tx.query(
           `SELECT run_id FROM ${t.timer} WHERE fire_at <= ? ORDER BY fire_at LIMIT ?`,
           [at, limit],
         );
         if (!due.length) return [];
-        const ids = due.map((r) => r.run_id);
+        const ids = due.map((r) => text(r, "run_id"));
         const holes = ids.map(() => "?").join(", ");
         await tx.query(`DELETE FROM ${t.timer} WHERE run_id IN (${holes})`, ids);
         return ids;
@@ -33,12 +34,12 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
       const filter = names
         ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")}))`
         : "";
-      const rows = await sql.query<{ n: number }>(
+      const rows = await sql.query(
         `SELECT count(*) AS n FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
          WHERE tm.fire_at <= ?${filter}`,
         [now.getTime(), ...(names ?? [])],
       );
-      return Number(rows[0].n);
+      return int(rows[0], "n");
     },
 
     async cancel(runId) {
@@ -46,12 +47,12 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
     },
 
     async nextDueAt(now) {
-      const rows = await sql.query<{ fire_at: number | null }>(
+      const rows = await sql.query(
         `SELECT min(fire_at) AS fire_at FROM ${t.timer} WHERE fire_at > ?`,
         [now.getTime()],
       );
-      const at = rows[0]?.fire_at;
-      return at == null ? null : new Date(at);
+      const at = optInt(rows[0], "fire_at");
+      return at === undefined ? null : new Date(at);
     },
   };
 };

@@ -1,94 +1,117 @@
-import type { CronRow, DeliveredSignal, RunRow, StepOutcome } from "@iterativeflow/core/backend";
+import {
+  type CronRow,
+  type DeliveredSignal,
+  type Json,
+  type RunRow,
+  type RunStatus,
+  type StepOutcome,
+  CRON_OVERLAPS,
+  RUN_STATUSES,
+  STEP_STATUSES,
+  decodeFlowError,
+  decodeOneOf,
+  decodeTags,
+} from "@iterativeflow/core/backend";
+import type { SqlRow, SqlValue } from "#sql";
 
 /** @internal */
-export const j = (value: unknown): string | null =>
+export const j = <T>(value: T): string | null =>
   value === undefined ? null : JSON.stringify(value);
 
-const p = <T>(text: string | null): T | undefined =>
-  text === null ? undefined : (JSON.parse(text) as T);
+const isString = (v: SqlValue | undefined): v is string => v === String(v);
 
-const orUndef = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
+const column = (row: SqlRow, name: string): SqlValue => {
+  const v = row[name];
+  if (v === undefined) throw new Error(`sqlite: result has no column "${name}"`);
+  return v;
+};
 
-export interface RunRecord {
-  id: string;
-  name: string;
-  version: number;
-  status: RunRow["status"];
-  input: string | null;
-  output: string | null;
-  error: string | null;
-  attempts: number;
-  idempotency_key: string | null;
-  tags: string | null;
-  parent_run_id: string | null;
-  parent_cursor_key: string | null;
-  depth: number;
-  created_at: number;
-}
+/** @internal */
+export const text = (row: SqlRow, name: string): string => {
+  const v = column(row, name);
+  if (!isString(v)) throw new Error(`sqlite: column "${name}" is not text`);
+  return v;
+};
 
-export const mapRun = (r: RunRecord): RunRow => ({
-  id: r.id,
-  name: r.name,
-  version: r.version,
-  status: r.status,
-  input: p(r.input),
-  attempts: r.attempts,
-  output: p(r.output),
-  error: p<RunRow["error"]>(r.error),
-  idempotencyKey: orUndef(r.idempotency_key),
-  tags: p<string[]>(r.tags),
-  parentRunId: orUndef(r.parent_run_id),
-  parentCursorKey: orUndef(r.parent_cursor_key),
-  depth: r.depth,
-  createdAt: new Date(r.created_at),
+/** @internal */
+export const int = (row: SqlRow, name: string): number => {
+  const v = column(row, name);
+  const n = Number(v);
+  if (v === null || !Number.isFinite(n))
+    throw new Error(`sqlite: column "${name}" is not a number`);
+  return n;
+};
+
+/** @internal */
+export const optText = (row: SqlRow, name: string): string | undefined =>
+  column(row, name) === null ? undefined : text(row, name);
+
+/** @internal */
+export const optInt = (row: SqlRow, name: string): number | undefined =>
+  column(row, name) === null ? undefined : int(row, name);
+
+const oneOf = <T extends string>(allowed: readonly T[], row: SqlRow, name: string): T =>
+  decodeOneOf(allowed, text(row, name), `sqlite: column "${name}"`);
+
+const json = (row: SqlRow, name: string): Json | undefined => {
+  const raw = optText(row, name);
+  return raw === undefined ? undefined : JSON.parse(raw);
+};
+
+const optDate = (row: SqlRow, name: string): Date | undefined => {
+  const ms = optInt(row, name);
+  return ms === undefined ? undefined : new Date(ms);
+};
+
+/** @internal */
+export const runStatus = (r: SqlRow): RunStatus => oneOf(RUN_STATUSES, r, "status");
+
+/** @internal */
+export const mapRun = (r: SqlRow): RunRow => ({
+  id: text(r, "id"),
+  name: text(r, "name"),
+  version: int(r, "version"),
+  status: runStatus(r),
+  input: json(r, "input"),
+  attempts: int(r, "attempts"),
+  output: json(r, "output"),
+  error: decodeFlowError(json(r, "error"), `sqlite: column "error"`),
+  idempotencyKey: optText(r, "idempotency_key"),
+  tags: decodeTags(json(r, "tags"), `sqlite: column "tags"`),
+  parentRunId: optText(r, "parent_run_id"),
+  parentCursorKey: optText(r, "parent_cursor_key"),
+  depth: int(r, "depth"),
+  createdAt: new Date(int(r, "created_at")),
 });
 
-export interface StepRecord {
-  status: StepOutcome["status"];
-  result: string | null;
-  error: string | null;
-  attempts: number;
-  shape?: string | null;
-}
+// The `shape` column predates the `call` rename.
+/** @internal */
+export const STEP_COLUMNS = "status, result, error, attempts, shape AS memo_call";
 
-export const mapStep = (r: StepRecord): StepOutcome => ({
-  status: r.status,
-  result: p(r.result),
-  error: p<StepOutcome["error"]>(r.error),
-  attempts: r.attempts,
-  shape: orUndef(r.shape ?? null),
+/** @internal */
+export const mapStep = (r: SqlRow): StepOutcome => ({
+  status: oneOf(STEP_STATUSES, r, "status"),
+  result: json(r, "result"),
+  error: decodeFlowError(json(r, "error"), `sqlite: column "error"`),
+  attempts: int(r, "attempts"),
+  call: optText(r, "memo_call"),
 });
 
-export interface SignalRecord {
-  id: string;
-  name: string;
-  payload: string | null;
-}
-
-export const mapSignal = (r: SignalRecord): DeliveredSignal => ({
-  id: r.id,
-  name: r.name,
-  payload: p(r.payload),
+/** @internal */
+export const mapSignal = (r: SqlRow): DeliveredSignal => ({
+  id: text(r, "id"),
+  name: text(r, "name"),
+  payload: json(r, "payload"),
 });
 
-export interface CronRecord {
-  name: string;
-  schedule: string;
-  flow_name: string;
-  flow_version: number;
-  input: string | null;
-  overlap: "allow" | "skip";
-  next_run_at: number;
-  last_run_at: number | null;
-}
-
-export const mapCron = (r: CronRecord): CronRow => ({
-  name: r.name,
-  schedule: r.schedule,
-  flowName: r.flow_name,
-  flowVersion: r.flow_version,
-  input: p(r.input),
-  overlap: r.overlap,
-  nextRunAt: new Date(r.next_run_at),
-  lastRunAt: r.last_run_at === null ? undefined : new Date(r.last_run_at),
+/** @internal */
+export const mapCron = (r: SqlRow): CronRow => ({
+  name: text(r, "name"),
+  schedule: text(r, "schedule"),
+  flowName: text(r, "flow_name"),
+  flowVersion: int(r, "flow_version"),
+  input: json(r, "input"),
+  overlap: oneOf(CRON_OVERLAPS, r, "overlap"),
+  nextRunAt: new Date(int(r, "next_run_at")),
+  lastRunAt: optDate(r, "last_run_at"),
 });

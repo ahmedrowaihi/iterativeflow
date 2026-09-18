@@ -15,8 +15,7 @@ export interface DynamoBackendOpts {
 /**
  * The DynamoDB {@link Backend}: the four ports over one document client and one table. Store,
  * Queue, and Timer share that table, so an outbox commits as one `TransactWriteItems` — the
- * single transactional domain the seam requires. Pass a client from {@link docClient}, or any
- * object exposing `send`.
+ * single transactional domain the seam requires. Pass a client from {@link docClient}.
  */
 export const createDynamoBackend = (doc: Doc, opts: DynamoBackendOpts = {}): Backend => {
   const table = opts.table ?? DEFAULT_TABLE;

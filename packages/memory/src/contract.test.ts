@@ -1,4 +1,5 @@
 import {
+  type OutputSchema,
   type SignalSchema,
   createEngine,
   defineContract,
@@ -8,7 +9,6 @@ import {
   signalRun,
   submit,
   tickOnce,
-  signalType,
 } from "@iterativeflow/core";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
@@ -17,10 +17,39 @@ import { createMemoryBackend } from "#index";
 // if the typed-contract surface regresses, and the `.by` / `output.total` reads fail to compile if
 // receiver-side signal typing or output typing is lost. Both are invisible to a runtime-only check.
 
+// Hand-rolled Standard-Schema validators (no zod dependency) — the same `~standard` shape zod emits.
+const approveSchema: SignalSchema<{ by: string }> = {
+  "~standard": {
+    version: 1,
+    vendor: "test",
+    validate: (v) =>
+      v instanceof Object && "by" in v
+        ? { value: { by: String(v.by) } }
+        : { issues: [{ message: "by is required" }] },
+  },
+};
+
+const approvalOutput: OutputSchema<{ orderId: string; approvedBy: string; total: number }> = {
+  "~standard": {
+    version: 1,
+    vendor: "test",
+    validate: (v) =>
+      v instanceof Object && "orderId" in v && "approvedBy" in v && "total" in v
+        ? {
+            value: {
+              orderId: String(v.orderId),
+              approvedBy: String(v.approvedBy),
+              total: Number(v.total),
+            },
+          }
+        : { issues: [{ message: "not an approval" }] },
+  },
+};
+
 const approval = defineFlow({
   name: "approval",
   version: 1,
-  signals: { approve: signalType<{ by: string }>() },
+  signals: { approve: approveSchema },
   run: async (ctx, input: { orderId: string }) => {
     const decision = await ctx.signal("approve"); // inferred: { by: string }
     return { orderId: input.orderId, approvedBy: decision.by, total: 42 };
@@ -31,7 +60,7 @@ const approval = defineFlow({
 defineFlow({
   name: "recv-strict",
   version: 1,
-  signals: { approve: signalType<{ by: string }>() },
+  signals: { approve: approveSchema },
   run: async (ctx) => {
     await ctx.signal("approve");
     // @ts-expect-error unknown signal name on a flow that declares its signals
@@ -80,31 +109,22 @@ describe("typed contract", () => {
     expect(delivered).toBe(true);
     await tickOnce(backend, flows, opts); // resumes and completes
 
-    const r = await result(backend, handle, { timeoutMs: 1000, now: () => new Date() });
+    const r = await result(backend, handle, {
+      timeoutMs: 1000,
+      now: () => new Date(),
+      output: approvalOutput,
+    });
     expect(r.status).toBe("done");
-    // r.output is typed as the flow's return — this reads compile only if that type survived.
+    // r.output is typed from the output schema that just validated it.
     expect(r.output?.total).toBe(42);
     expect(r.output?.approvedBy).toBe("reviewer");
   });
 
   it("validates a consumed signal payload against its Standard-Schema and fails the run when it is bad", async () => {
-    // A hand-rolled Standard-Schema validator (no zod dependency) — same `~standard` shape zod emits.
-    const requiresBy: SignalSchema<{ by: string }> = {
-      "~standard": {
-        version: 1,
-        vendor: "test",
-        validate: (v) => {
-          const o = v as { by?: unknown };
-          return typeof o?.by === "string"
-            ? { value: { by: o.by } }
-            : { issues: [{ message: "by must be a string" }] };
-        },
-      },
-    };
     const gated = defineFlow({
       name: "gated",
       version: 1,
-      signals: { approve: requiresBy },
+      signals: { approve: approveSchema },
       run: async (ctx): Promise<string> => (await ctx.signal("approve")).by,
     });
     const backend = createMemoryBackend();
@@ -113,13 +133,13 @@ describe("typed contract", () => {
 
     const handle = await submit(backend, gated, {});
     await tickOnce(backend, flows, opts); // parks on the signal
-    // Bypass the compile-time payload type to feed a runtime-invalid value (missing `by`).
-    await signalRun(backend, handle, "approve", {} as { by: string });
+    // Straight to the store: the typed signalRun rejects a payload missing `by` at compile time.
+    await backend.store.postSignal(handle, "approve", {});
     await tickOnce(backend, flows, opts); // consumes → schema rejects → run fails permanently
 
     const run = (await backend.store.loadRun(handle))?.run;
     expect(run?.status).toBe("failed");
-    expect(run?.error?.message).toContain("by must be a string");
+    expect(run?.error?.message).toContain("by is required");
   });
 
   it("submits by contract — output + signal types thread through without the flow body", async () => {
@@ -128,7 +148,7 @@ describe("typed contract", () => {
       { orderId: string },
       { orderId: string; approvedBy: string; total: number },
       { approve: { by: string } }
-    >({ name: "approval", version: 1, signals: { approve: signalType<{ by: string }>() } });
+    >({ name: "approval", version: 1, signals: { approve: approveSchema } });
 
     const backend = createMemoryBackend();
     const flows = registry([approval]); // the real flow (same name@version) executes
@@ -139,9 +159,13 @@ describe("typed contract", () => {
     await signalRun(backend, handle, "approve", { by: "boss" }); // typed via the contract's signals
     await tickOnce(backend, flows, opts);
 
-    const r = await result(backend, handle, { timeoutMs: 1000, now: () => new Date() });
+    const r = await result(backend, handle, {
+      timeoutMs: 1000,
+      now: () => new Date(),
+      output: approvalOutput,
+    });
     expect(r.status).toBe("done");
-    expect(r.output?.total).toBe(42); // r.output typed from the contract's output param
+    expect(r.output?.total).toBe(42);
     expect(r.output?.approvedBy).toBe("boss");
 
     // @ts-expect-error the contract's input is { orderId: string }, not a number

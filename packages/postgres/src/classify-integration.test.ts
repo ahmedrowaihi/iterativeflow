@@ -12,11 +12,10 @@ const skip = process.env.SKIP_TESTCONTAINERS === "1";
 
 // The shape a driver produces: the SQLSTATE rides on `.code`, wrapped down a `.cause` chain
 // (the DrizzleQueryError shape). pgClassify must walk that chain, not the surface message.
-const pgError = (code: string): Error => {
-  const inner = new Error(`db rejected with ${code}`);
-  (inner as { code?: string }).code = code;
-  return new Error("Failed query: ...", { cause: inner });
-};
+const pgError = (code: string): Error =>
+  new Error("Failed query: ...", {
+    cause: Object.assign(new Error(`db rejected with ${code}`), { code }),
+  });
 
 describe.skipIf(skip)(
   "pgClassify — transient vs permanent step errors, driven on real postgres",

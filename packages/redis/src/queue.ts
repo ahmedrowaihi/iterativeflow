@@ -2,7 +2,7 @@ import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend
 import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
-import { ENQUEUE_FN, luaRunner } from "#scripts";
+import { ENQUEUE_FN, luaRunner, replyNumber, replyRows } from "#scripts";
 import { ms } from "#time";
 
 // Lua, not MULTI: resolving an omitted priority reads the run hash before writing the job.
@@ -139,7 +139,7 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
       const nowMs = ms(now);
       const tokens = Array.from({ length: limit }, () => id()); // Lua can't call IdGen; hand it fresh tokens
       const nameCount = names === undefined ? -1 : names.length;
-      const rows = await run<[string, string, number][]>(
+      const reply = await run(
         CLAIM,
         [keys.queue],
         [
@@ -156,22 +156,22 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
           ...tokens,
         ],
       );
-      return rows.map((r): Lease => ({
-        runId: r[0],
-        token: r[1],
-        expiresAt: new Date(nowMs + leaseMs),
-        version: Number(r[2]),
-      }));
+      return replyRows(reply).map(([runId, token, version]): Lease => {
+        if (runId === undefined || token === undefined || version === undefined) {
+          throw new Error(`claim: malformed lease row [${runId}, ${token}, ${version}]`);
+        }
+        return { runId, token, expiresAt: new Date(nowMs + leaseMs), version: Number(version) };
+      });
     },
 
     async heartbeat(lease: Lease, { leaseMs, now }) {
       const nowMs = ms(now);
-      const newExp = await run<number>(
-        HEARTBEAT,
-        [keys.job(lease.runId)],
-        [nowMs, lease.token, leaseMs],
+      const newExp = replyNumber(
+        await run(HEARTBEAT, [keys.job(lease.runId)], [nowMs, lease.token, leaseMs]),
       );
-      if (newExp < 0) throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
+      if (newExp === undefined || newExp < 0) {
+        throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
+      }
       return { ...lease, expiresAt: new Date(newExp) };
     },
 
@@ -189,24 +189,18 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
       const wanted = names && new Set(names);
       const runIds = await client.zrange(keys.queue, 0, -1);
       if (runIds.length === 0) return queueDepthOf([], nowMs);
-      const pipe = client.pipeline();
-      for (const runId of runIds) {
-        pipe.hmget(keys.job(runId), JOB.runAt, JOB.leaseExpires);
-        if (wanted) pipe.hget(keys.run(runId), RUN.name);
-      }
-      const res = (await pipe.exec()) ?? [];
-      const stride = wanted ? 2 : 1;
+      const [fields, runNames] = await Promise.all([
+        Promise.all(
+          runIds.map((runId) => client.hmget(keys.job(runId), JOB.runAt, JOB.leaseExpires)),
+        ),
+        wanted ? Promise.all(runIds.map((runId) => client.hget(keys.run(runId), RUN.name))) : [],
+      ]);
       const jobs: { runAt: number; leaseExpires?: number }[] = [];
       for (let i = 0; i < runIds.length; i++) {
-        if (wanted) {
-          // a run-less job is unownable, so it passes every name filter (see Queue.claim)
-          const name = res[i * stride + 1]?.[1] as string | null;
-          if (name !== null && !wanted.has(name)) continue;
-        }
-        const [runAt, leaseExpires] = (res[i * stride]?.[1] ?? []) as [
-          string | null,
-          string | null,
-        ];
+        // a run-less job is unownable, so it passes every name filter (see Queue.claim)
+        const name = runNames[i];
+        if (wanted && name !== null && !wanted.has(name)) continue;
+        const [runAt, leaseExpires] = fields[i];
         if (runAt === null) continue;
         jobs.push({
           runAt: Number(runAt),

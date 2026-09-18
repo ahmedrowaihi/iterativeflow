@@ -6,16 +6,10 @@ import {
   type QueueDepth,
   queueDepthOf,
 } from "@iterativeflow/core/backend";
+import { int, optInt, text } from "#codec";
 import type { Tables } from "#schema";
 import { enqueueManyStmt, enqueueStmt } from "#statements";
 import type { Sql } from "#sql";
-
-interface LeaseRow {
-  run_id: string;
-  lease_token: string;
-  lease_expires: number;
-  version: number;
-}
 
 /** @internal */
 export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
@@ -37,16 +31,16 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
         ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")}))`
         : "";
       return sql.tx(async (tx) => {
-        const due = await tx.query<{ run_id: string }>(
+        const due = await tx.query(
           `SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
              WHERE j.run_at <= ? AND (j.lease_expires IS NULL OR j.lease_expires <= ?)${nameFilter}
              ORDER BY j.priority, j.run_at LIMIT ?`,
           [at, at, ...(names ?? []), limit],
         );
         if (!due.length) return [];
-        const ids = due.map((r) => r.run_id);
+        const ids = due.map((r) => text(r, "run_id"));
         const holes = ids.map(() => "?").join(", ");
-        const rows = await tx.query<LeaseRow>(
+        const rows = await tx.query(
           `UPDATE ${t.job}
              SET lease_token = ? || ':' || run_id, lease_expires = ?
            WHERE run_id IN (${holes})
@@ -54,24 +48,24 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
           [id(), at + leaseMs, ...ids],
         );
         return rows.map((r) => ({
-          runId: r.run_id,
-          token: r.lease_token,
-          expiresAt: new Date(r.lease_expires),
-          version: Number(r.version),
+          runId: text(r, "run_id"),
+          token: text(r, "lease_token"),
+          expiresAt: new Date(int(r, "lease_expires")),
+          version: int(r, "version"),
         }));
       });
     },
 
     async heartbeat(lease: Lease, { leaseMs, now }) {
       const at = ms(now);
-      const rows = await sql.query<{ lease_expires: number }>(
+      const rows = await sql.query(
         `UPDATE ${t.job} SET lease_expires = ?
          WHERE run_id = ? AND lease_token = ? AND lease_expires > ?
          RETURNING lease_expires`,
         [at + leaseMs, lease.runId, lease.token, at],
       );
       if (!rows[0]) throw new Error(`heartbeat: lease for ${lease.runId} is no longer held`);
-      return { ...lease, expiresAt: new Date(rows[0].lease_expires) };
+      return { ...lease, expiresAt: new Date(int(rows[0], "lease_expires")) };
     },
 
     async ack(lease: Lease, opts) {
@@ -95,11 +89,7 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       const where = names
         ? ` WHERE r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")})`
         : "";
-      const rows = await sql.query<{
-        claimable: number | null;
-        leased: number | null;
-        oldest: number | null;
-      }>(
+      const rows = await sql.query(
         `SELECT SUM(claimable) AS claimable, SUM(leased) AS leased,
                 MIN(CASE WHEN claimable = 1 THEN run_at END) AS oldest
            FROM (SELECT j.run_at AS run_at,
@@ -109,10 +99,11 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
         [nowMs, nowMs, nowMs, ...(names ?? [])],
       );
       const r = rows[0];
+      const oldest = optInt(r, "oldest");
       return {
-        claimable: Number(r?.claimable ?? 0),
-        leased: Number(r?.leased ?? 0),
-        oldestClaimableAgeMs: r?.oldest == null ? null : nowMs - Number(r.oldest),
+        claimable: optInt(r, "claimable") ?? 0,
+        leased: optInt(r, "leased") ?? 0,
+        oldestClaimableAgeMs: oldest === undefined ? null : nowMs - oldest,
       };
     },
   };

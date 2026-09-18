@@ -1,4 +1,11 @@
-import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
+import {
+  type Backend,
+  defineFlow,
+  registry,
+  type SignalSchema,
+  submit,
+  tickOnce,
+} from "@iterativeflow/core";
 import { createMemoryBackend } from "@iterativeflow/memory";
 import { beforeEach, describe, expect, it } from "vitest";
 import { webhookSignalBridge } from "#bridge";
@@ -20,11 +27,28 @@ async function ghSign(body: string): Promise<string> {
   return `sha256=${hex}`;
 }
 
-const approvalFlow = defineFlow<{ pr: number }, string>({
+interface IssueCommentPayload {
+  action?: string;
+  number: number;
+}
+
+const approvedSchema: SignalSchema<{ by: string }> = {
+  "~standard": {
+    version: 1,
+    vendor: "test",
+    validate: (v) =>
+      v instanceof Object && "by" in v
+        ? { value: { by: String(v.by) } }
+        : { issues: [{ message: "by is required" }] },
+  },
+};
+
+const approvalFlow = defineFlow<{ pr: number }, string, { "qa:approved": { by: string } }>({
   name: "await-approval",
   version: 1,
+  signals: { "qa:approved": approvedSchema },
   run: async (ctx) => {
-    const payload = (await ctx.signal("qa:approved")) as { by: string };
+    const payload = await ctx.signal("qa:approved");
     return `approved-by:${payload.by}`;
   },
 });
@@ -33,8 +57,7 @@ describe("webhookSignalBridge (github preset)", () => {
   let backend: Backend;
   const flows = registry([approvalFlow]);
   const now = (): Date => new Date("2030-01-01T00:00:00Z");
-  const tick = (): Promise<unknown> =>
-    tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
+  const tick = () => tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
 
   beforeEach(() => {
     backend = createMemoryBackend();
@@ -47,7 +70,7 @@ describe("webhookSignalBridge (github preset)", () => {
     return runId;
   };
 
-  const webhook = async (payload: unknown, delivery: string) => {
+  const webhook = async (payload: IssueCommentPayload, delivery: string) => {
     const body = JSON.stringify(payload);
     return {
       body,
@@ -64,8 +87,8 @@ describe("webhookSignalBridge (github preset)", () => {
     const bridge = webhookSignalBridge(backend, {
       verify: github(SECRET),
       correlate: (event) => {
-        const pr = (event.payload as { number: number }).number;
-        return pr === 42 ? [{ runId, name: "qa:approved", payload: { by: "alice" } }] : [];
+        expect(event.payload).toEqual({ action: "created", number: 42 });
+        return [{ runId, name: "qa:approved", payload: { by: "alice" } }];
       },
     });
 

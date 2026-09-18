@@ -10,9 +10,11 @@ import {
   type Flow,
   type FlowRegistry,
   type NoSignals,
+  type OutputSchema,
   type SignalMap,
   type SignalName,
   type SignalPayload,
+  parseWith,
   validateInput,
 } from "#engine/flow";
 import { runDueCrons } from "#engine/schedule";
@@ -65,7 +67,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
   } else if (opts?.onDuplicate === "error") {
     throw new DuplicateRunError(runId, opts.idempotencyKey ?? "");
   }
-  return runId as RunHandle<O, S>;
+  return runId;
 };
 
 /** One item of a batch submit: a flow, its input, and optional per-run dispatch options. */
@@ -149,17 +151,37 @@ export const retryRun = async (backend: Backend, runId: string): Promise<boolean
   return retried;
 };
 
+/** How {@link result} waits: `timeoutMs` bounds it, `pollMs` spaces the reads. */
+export interface ResultOpts {
+  timeoutMs?: number;
+  pollMs?: number;
+  now?: Clock;
+}
+
 /**
  * Poll-first await of a run's terminal outcome: re-read the store, and between reads sleep on
  * `wakeup.wait` (which returns early on a signal, or after the poll tick). Connection-safe by
  * default — no `LISTEN` pinned. With no `timeoutMs` it waits INDEFINITELY, polling every `pollMs`
  * (default 500) — pass one in a request handler. Throws on timeout.
+ *
+ * The output is read back from the database, so it is `unknown` unless you pass the flow's
+ * `output` schema — then it is validated, and a mismatch throws.
  */
-export const result = async <O = unknown>(
+export function result(
+  backend: Backend,
+  runId: string,
+  opts?: ResultOpts,
+): Promise<RunResult<unknown>>;
+export function result<O>(
   backend: Backend,
   runId: RunHandle<O> | string,
-  opts?: { timeoutMs?: number; pollMs?: number; now?: Clock },
-): Promise<RunResult<O>> => {
+  opts: ResultOpts & { output: OutputSchema<O> },
+): Promise<RunResult<O>>;
+export async function result<O>(
+  backend: Backend,
+  runId: string,
+  opts?: ResultOpts & { output?: OutputSchema<O> },
+): Promise<RunResult<O> | RunResult<unknown>> {
   const nowMs = (): number => (opts?.now ? opts.now().getTime() : Date.now());
   const pollMs = opts?.pollMs ?? 500;
   const deadline =
@@ -168,13 +190,18 @@ export const result = async <O = unknown>(
     const run = await backend.store.loadRunRow(runId);
     if (!run) throw new Error(`result: run ${runId} not found`);
     if (isTerminal(run.status)) {
-      return { status: run.status, output: run.output as O, error: run.error };
+      const schema = opts?.output;
+      if (schema && run.status === "done") {
+        const output = await parseWith(schema, run.output, `run ${runId} output`);
+        return { status: run.status, output, error: run.error };
+      }
+      return { status: run.status, output: run.output, error: run.error };
     }
     const remaining = deadline - nowMs();
     if (remaining <= 0) throw new Error(`result: run ${runId} did not settle before timeout`);
     await backend.wakeup.wait(runId, Math.min(pollMs, remaining));
   }
-};
+}
 
 export { cancelRun } from "#engine/cancel";
 

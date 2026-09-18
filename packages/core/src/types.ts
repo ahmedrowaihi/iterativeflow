@@ -64,7 +64,9 @@ export interface RunSpec {
 
 /** A checkpointed step is always a success — a step failure fails the run, not the memo, so only
  *  successful steps are ever written (their existence IS the success marker). */
-export type StepStatus = "ok";
+export type StepStatus = (typeof STEP_STATUSES)[number];
+
+export const STEP_STATUSES = ["ok"] as const;
 
 /** The durable memo of a completed step — the one thing that must survive a crash. */
 export interface StepOutcome {
@@ -79,7 +81,7 @@ export interface StepOutcome {
    * flow body was reordered/refactored under a live run (drift). Absent on memos written before the
    * drift guard existed, in which case the check is skipped.
    */
-  shape?: string;
+  call?: string;
 }
 
 /** A step checkpoint request — the single durable write per step. */
@@ -169,10 +171,15 @@ export interface CronRow {
   flowName: string;
   flowVersion: number;
   input: unknown;
-  overlap: "allow" | "skip";
+  overlap: CronOverlap;
   nextRunAt: Date;
   lastRunAt?: Date;
 }
+
+/** What a cron does when its previous run is still live: start another (`allow`) or skip (`skip`). */
+export type CronOverlap = (typeof CRON_OVERLAPS)[number];
+
+export const CRON_OVERLAPS = ["allow", "skip"] as const;
 
 /** Register/upsert payload for a cron — `nextRunAt` is computed by the engine from `schedule`. */
 export interface CronSpec {
@@ -181,7 +188,7 @@ export interface CronSpec {
   flowName: string;
   flowVersion: number;
   input?: unknown;
-  overlap?: "allow" | "skip";
+  overlap?: CronOverlap;
   nextRunAt: Date;
 }
 

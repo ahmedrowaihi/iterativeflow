@@ -1,4 +1,5 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
+import { int, intOrNull, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 
@@ -16,12 +17,12 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
     async dueBatch({ now, limit }: TimerDueOpts) {
       const at = (now ?? new Date()).getTime();
       return sql.tx(async (tx) => {
-        const due = await tx.query<{ run_id: string }>(
+        const due = await tx.query(
           `SELECT run_id FROM ${t.timer} WHERE fire_at <= ? ORDER BY fire_at LIMIT ? FOR UPDATE SKIP LOCKED`,
           [at, limit],
         );
         if (!due.length) return [];
-        const ids = due.map((r) => r.run_id);
+        const ids = due.map((r) => text(r, "run_id"));
         const holes = ids.map(() => "?").join(", ");
         await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN (${holes})`, ids);
         return ids;
@@ -34,12 +35,12 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
         ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
         : "";
       const params = names ? [now.getTime(), ...names] : [now.getTime()];
-      const rows = await sql.query<{ n: number | string }>(
+      const [row] = await sql.query(
         `SELECT count(*) AS n FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
          WHERE tm.fire_at <= ?${namePredicate}`,
         params,
       );
-      return Number(rows[0]?.n ?? 0);
+      return int(row, "n");
     },
 
     async cancel(runId) {
@@ -47,12 +48,12 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
     },
 
     async nextDueAt(now) {
-      const rows = await sql.query<{ fire_at: number | null }>(
+      const [row] = await sql.query(
         `SELECT min(fire_at) AS fire_at FROM ${t.timer} WHERE fire_at > ?`,
         [now.getTime()],
       );
-      const at = rows[0]?.fire_at;
-      return at == null ? null : new Date(Number(at));
+      const at = intOrNull(row, "fire_at");
+      return at === null ? null : new Date(at);
     },
   };
 };

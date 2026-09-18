@@ -12,14 +12,16 @@ const PERMANENT_SQLSTATE_CODE = new Set([
   "23514", // check_violation
 ]);
 
-const sqlState = (error: unknown): string | undefined => {
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+
+const sqlState = (error: Error): string | undefined => {
   // A driver like Drizzle wraps the real pg error, so the SQLSTATE lives down the `.cause` chain;
   // the bounded depth guards a self-referential chain.
   let c: unknown = error;
-  for (let depth = 0; c && depth < 8; depth++) {
-    const code = (c as { code?: unknown }).code;
-    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
-    c = (c as { cause?: unknown }).cause;
+  for (let depth = 0; c instanceof Error && depth < 8; depth++) {
+    const code = "code" in c ? String(c.code) : "";
+    if (SQLSTATE.test(code)) return code;
+    c = c.cause;
   }
   return undefined;
 };
@@ -34,8 +36,8 @@ const sqlState = (error: unknown): string | undefined => {
  * @example
  * await ctx.step("write", writeRow, { classify: pgClassify });
  */
-export const pgClassify = (error: unknown): "transient" | "permanent" => {
-  const code = sqlState(error);
+export const pgClassify = (cause: unknown): "transient" | "permanent" => {
+  const code = cause instanceof Error ? sqlState(cause) : undefined;
   if (!code) return "transient";
   const permanent =
     PERMANENT_SQLSTATE_CLASS.has(code.slice(0, 2)) || PERMANENT_SQLSTATE_CODE.has(code);

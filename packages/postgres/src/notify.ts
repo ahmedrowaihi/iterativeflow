@@ -115,6 +115,12 @@ export interface PgListener {
   state(): ListenerState;
 }
 
+const decodeProgress = (payload: string): ProgressEvent | undefined => {
+  const ev: unknown = JSON.parse(payload);
+  if (!(ev instanceof Object) || !("runId" in ev) || !("type" in ev)) return undefined;
+  return { runId: String(ev.runId), type: String(ev.type) };
+};
+
 export interface PgListenerOpts {
   /** Schema whose channels to listen on. Must match the backend's schema. Default `workflow`. */
   schema?: string;
@@ -189,7 +195,8 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
               else if (msg.channel === done && msg.payload) void completion.signal(msg.payload);
               else if (msg.channel === progress && msg.payload) {
                 try {
-                  emitProgress(JSON.parse(msg.payload) as ProgressEvent);
+                  const ev = decodeProgress(msg.payload);
+                  if (ev) emitProgress(ev);
                 } catch {
                   // a malformed payload is a dropped progress event, never a correctness issue
                 }

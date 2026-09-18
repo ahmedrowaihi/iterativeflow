@@ -1,23 +1,22 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { DeleteCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DeleteCommand,
+  PutCommand,
+  QueryCommand,
+  type QueryCommandInput,
+} from "@aws-sdk/lib-dynamodb";
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
+import { num, parseTimer, str } from "#codec";
 import { countQuery } from "#count";
 import { runNames } from "#run-names";
 import { TIMER_GSI_PK, key, pad } from "#schema";
 
-interface TimerItem {
-  runId: string;
-  fireAt: number;
-}
-
 /** @internal */
 export const createDynamoTimer = (doc: Doc, table: string): Timer => {
-  const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
-
   return {
     async schedule(runId, fireAt) {
-      await send(
+      await doc.send(
         new PutCommand({
           TableName: table,
           Item: {
@@ -34,7 +33,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
 
     async dueBatch({ now, limit }: TimerDueOpts) {
       const t = (now ?? new Date()).getTime();
-      const res = await send<{ Items?: TimerItem[] }>(
+      const res = await doc.send(
         new QueryCommand({
           TableName: table,
           IndexName: "gsi1",
@@ -45,9 +44,9 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
         }),
       );
       const fired: string[] = [];
-      for (const it of res.Items ?? []) {
+      for (const it of (res.Items ?? []).map(parseTimer)) {
         try {
-          await send(
+          await doc.send(
             new DeleteCommand({
               TableName: table,
               Key: key.timer(it.runId),
@@ -63,11 +62,11 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
     },
 
     async cancel(runId) {
-      await send(new DeleteCommand({ TableName: table, Key: key.timer(runId) }));
+      await doc.send(new DeleteCommand({ TableName: table, Key: key.timer(runId) }));
     },
 
     async nextDueAt(now) {
-      const res = await send<{ Items?: TimerItem[] }>(
+      const res = await doc.send(
         new QueryCommand({
           TableName: table,
           IndexName: "gsi1",
@@ -82,7 +81,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
         }),
       );
       const next = res.Items?.[0];
-      return next ? new Date(next.fireAt) : null;
+      return next ? new Date(num(next, "fireAt")) : null;
     },
 
     async dueCount(now, names) {
@@ -99,10 +98,10 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
       }
       const wanted = new Set(names);
       if (wanted.size === 0) return 0;
-      const due: TimerItem[] = [];
-      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      const due: string[] = [];
+      let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
       do {
-        const res = await send<{ Items?: TimerItem[]; LastEvaluatedKey?: Record<string, unknown> }>(
+        const res = await doc.send(
           new QueryCommand({
             TableName: table,
             IndexName: "gsi1",
@@ -112,17 +111,13 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
             ExclusiveStartKey,
           }),
         );
-        due.push(...(res.Items ?? []));
+        due.push(...(res.Items ?? []).map((i) => str(i, "runId")));
         ExclusiveStartKey = res.LastEvaluatedKey;
       } while (ExclusiveStartKey);
-      const nameById = await runNames(
-        doc,
-        table,
-        due.map((d) => d.runId),
-      );
+      const nameById = await runNames(doc, table, due);
       // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
-      return due.filter((d) => {
-        const name = nameById.get(d.runId);
+      return due.filter((runId) => {
+        const name = nameById.get(runId);
         return name === undefined || wanted.has(name);
       }).length;
     },

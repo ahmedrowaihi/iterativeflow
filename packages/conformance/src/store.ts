@@ -1,5 +1,5 @@
-import type { Store } from "@iterativeflow/core/backend";
-import { describe, expect, it } from "vitest";
+import type { PurgeFilter, Store } from "@iterativeflow/core/backend";
+import { assert, describe, expect, it } from "vitest";
 
 /**
  * The Store contract as executable invariants. EVERY backend (in-memory, Postgres,
@@ -129,11 +129,20 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
       const at = new Date("2030-01-01T00:00:00.000Z");
       await s.checkpointStep({ runId, cursorKey: "a", status: "ok", result: { at }, attempts: 1 });
-      const memo = (await s.loadRun(runId))?.steps.get("a")?.result as { at: unknown };
-      expect(memo.at).toBe("2030-01-01T00:00:00.000Z"); // not a Date — `T` describes fn, not replay
+      expect((await s.loadRun(runId))?.steps.get("a")?.result).toEqual({
+        at: "2030-01-01T00:00:00.000Z",
+      });
     });
 
-    it("checkpointStep round-trips the shape tag (drift-guard evidence)", async () => {
+    it("a run's output round-trips through JSON — a Date comes back as a string on every backend", async () => {
+      const s = await makeStore();
+      const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
+      const at = new Date("2030-01-01T00:00:00.000Z");
+      await s.markTerminal(runId, { status: "done", output: { at } });
+      expect((await s.loadRunRow(runId))?.output).toEqual({ at: "2030-01-01T00:00:00.000Z" });
+    });
+
+    it("checkpointStep round-trips the call that wrote it (drift-guard evidence)", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
       await s.checkpointStep({
@@ -142,9 +151,9 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         status: "ok",
         result: 1,
         attempts: 1,
-        shape: "step:charge",
+        call: "step:charge",
       });
-      expect((await s.loadRun(runId))?.steps.get("a")?.shape).toBe("step:charge");
+      expect((await s.loadRun(runId))?.steps.get("a")?.call).toBe("step:charge");
     });
 
     it("checkpointStep is first-writer-wins — a second write does NOT overwrite (exactly-once memo)", async () => {
@@ -276,10 +285,9 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         expect(await s.loadRunRow(spared)).toBeDefined();
       }
 
-      // an untyped caller asking for a live status deletes nothing — the terminal guard is unconditional
-      expect(
-        await s.deleteRuns({ status: "pending" as unknown as "done", before: new Date() }, 100),
-      ).toBe(0);
+      // a filter parsed off the wire asking for a live status deletes nothing — the terminal guard is unconditional
+      const fromTheWire: PurgeFilter = JSON.parse(`{"status":"pending"}`);
+      expect(await s.deleteRuns({ ...fromTheWire, before: new Date() }, 100)).toBe(0);
       expect((await s.loadRunRow(live))?.status).toBe("pending");
 
       await expect(s.deleteRuns({}, 100)).rejects.toThrow();
@@ -318,12 +326,17 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         attempts: 1,
       });
       const snap = await s.loadRun(runId);
-      (snap!.run.input as { n: number }).n = 999;
-      (snap!.steps.get("a")!.result as { v: number }).v = 999;
-      (snap!.steps as Map<string, unknown>).clear();
+      const input = snap?.run.input;
+      const result = snap?.steps.get("a")?.result;
+      assert(input instanceof Object && "n" in input);
+      assert(result instanceof Object && "v" in result);
+      assert(snap?.steps instanceof Map);
+      input.n = 999;
+      result.v = 999;
+      snap.steps.clear();
       const again = await s.loadRun(runId);
-      expect((again!.run.input as { n: number }).n).toBe(1);
-      expect((again!.steps.get("a")!.result as { v: number }).v).toBe(1);
+      expect(again?.run.input).toEqual({ n: 1 });
+      expect(again?.steps.get("a")?.result).toEqual({ v: 1 });
     });
 
     it("caller mutating the input after startRun can't reach the stored run", async () => {

@@ -2,6 +2,7 @@ import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   BatchGetCommand,
   BatchWriteCommand,
+  type BatchWriteCommandInput,
   DeleteCommand,
   GetCommand,
   PutCommand,
@@ -39,14 +40,20 @@ import { countQuery } from "#count";
 import { storedPriorities } from "#run-names";
 import {
   type CronItem,
+  type DocItem,
   type RunItem,
-  type RunPartitionItem,
-  type StepItem,
   dec,
   enc,
   mapRun,
   mapStep,
   nextSeq,
+  parseCron,
+  parseJob,
+  parseRun,
+  parseStep,
+  parseTimer,
+  runStatusOf,
+  str,
 } from "#codec";
 import { CRON_DUE_GSI_PK, RUN_GSI2_PK, childGsiPk, key, pad } from "#schema";
 import {
@@ -60,6 +67,8 @@ import {
   outboxParts,
   spawnTx,
 } from "#statements";
+
+type WriteRequests = NonNullable<BatchWriteCommandInput["RequestItems"]>[string];
 
 const TERMINAL_VALUES: Record<string, string> = Object.fromEntries(
   TERMINAL_STATUSES.map((s, i) => [`:t${i}`, s]),
@@ -79,16 +88,14 @@ const mapCronItem = (c: CronItem): CronRow => ({
 
 /** @internal */
 export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => {
-  const send = <T = unknown>(cmd: unknown): Promise<T> => doc.send(cmd) as Promise<T>;
-
   // Strong reads on the base-table decision path: a stale read could replay against an outdated run
   // or a missed step memo. GSI reads (claim/timer) can't be consistent and are CAS-guarded instead.
   const consistentGet = (Key: { pk: string; sk: string }): GetCommand =>
     new GetCommand({ TableName: table, Key, ConsistentRead: true });
 
   const getRun = async (runId: string): Promise<RunItem | undefined> => {
-    const res = await send<{ Item?: RunItem }>(consistentGet(key.run(runId)));
-    return res.Item;
+    const res = await doc.send(consistentGet(key.run(runId)));
+    return res.Item && parseRun(res.Item);
   };
 
   const recover = async (markerRunId: string): Promise<StartResult> => {
@@ -99,21 +106,15 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   };
 
   const getStep = async (runId: string, cursorKey: string): Promise<StepOutcome | undefined> => {
-    const res = await send<{ Item?: StepItem }>(consistentGet(key.step(runId, cursorKey)));
-    return res.Item ? mapStep(res.Item) : undefined;
+    const res = await doc.send(consistentGet(key.step(runId, cursorKey)));
+    return res.Item && mapStep(parseStep(res.Item));
   };
 
-  const scanAll = async (
-    params: ScanCommandInput,
-    consistent = false,
-  ): Promise<Record<string, unknown>[]> => {
-    const out: Record<string, unknown>[] = [];
-    let ExclusiveStartKey: Record<string, unknown> | undefined;
+  const scanAll = async (params: ScanCommandInput, consistent = false): Promise<DocItem[]> => {
+    const out: DocItem[] = [];
+    let ExclusiveStartKey: ScanCommandInput["ExclusiveStartKey"];
     do {
-      const res = await send<{
-        Items?: Record<string, unknown>[];
-        LastEvaluatedKey?: Record<string, unknown>;
-      }>(
+      const res = await doc.send(
         new ScanCommand({ ...params, ExclusiveStartKey, ConsistentRead: consistent || undefined }),
       );
       out.push(...(res.Items ?? []));
@@ -122,18 +123,15 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     return out;
   };
 
-  const queryAll = async <T>(params: QueryCommandInput): Promise<T[]> => {
-    const out: Record<string, unknown>[] = [];
-    let ExclusiveStartKey: Record<string, unknown> | undefined;
+  const queryAll = async (params: QueryCommandInput): Promise<DocItem[]> => {
+    const out: DocItem[] = [];
+    let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
     do {
-      const res = await send<{
-        Items?: Record<string, unknown>[];
-        LastEvaluatedKey?: Record<string, unknown>;
-      }>(new QueryCommand({ ...params, ExclusiveStartKey }));
+      const res = await doc.send(new QueryCommand({ ...params, ExclusiveStartKey }));
       out.push(...(res.Items ?? []));
       ExclusiveStartKey = res.LastEvaluatedKey;
     } while (ExclusiveStartKey);
-    return out as T[];
+    return out;
   };
 
   const matchingRuns = async (
@@ -144,7 +142,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   ): Promise<RunItem[]> => {
     const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
     if (statuses.size === 0) return [];
-    return (await scanType<RunItem>("run"))
+    return (await scanRuns())
       .filter(
         (r) =>
           statuses.has(r.status) &&
@@ -156,8 +154,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       .slice(0, limit);
   };
 
-  // One localized assertion: a `Scan` returns attribute bags; the caller names the item type.
-  const scanType = <T>(type: string, consistent = false): Promise<T[]> =>
+  const scanType = (type: string, consistent = false): Promise<DocItem[]> =>
     scanAll(
       {
         TableName: table,
@@ -166,7 +163,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         ExpressionAttributeValues: { ":t": type },
       },
       consistent,
-    ) as Promise<T[]>;
+    );
+  const scanRuns = async (): Promise<RunItem[]> => (await scanType("run")).map(parseRun);
 
   // A conditional idem-marker Put fails the transaction iff another creator already claimed the key,
   // which is exactly how a run dedups. Paired with the run Put in one transaction so the marker and
@@ -187,15 +185,15 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     if (!spec.idempotencyKey) {
-      await send(new PutCommand({ TableName: table, Item: buildRunItem(spec, runId) }));
+      await doc.send(new PutCommand({ TableName: table, Item: buildRunItem(spec, runId) }));
       return { runId, created: true, status: "pending" };
     }
     try {
-      await send(new TransactWriteCommand({ TransactItems: startItems(spec, runId) }));
+      await doc.send(new TransactWriteCommand({ TransactItems: startItems(spec, runId) }));
       return { runId, created: true, status: "pending" };
     } catch (e) {
       if (!conditionFailedAt(cancellationReasons(e), 0)) throw e;
-      const marker = await send<{ Item?: { runId: string } }>(
+      const marker = await doc.send(
         consistentGet(key.idem(spec.name, spec.version, spec.idempotencyKey)),
       );
       if (!marker.Item)
@@ -208,7 +206,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
     const matches = purgeMatcher(filter);
-    const runs = (await scanType<RunItem>("run"))
+    const runs = (await scanRuns())
       .filter((r) =>
         matches({
           name: r.name,
@@ -223,7 +221,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     // A DeleteRequest for a missing key is a no-op, so JOB#/TIMER# can be pushed unconditionally.
     const partitions = await Promise.all(
       runs.map((r) =>
-        queryAll<{ pk: string; sk: string }>({
+        queryAll({
           TableName: table,
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": key.runPk(r.id) },
@@ -236,13 +234,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       keys.push(key.job(r.id), key.timer(r.id));
     });
     // BatchWriteItem caps at 25/call and may return UnprocessedItems under throttle — drain them.
-    let pending = keys.map((Key) => ({ DeleteRequest: { Key } }));
+    let pending: WriteRequests = keys.map((Key) => ({ DeleteRequest: { Key } }));
     while (pending.length > 0) {
       const batch = pending.slice(0, 25);
       pending = pending.slice(25);
-      const res = await send<{ UnprocessedItems?: Record<string, typeof batch> }>(
-        new BatchWriteCommand({ RequestItems: { [table]: batch } }),
-      );
+      const res = await doc.send(new BatchWriteCommand({ RequestItems: { [table]: batch } }));
       const left = res.UnprocessedItems?.[table];
       if (left?.length) pending.push(...left);
     }
@@ -258,7 +254,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     priority: number | undefined,
   ): Promise<{ retried: boolean }> => {
     try {
-      await send(
+      await doc.send(
         new TransactWriteCommand({
           TransactItems: [
             {
@@ -314,7 +310,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       // A raced chunk rolls back whole; redo it per-run so startOne's recover resolves the collision.
       const commit = async (chunk: typeof uniq): Promise<StartResult[]> => {
         try {
-          await send(new TransactWriteCommand({ TransactItems: chunk.flatMap((x) => x.items) }));
+          await doc.send(
+            new TransactWriteCommand({ TransactItems: chunk.flatMap((x) => x.items) }),
+          );
           return chunk.map((x) => ({ runId: x.runId, created: true, status: "pending" as const }));
         } catch (e) {
           if (!cancellationReasons(e)?.some((r) => r?.Code === "ConditionalCheckFailed")) throw e;
@@ -344,7 +342,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async loadRun(runId) {
-      const res = await send<{ Items?: RunPartitionItem[] }>(
+      const res = await doc.send(
         // Consistent: the replay read — a stale memo page would re-execute a committed step.
         new QueryCommand({
           TableName: table,
@@ -355,11 +353,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       );
       const items = res.Items ?? [];
       const runItem = items.find((i) => i.type === "run");
-      if (runItem?.type !== "run") return undefined;
+      if (!runItem) return undefined;
       const steps = new Map<string, StepOutcome>();
       const signals: DeliveredSignal[] = [];
       for (const it of items) {
-        if (it.type === "step") steps.set(it.cursorKey, mapStep(it));
+        if (it.type === "step") steps.set(it.cursorKey, mapStep(parseStep(it)));
         else if (it.type === "signal") {
           signals.push({
             id: encodeSignalId(it.pk, it.sk),
@@ -368,7 +366,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           });
         }
       }
-      return { run: mapRun(runItem), steps, signals };
+      return { run: mapRun(parseRun(runItem)), steps, signals };
     },
 
     async loadRunRow(runId) {
@@ -381,19 +379,14 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const byId = new Map<string, RunItem>();
       // BatchGetItem caps at 100 keys/call and may return UnprocessedKeys under throttle — chunk and drain.
       for (let i = 0; i < runIds.length; i += 100) {
-        let keys: { pk: string; sk: string }[] = runIds
-          .slice(i, i + 100)
-          .map((rid) => key.run(rid));
+        let keys: DocItem[] = runIds.slice(i, i + 100).map((rid) => key.run(rid));
         while (keys.length > 0) {
-          const res = await send<{
-            Responses?: Record<string, RunItem[]>;
-            UnprocessedKeys?: Record<string, { Keys?: { pk: string; sk: string }[] }>;
-          }>(
+          const res = await doc.send(
             new BatchGetCommand({
               RequestItems: { [table]: { Keys: keys, ConsistentRead: true } },
             }),
           );
-          for (const item of res.Responses?.[table] ?? []) byId.set(item.id, item);
+          for (const item of (res.Responses?.[table] ?? []).map(parseRun)) byId.set(item.id, item);
           keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
         }
       }
@@ -422,11 +415,11 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         Update: enqueueParams(table, runId, undefined, await runPriority(runId)),
       };
       if (!opts?.idempotencyKey) {
-        await send(new TransactWriteCommand({ TransactItems: [signalPut, enqueue] }));
+        await doc.send(new TransactWriteCommand({ TransactItems: [signalPut, enqueue] }));
         return { delivered: true };
       }
       try {
-        await send(
+        await doc.send(
           new TransactWriteCommand({
             TransactItems: [
               {
@@ -450,7 +443,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     async markRunning(runId) {
       try {
-        const res = await send<{ Attributes?: { attempts: number } }>(
+        const res = await doc.send(
           new UpdateCommand({
             TableName: table,
             Key: key.run(runId),
@@ -477,7 +470,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async checkpointStep(c, fx) {
-      const stepItem: Record<string, unknown> = {
+      const stepItem = {
         ...key.step(c.runId, c.cursorKey),
         type: "step",
         runId: c.runId,
@@ -486,7 +479,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         result: enc(c.result),
         error: enc(c.error),
         attempts: c.attempts,
-        shape: c.shape,
+        call: c.call,
       };
       const { nonSpawn, spawns } = await outbox(fx);
       const inline = spawns.flatMap((s) => spawnTx(table, s));
@@ -547,7 +540,9 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       ];
 
       try {
-        await send(new TransactWriteCommand({ TransactItems: [...gate, ...nonSpawn, ...inline] }));
+        await doc.send(
+          new TransactWriteCommand({ TransactItems: [...gate, ...nonSpawn, ...inline] }),
+        );
       } catch (e) {
         const reasons = cancellationReasons(e);
         if (!reasons) throw e;
@@ -577,16 +572,14 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           UpdateExpression: `SET #status = :status${reset ? ", attempts = :zero" : ""}`,
           ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
           ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: {
-            ":status": status,
-            ...TERMINAL_VALUES,
-            ...(reset ? { ":zero": 0 } : {}),
-          },
+          ExpressionAttributeValues: reset
+            ? { ":status": status, ":zero": 0, ...TERMINAL_VALUES }
+            : { ":status": status, ...TERMINAL_VALUES },
         },
       };
       const inline = spawns.flatMap((s) => spawnTx(table, s));
       try {
-        await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
+        await doc.send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
       } catch (e) {
         if (conditionFailedAt(cancellationReasons(e), 0)) return; // already terminal — no-op, outbox skipped
         throw e;
@@ -596,22 +589,18 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async markTerminal(runId, outcome, fx) {
       const set = ["#status = :status"];
       const remove: string[] = [];
-      const values: Record<string, unknown> = {
-        ":status": outcome.status,
-        ...TERMINAL_VALUES,
-      };
       const output = outcome.status === "done" ? enc(outcome.output) : undefined;
       const error = outcome.status === "done" ? undefined : enc(outcome.error);
       if (output === undefined) remove.push("#output");
-      else {
-        set.push("#output = :output");
-        values[":output"] = output;
-      }
+      else set.push("#output = :output");
       if (error === undefined) remove.push("#error");
-      else {
-        set.push("#error = :error");
-        values[":error"] = error;
-      }
+      else set.push("#error = :error");
+      const values = {
+        ":status": outcome.status,
+        ...TERMINAL_VALUES,
+        ...(output !== undefined && { ":output": output }),
+        ...(error !== undefined && { ":error": error }),
+      };
       const gate: TxItem = {
         Update: {
           TableName: table,
@@ -625,7 +614,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const { nonSpawn, spawns } = await outbox(fx);
       const inline = spawns.flatMap((s) => spawnTx(table, s));
       try {
-        await send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
+        await doc.send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
       } catch (e) {
         if (conditionFailedAt(cancellationReasons(e), 0)) return; // already terminal — outbox skipped
         throw e;
@@ -636,7 +625,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       // ADD…RETURN_VALUES: TransactWriteItems can't return the post-decrement value the wake decision
       // needs, so the decrement is its own atomic write (serializing concurrent siblings).
       try {
-        const res = await send<{ Attributes?: { joinRemaining?: number } }>(
+        const res = await doc.send(
           new UpdateCommand({
             TableName: table,
             Key: key.run(parentRunId),
@@ -664,33 +653,33 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       // may walk a few index pages, but never the whole table.
       // The cursor is the last row's gsi2sk, so paging resumes at `gsi2sk < :cur` regardless of how
       // that key is encoded — it stays an opaque token the caller never inspects.
-      type IndexedRun = RunItem & { gsi2sk: string };
-      const rows: IndexedRun[] = [];
-      let startKey: Record<string, unknown> | undefined;
+      const rows: RunItem[] = [];
+      let lastSortKey: string | undefined;
+      let startKey: QueryCommandInput["ExclusiveStartKey"];
       do {
-        const res = await send<{
-          Items?: IndexedRun[];
-          LastEvaluatedKey?: Record<string, unknown>;
-        }>(
+        const res = await doc.send(
           new QueryCommand({
             TableName: table,
             IndexName: "gsi2",
             KeyConditionExpression: page.cursor ? "gsi2pk = :rp AND gsi2sk < :cur" : "gsi2pk = :rp",
-            ExpressionAttributeValues: {
-              ":rp": RUN_GSI2_PK,
-              ...(page.cursor ? { ":cur": page.cursor } : {}),
-            },
+            ExpressionAttributeValues: page.cursor
+              ? { ":rp": RUN_GSI2_PK, ":cur": page.cursor }
+              : { ":rp": RUN_GSI2_PK },
             ScanIndexForward: false,
             ExclusiveStartKey: startKey,
           }),
         );
-        for (const r of res.Items ?? []) {
-          if (keep(r)) rows.push(r);
+        for (const item of res.Items ?? []) {
+          const r = parseRun(item);
+          if (keep(r)) {
+            rows.push(r);
+            lastSortKey = str(item, "gsi2sk");
+          }
           if (rows.length === page.limit) break;
         }
         startKey = rows.length < page.limit ? res.LastEvaluatedKey : undefined;
       } while (startKey);
-      const cursor = rows.length === page.limit ? rows.at(-1)?.gsi2sk : undefined;
+      const cursor = rows.length === page.limit ? lastSortKey : undefined;
       return { runs: rows.map(mapRun), cursor };
     },
 
@@ -713,19 +702,19 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       // gsi1 parent-partition Query (eventually consistent). The cancel cascade tolerates GSI lag:
       // a just-spawned child the cascade misses self-cancels on dispatch and is re-driven by
       // reconcile. Both backstops are covered by engineConformance.
-      const items = await queryAll<RunItem>({
+      const items = await queryAll({
         TableName: table,
         IndexName: "gsi1",
         KeyConditionExpression: "gsi1pk = :cp",
         ExpressionAttributeValues: { ":cp": childGsiPk(runId) },
       });
-      return items.map(mapRun);
+      return items.map(parseRun).map(mapRun);
     },
 
     async runStats() {
       const stats = zeroRunStats();
       // gsi2 RUN partition, projecting only status — a Query over the index, not a full-item Scan.
-      const rows = await queryAll<{ status: RunStatus }>({
+      const rows = await queryAll({
         TableName: table,
         IndexName: "gsi2",
         KeyConditionExpression: "gsi2pk = :rp",
@@ -733,18 +722,18 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         ProjectionExpression: "#s",
         ExpressionAttributeNames: { "#s": "status" },
       });
-      for (const r of rows) stats[r.status] += 1;
+      for (const r of rows) stats[runStatusOf(r)] += 1;
       return stats;
     },
 
     async orphanedRuns(limit) {
       const [runs, jobItems, timerItems] = await Promise.all([
-        scanType<RunItem>("run"),
-        scanType<{ runId: string }>("job"),
-        scanType<{ runId: string }>("timer"),
+        scanRuns(),
+        scanType("job"),
+        scanType("timer"),
       ]);
-      const jobs = new Set(jobItems.map((j) => j.runId));
-      const timers = new Set(timerItems.map((t) => t.runId));
+      const jobs = new Set(jobItems.map((j) => parseJob(j).runId));
+      const timers = new Set(timerItems.map((t) => parseTimer(t).runId));
       const byId = new Map(runs.map((r) => [r.id, r]));
       const view: OrphanView = {
         hasJob: (runId) => jobs.has(runId),
@@ -770,14 +759,13 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async upsertCron(spec) {
       // `if_not_exists` can't express "unless the schedule changed", so read it first — this runs at
       // registration, not on the hot path.
-      const prev = await send<{ Item?: CronItem }>(
-        new GetCommand({ TableName: table, Key: key.cron(spec.name) }),
-      );
-      const keepTiming = prev.Item !== undefined && prev.Item.schedule === spec.schedule;
-      const nextRunAt = keepTiming
-        ? (prev.Item?.nextRunAt ?? spec.nextRunAt.getTime())
-        : spec.nextRunAt.getTime();
-      await send(
+      const res = await doc.send(new GetCommand({ TableName: table, Key: key.cron(spec.name) }));
+      const prev = res.Item && parseCron(res.Item);
+      const nextRunAt =
+        prev !== undefined && prev.schedule === spec.schedule
+          ? prev.nextRunAt
+          : spec.nextRunAt.getTime();
+      await doc.send(
         new UpdateCommand({
           TableName: table,
           Key: key.cron(spec.name),
@@ -805,25 +793,26 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     async dueCrons(now, limit) {
       // gsi1 due-partition Query. Eventual consistency is safe: advanceCron is CAS-guarded, so a
       // stale/duplicate due read can't double-fire.
-      const items = await queryAll<CronItem>({
+      const items = await queryAll({
         TableName: table,
         IndexName: "gsi1",
         KeyConditionExpression: "gsi1pk = :cd AND gsi1sk <= :now",
         ExpressionAttributeValues: { ":cd": CRON_DUE_GSI_PK, ":now": pad(now.getTime()) },
       });
       return items
+        .map(parseCron)
         .sort((a, b) => a.nextRunAt - b.nextRunAt)
         .slice(0, limit)
         .map(mapCronItem);
     },
 
     async listCrons() {
-      const items = await scanType<CronItem>("cron");
+      const items = (await scanType("cron")).map(parseCron);
       return items.sort((a, b) => a.cronName.localeCompare(b.cronName)).map(mapCronItem);
     },
 
     async removeCron(name) {
-      const res = await send<{ Attributes?: CronItem }>(
+      const res = await doc.send(
         new DeleteCommand({
           TableName: table,
           Key: key.cron(name),
@@ -846,19 +835,19 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       }
       const wanted = new Set(names);
       if (wanted.size === 0) return 0;
-      const items = await queryAll<{ flowName: string }>({
+      const items = await queryAll({
         TableName: table,
         IndexName: "gsi1",
         KeyConditionExpression: cond,
         ExpressionAttributeValues: values,
         ProjectionExpression: "flowName",
       });
-      return items.filter((c) => wanted.has(c.flowName)).length;
+      return items.filter((c) => wanted.has(str(c, "flowName"))).length;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
       try {
-        await send(
+        await doc.send(
           new UpdateCommand({
             TableName: table,
             Key: key.cron(name),

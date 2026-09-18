@@ -2,13 +2,10 @@ import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
 /**
- * The minimal send-surface the backend drives. The concrete {@link DynamoDBDocumentClient}
- * satisfies it, and so does any wrapper (e.g. a fault-injecting proxy in tests) — the backend
- * never depends on the client class, only on `send`.
+ * The send-surface the backend drives: the document client's own typed `send`. Wrap behaviour
+ * (fault injection, tracing) with client middleware rather than a hand-rolled proxy.
  */
-export interface Doc {
-  send(command: unknown): Promise<unknown>;
-}
+export type Doc = Pick<DynamoDBDocumentClient, "send">;
 
 /**
  * Wrap a low-level {@link DynamoDBClient} in a document client that (un)marshals plain JS.

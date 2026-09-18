@@ -46,12 +46,18 @@ export const enqueueStmt = (
 ): Promise<void> => enqueueManyStmt(sql, t, [{ runId, opts }]);
 
 /** @internal */
-export const scheduleStmt = (sql: Sql, t: Tables, runId: string, fireAt: Date): Promise<unknown> =>
-  sql.query(
+export const scheduleStmt = async (
+  sql: Sql,
+  t: Tables,
+  runId: string,
+  fireAt: Date,
+): Promise<void> => {
+  await sql.query(
     `INSERT INTO ${t.timer} (run_id, fire_at) VALUES (?, ?)
      ON CONFLICT(run_id) DO UPDATE SET fire_at = excluded.fire_at`,
     [runId, fireAt.getTime()],
   );
+};
 
 /** @internal */
 export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void> => {

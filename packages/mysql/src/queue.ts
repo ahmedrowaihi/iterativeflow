@@ -6,14 +6,10 @@ import {
   type QueueDepth,
   queueDepthOf,
 } from "@iterativeflow/core/backend";
+import { int, intOrNull, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
 import { enqueueManyStmt, enqueueStmt } from "#statements";
-
-interface ClaimRow {
-  run_id: string;
-  version: number | string;
-}
 
 /** @internal */
 export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
@@ -37,7 +33,7 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
           ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
           : "";
         const params = names ? [at, at, ...names, limit] : [at, at, limit];
-        const due = await tx.query<ClaimRow>(
+        const due = await tx.query(
           `SELECT j.run_id AS run_id, j.version AS version
              FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
              WHERE j.run_at <= ? AND (j.lease_expires IS NULL OR j.lease_expires <= ?)${namePredicate}
@@ -46,13 +42,14 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
         );
         const leases: Lease[] = [];
         for (const row of due) {
-          const token = `${id()}:${row.run_id}`;
+          const runId = text(row, "run_id");
+          const token = `${id()}:${runId}`;
           await tx.exec(`UPDATE ${t.job} SET lease_token = ?, lease_expires = ? WHERE run_id = ?`, [
             token,
             at + leaseMs,
-            row.run_id,
+            runId,
           ]);
-          leases.push({ runId: row.run_id, token, expiresAt, version: Number(row.version) });
+          leases.push({ runId, token, expiresAt, version: int(row, "version") });
         }
         return leases;
       });
@@ -91,11 +88,7 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       const namePredicate = names
         ? ` WHERE r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")})`
         : "";
-      const rows = await sql.query<{
-        claimable: number | string | null;
-        leased: number | string | null;
-        oldest: number | string | null;
-      }>(
+      const [row] = await sql.query(
         `SELECT SUM(claimable) AS claimable, SUM(leased) AS leased,
                 MIN(CASE WHEN claimable = 1 THEN run_at END) AS oldest
            FROM (SELECT j.run_at AS run_at,
@@ -104,11 +97,11 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
                    FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id${namePredicate}) x`,
         [nowMs, nowMs, nowMs, ...(names ?? [])],
       );
-      const r = rows[0];
+      const oldest = intOrNull(row, "oldest");
       return {
-        claimable: Number(r?.claimable ?? 0),
-        leased: Number(r?.leased ?? 0),
-        oldestClaimableAgeMs: r?.oldest == null ? null : nowMs - Number(r.oldest),
+        claimable: intOrNull(row, "claimable") ?? 0,
+        leased: intOrNull(row, "leased") ?? 0,
+        oldestClaimableAgeMs: oldest === null ? null : nowMs - oldest,
       };
     },
   };

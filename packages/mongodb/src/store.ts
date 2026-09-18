@@ -10,6 +10,7 @@ import {
   type Store,
   type SuspendStatus,
   ACTIVE_STATUSES,
+  durable,
   isOrphaned,
   isTerminal,
   purgeStatuses,
@@ -17,7 +18,14 @@ import {
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
-import { type ClientSession, type Db, type Filter, type MongoClient, ObjectId } from "mongodb";
+import {
+  type ClientSession,
+  type Db,
+  type Filter,
+  type MongoClient,
+  MongoServerError,
+  ObjectId,
+} from "mongodb";
 import type { Names } from "#collections";
 import {
   type CronDoc,
@@ -25,7 +33,7 @@ import {
   type SignalDoc,
   type StepDoc,
   buildRunDoc,
-  durable,
+  durableError,
   mapCron,
   mapRun,
   mapSignal,
@@ -33,8 +41,10 @@ import {
 } from "#codec";
 import { type JobDoc, enqueueJobs } from "#queue";
 
-const isDup = (e: unknown): boolean =>
-  typeof e === "object" && e !== null && (e as { code?: number }).code === 11000;
+const DUPLICATE_KEY = 11000;
+
+const isDuplicateKey = (cause: unknown): boolean =>
+  cause instanceof MongoServerError && cause.code === DUPLICATE_KEY;
 
 /**
  * The MongoDB {@link Store}: runs/steps/signals/crons as documents, the outbox committed across
@@ -79,7 +89,8 @@ export const createMongoStore = (
         session,
       });
     } catch (e) {
-      if (!isDup(e)) throw e; // insert-by-id is first-writer-wins: replay re-issues the same spawn
+      // insert-by-id is first-writer-wins: replay re-issues the same spawn
+      if (!isDuplicateKey(e)) throw e;
     }
   };
 
@@ -125,7 +136,7 @@ export const createMongoStore = (
       });
       return { runId, created: true, status: "pending" };
     } catch (e) {
-      if (!isDup(e)) throw e;
+      if (!isDuplicateKey(e)) throw e;
       const existing = await runs.findOne(
         {
           name: spec.name,
@@ -230,7 +241,8 @@ export const createMongoStore = (
           return { delivered: true };
         });
       } catch (e) {
-        if (isDup(e)) return { delivered: false }; // idempotent re-delivery on the idem index
+        // idempotent re-delivery on the idem index
+        if (isDuplicateKey(e)) return { delivered: false };
         throw e;
       }
     },
@@ -257,8 +269,8 @@ export const createMongoStore = (
         status: c.status,
         attempts: c.attempts,
         ...(c.result !== undefined && { result: durable(c.result) }),
-        ...(c.error !== undefined && { error: durable(c.error) }),
-        ...(c.shape !== undefined && { shape: c.shape }),
+        ...(c.error !== undefined && { error: durableError(c.error) }),
+        ...(c.call !== undefined && { call: c.call }),
       };
       try {
         return await inTx(async (session) => {
@@ -285,7 +297,7 @@ export const createMongoStore = (
           return mapStep(stepDoc);
         });
       } catch (e) {
-        if (!isDup(e)) throw e;
+        if (!isDuplicateKey(e)) throw e;
         const existing = await steps.findOne({ _id: stepDoc._id }); // first-writer-wins; skip outbox
         if (!existing)
           throw new Error(`checkpointStep: step ${stepDoc._id} vanished`, {
@@ -300,8 +312,8 @@ export const createMongoStore = (
         const run = await runs.findOne({ _id: runId }, { session });
         if (!run) throw new Error(`suspendRun: run ${runId} not found`);
         if (isTerminal(run.status)) return; // already terminal — nothing to park
-        const set: Record<string, unknown> = { status };
-        if (status !== "retrying") set.attempts = 0; // forward progress resets the poison-pill cap
+        // forward progress resets the poison-pill cap
+        const set = status === "retrying" ? { status } : { status, attempts: 0 };
         await runs.updateOne({ _id: runId }, { $set: set }, { session });
         await commitOutbox(fx, session);
       });
@@ -313,16 +325,25 @@ export const createMongoStore = (
         if (!run) throw new Error(`markTerminal: run ${runId} not found`);
         if (isTerminal(run.status)) return;
         const output = outcome.status === "done" ? durable(outcome.output) : undefined;
-        const error = outcome.status === "done" ? undefined : durable(outcome.error);
-        const set: Record<string, unknown> = { status: outcome.status };
-        const unset: Record<string, ""> = {};
-        if (output === undefined) unset.output = "";
-        else set.output = output;
-        if (error === undefined) unset.error = "";
-        else set.error = error;
-        const update: Record<string, unknown> = { $set: set };
-        if (Object.keys(unset).length) update.$unset = unset;
-        await runs.updateOne({ _id: runId }, update, { session });
+        const error =
+          outcome.status === "done" || outcome.error === undefined
+            ? undefined
+            : durableError(outcome.error);
+        await runs.updateOne(
+          { _id: runId },
+          {
+            $set: {
+              status: outcome.status,
+              ...(output !== undefined && { output }),
+              ...(error !== undefined && { error }),
+            },
+            $unset: {
+              ...(output === undefined && { output: "" }),
+              ...(error === undefined && { error: "" }),
+            },
+          },
+          { session },
+        );
         await commitOutbox(fx, session);
       });
     },
@@ -354,7 +375,7 @@ export const createMongoStore = (
       const victims = await runs
         .find(q)
         .limit(limit)
-        .project<{ _id: string; priority?: number }>({ _id: 1, priority: 1 })
+        .project<Pick<RunDoc, "_id">>({ _id: 1 })
         .toArray();
       if (victims.length === 0) return 0;
       const ids = victims.map((r) => r._id);
@@ -372,7 +393,11 @@ export const createMongoStore = (
         ...(filter.version !== undefined && { version: filter.version }),
         ...(filter.tag !== undefined && { tags: filter.tag }),
       };
-      const victims = await runs.find(q).limit(limit).project({ _id: 1 }).toArray();
+      const victims = await runs
+        .find(q)
+        .limit(limit)
+        .project<Pick<RunDoc, "_id">>({ _id: 1 })
+        .toArray();
       if (victims.length === 0) return 0;
       const ids = victims.map((r) => r._id);
       return inTx(async (session) => {
@@ -384,7 +409,7 @@ export const createMongoStore = (
         await enqueueJobs(
           jobs,
           runs,
-          victims.map((r) => ({ runId: r._id, opts: { priority: r.priority ?? 0 } })),
+          victims.map((r) => ({ runId: r._id })),
           session,
         );
         return ids.length;
@@ -415,18 +440,12 @@ export const createMongoStore = (
     async orphanedRuns(limit) {
       const runDocs = await runs.find({}).sort({ ord: 1 }).toArray();
       const ids = runDocs.map((r) => r._id);
-      const [jobDocs, timerDocs] = await Promise.all([
-        jobs
-          .find({ _id: { $in: ids } })
-          .project({ _id: 1 })
-          .toArray(),
-        timers
-          .find({ _id: { $in: ids } })
-          .project({ _id: 1 })
-          .toArray(),
+      const [jobIds, timerIds] = await Promise.all([
+        jobs.distinct("_id", { _id: { $in: ids } }),
+        timers.distinct("_id", { _id: { $in: ids } }),
       ]);
-      const hasJob = new Set(jobDocs.map((j) => j._id as string));
-      const hasTimer = new Set(timerDocs.map((t) => t._id as string));
+      const hasJob = new Set(jobIds);
+      const hasTimer = new Set(timerIds);
       const asOrphan = (r: RunDoc) => ({
         id: r._id,
         status: r.status,

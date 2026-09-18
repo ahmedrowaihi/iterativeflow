@@ -72,7 +72,7 @@ describe("sqlite backend", () => {
       run: async () => 1,
     });
     const orderCount = async (): Promise<number> => {
-      const rows = await sql.query<{ n: number }>("SELECT count(*) AS n FROM app_orders");
+      const rows = await sql.query("SELECT count(*) AS n FROM app_orders");
       return Number(rows[0].n);
     };
     const runCount = async (): Promise<number> =>

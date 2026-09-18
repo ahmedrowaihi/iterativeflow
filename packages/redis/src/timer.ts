@@ -1,7 +1,7 @@
 import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { type Keys, RUN } from "#keys";
-import { luaRunner } from "#scripts";
+import { luaRunner, replyList } from "#scripts";
 import { ms } from "#time";
 
 const DUE_BATCH = `
@@ -21,7 +21,7 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
     },
 
     async dueBatch({ now, limit }: TimerDueOpts) {
-      return run<string[]>(DUE_BATCH, [keys.timers], [ms(now), limit]);
+      return replyList(await run(DUE_BATCH, [keys.timers], [ms(now), limit]));
     },
 
     async cancel(runId) {
@@ -48,16 +48,11 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
       if (!wanted) return client.zcount(keys.timers, "-inf", ms(now));
       const due = await client.zrangebyscore(keys.timers, "-inf", ms(now));
       if (due.length === 0) return 0;
-      const pipe = client.pipeline();
-      for (const runId of due) pipe.hget(keys.run(runId), RUN.name);
-      const res = (await pipe.exec()) ?? [];
-      let n = 0;
-      for (let i = 0; i < due.length; i++) {
-        // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
-        const name = res[i]?.[1] as string | null;
-        if (name === null || wanted.has(name)) n += 1;
-      }
-      return n;
+      const runNames = await Promise.all(
+        due.map((runId) => client.hget(keys.run(runId), RUN.name)),
+      );
+      // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
+      return runNames.filter((name) => name === null || wanted.has(name)).length;
     },
   };
 };

@@ -1,5 +1,5 @@
 import { sha256hex } from "#engine/sha256";
-import type { SuspendStatus } from "#types";
+import type { FlowError, SuspendStatus } from "#types";
 
 const hashHex = (seed: string, bytes: number): string => sha256hex(seed).slice(0, bytes * 2);
 
@@ -14,13 +14,29 @@ export const spanIdOf = (runId: string, cursorKey: string): string =>
 export type EventLevel = "all" | "lifecycle" | "off";
 
 /** The durable event kinds the sink records — run lifecycle transitions, per-step completion, and `ctx.log`. */
-export type EventType =
-  | "run.started"
-  | "run.completed"
-  | "run.failed"
-  | "run.suspended"
-  | "step.finished"
-  | "run.log";
+export type EventType = (typeof EVENT_TYPES)[number];
+
+/** Every {@link EventType}, for a sink that reads events back and must check what it stored. */
+export const EVENT_TYPES = [
+  "run.started",
+  "run.completed",
+  "run.failed",
+  "run.suspended",
+  "step.finished",
+  "run.log",
+] as const;
+
+export const isEventType = (s: string): s is EventType => EVENT_TYPES.some((t) => t === s);
+
+/** The data each event kind carries, so a sink can rely on one shape per `type`. */
+export interface EventData {
+  "run.started": undefined;
+  "run.completed": undefined;
+  "run.failed": { error: FlowError };
+  "run.suspended": { status: SuspendStatus };
+  "step.finished": { cursorKey: string };
+  "run.log": { message: string; data?: unknown };
+}
 
 /** One durable audit-log entry — the dashboard timeline reads these. */
 export interface FlowEvent {
@@ -77,13 +93,13 @@ export interface Metrics {
   runSuspended?(runId: string, status: SuspendStatus, flow: FlowLabel): void;
   redeployParked?(runId: string, reason: "unknown_flow" | "flow_drift"): void;
   stepFinished?(runId: string, cursorKey: string, extra?: { durationMs?: number }): void;
-  tickError?(err: unknown): void;
+  tickError?(cause: unknown): void;
 }
 
 /** @internal */
-export const reportError = (metrics: Metrics | undefined, err: unknown): void => {
-  if (metrics?.tickError) metrics.tickError(err);
-  else console.error("iterativeflow:", err);
+export const reportError = (metrics: Metrics | undefined, cause: unknown): void => {
+  if (metrics?.tickError) metrics.tickError(cause);
+  else console.error("iterativeflow:", cause);
 };
 
 /** Observability wiring passed to the worker. All optional — omit for zero overhead. */
@@ -103,7 +119,7 @@ const LIFECYCLE = new Set<EventType>([
 
 /** @internal */
 export interface Observer {
-  event(type: EventType, runId: string, at: Date, data?: unknown): Promise<void>;
+  event<T extends EventType>(type: T, runId: string, at: Date, data?: EventData[T]): Promise<void>;
   records(type: EventType): boolean;
   readonly metrics: Metrics;
   readonly tracer?: Tracer;
@@ -120,9 +136,9 @@ export const makeObserver = (opts?: ObserveOpts): Observer => {
     async event(type, runId, at, data) {
       // Observability is never load-bearing: a throwing sink must not reach the executor, where it
       // would be caught as a flow error and skip the parent-wake and ack that follow a terminal write.
-      if (!records(type)) return;
+      if (!sink || !records(type)) return;
       try {
-        await sink!.record({ runId, type, at, data });
+        await sink.record({ runId, type, at, data });
       } catch (e) {
         reportError(metrics, e);
       }

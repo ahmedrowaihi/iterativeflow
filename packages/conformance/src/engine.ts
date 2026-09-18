@@ -2,7 +2,6 @@ import {
   type Backend,
   type Flow,
   type RetryPolicy,
-  builder,
   cancelRun,
   defineFlow,
   reconcile,
@@ -12,10 +11,30 @@ import {
   signalRun,
   submit,
   tickOnce,
-  signalType,
+  type SignalSchema,
 } from "@iterativeflow/core";
 import { isTerminal } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
+
+const okSchema: SignalSchema<{ ok: boolean }> = {
+  "~standard": {
+    version: 1,
+    vendor: "conformance",
+    validate: (v) =>
+      v instanceof Object && "ok" in v
+        ? { value: { ok: v.ok === true } }
+        : { issues: [{ message: "ok is required" }] },
+  },
+};
+
+const textSchema: SignalSchema<string> = {
+  "~standard": {
+    version: 1,
+    vendor: "conformance",
+    validate: (v) =>
+      v === String(v) ? { value: String(v) } : { issues: [{ message: "not text" }] },
+  },
+};
 
 /**
  * Engine-behavior conformance: the composed durable behaviors (retry/dead-letter, signal
@@ -66,15 +85,18 @@ export const engineConformance = (
       expect(run).toMatchObject({ status: "done", output: "settled" });
     });
 
-    it("runs a builder flow with a durable sleep to completion", async () => {
+    it("a flow with a durable sleep between steps resumes to completion", async () => {
       const backend = await makeBackend();
-      const flow = builder<{ x: number }>(`${label}-sleep`, 1)
-        .step("doubled", (acc) => acc.input.x * 2)
-        .step("nap", async (_acc, ctx) => {
+      const flow = defineFlow({
+        name: `${label}-sleep`,
+        version: 1,
+        run: async (ctx, input: { x: number }) => {
+          const doubled = await ctx.step("doubled", () => input.x * 2);
           await ctx.sleep(5_000);
-          return "rested";
-        })
-        .output((acc) => ({ doubled: acc.doubled, nap: acc.nap }));
+          const nap = await ctx.step("nap", () => "rested");
+          return { doubled, nap };
+        },
+      });
       const runId = await submit(backend, flow, { x: 21 });
       const run = await drive(backend, registry([flow]), runId);
       expect(run).toMatchObject({ status: "done", output: { doubled: 42, nap: "rested" } });
@@ -119,7 +141,7 @@ export const engineConformance = (
       const flow = defineFlow({
         name: "approve",
         version: 1,
-        signals: { go: signalType<{ ok: boolean }>() },
+        signals: { go: okSchema },
         run: async (ctx): Promise<string> => {
           const d = await ctx.signal("go");
           return d.ok ? "shipped" : "held";
@@ -388,7 +410,7 @@ export const engineConformance = (
       expect(first.runId).toBe(urgent);
     });
 
-    it("a signal delivery and a retry keep the run's own priority", async () => {
+    it("a signal delivery, a retry and a bulk retry keep the run's own priority", async () => {
       const backend = await makeBackend();
       const start = async (priority?: number) =>
         (await backend.store.startRun({ name: "p", version: 1, input: {}, priority })).runId;
@@ -410,6 +432,15 @@ export const engineConformance = (
       await rival();
       await backend.store.retryRun(retried);
       expect(await claimFirst()).toBe(retried);
+
+      const bulk = await start(-10);
+      await backend.store.markTerminal(bulk, {
+        status: "failed",
+        error: { code: "X", message: "x" },
+      });
+      await rival();
+      await backend.store.retryRuns({ status: "failed" }, 100);
+      expect(await claimFirst()).toBe(bulk);
     });
 
     it("a claimed run for an unregistered flow version parks and resumes once that version deploys", async () => {
@@ -438,7 +469,7 @@ export const engineConformance = (
       const flow = defineFlow({
         name: "raced",
         version: 1,
-        signals: { go: signalType<string>() },
+        signals: { go: textSchema },
         run: async (ctx): Promise<string> => {
           const r = await ctx.signal("go", { timeoutMs: 5_000 });
           return r.received ? `signal:${r.payload}` : "timeout";
@@ -461,7 +492,7 @@ export const engineConformance = (
       const flow = defineFlow({
         name: "waits-out",
         version: 1,
-        signals: { go: signalType<string>() },
+        signals: { go: textSchema },
         run: async (ctx): Promise<string> => {
           const r = await ctx.signal("go", { timeoutMs: 5_000 });
           return r.received ? "signal" : "timeout";

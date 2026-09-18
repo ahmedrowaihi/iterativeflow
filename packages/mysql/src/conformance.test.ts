@@ -18,6 +18,7 @@ import type { Pool } from "mysql2/promise";
 import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
+import { int } from "#codec";
 import { tables } from "#schema";
 import { type Sql, mysqlPool } from "#sql";
 import { inTx } from "#tx";
@@ -64,8 +65,8 @@ describe.skipIf(skip)("mysql backend", () => {
       run: async () => 1,
     });
     const orderCount = async (): Promise<number> => {
-      const [rows] = await pool.query("SELECT count(*) AS n FROM app_orders");
-      return Number((rows as { n: number }[])[0].n);
+      const [row] = await mysqlPool(pool).query("SELECT count(*) AS n FROM app_orders");
+      return int(row, "n");
     };
     const runCount = async (): Promise<number> =>
       (await backend.store.listRuns({}, { limit: 10 })).runs.length;
@@ -103,7 +104,7 @@ describe.skipIf(skip)("mysql backend", () => {
               { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
               { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
             )
-            .then((o) => o.result as string),
+            .then((o) => o.result),
         ),
       );
 

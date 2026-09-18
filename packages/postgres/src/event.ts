@@ -1,5 +1,5 @@
-import type { EventSink, EventType, FlowEvent } from "@iterativeflow/core/backend";
-import { j } from "#codec";
+import { type EventSink, type FlowEvent, isEventType } from "@iterativeflow/core/backend";
+import { date, j, json, text } from "#codec";
 import { tables } from "#schema";
 import type { Sql } from "#sql";
 
@@ -27,9 +27,13 @@ export const listEvents = async (
   schema = "workflow",
 ): Promise<FlowEvent[]> => {
   const t = tables(schema);
-  const rows = await sql.query<{ run_id: string; type: EventType; at: Date; data: unknown }>(
+  const rows = await sql.query(
     `SELECT run_id, type, at, data FROM ${t.event} WHERE run_id = $1 ORDER BY seq`,
     [runId],
   );
-  return rows.map((r) => ({ runId: r.run_id, type: r.type, at: r.at, data: r.data ?? undefined }));
+  return rows.map((r) => {
+    const type = text(r, "type");
+    if (!isEventType(type)) throw new Error(`listEvents: unknown event type "${type}"`);
+    return { runId: text(r, "run_id"), type, at: date(r, "at"), data: json(r, "data") };
+  });
 };

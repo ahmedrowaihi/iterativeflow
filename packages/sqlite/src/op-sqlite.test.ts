@@ -28,8 +28,8 @@ const nodeSqliteOpDb = (db: DatabaseSync): OpSqliteDB => ({
   execute(sql, params = []) {
     const stmt = db.prepare(sql);
     const returnsRows = /^\s*(select|with|pragma)\b/i.test(sql) || /\breturning\b/i.test(sql);
-    if (returnsRows) return { rows: stmt.all(...(params as never[])) as Record<string, unknown>[] };
-    stmt.run(...(params as never[]));
+    if (returnsRows) return { rows: stmt.all(...params) };
+    stmt.run(...params);
     return { rows: [] };
   },
 });

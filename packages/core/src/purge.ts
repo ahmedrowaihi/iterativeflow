@@ -74,17 +74,17 @@ export const purgeMatcher = (filter: PurgeFilter): ((run: PurgeRun) => boolean) 
  * filter intersects to no usable status — the caller then touches nothing rather than emitting an
  * empty `IN ()`. Statuses render as literals for the reason on {@link PurgeSqlOpts.statusTuple}.
  */
-export const runSetWhereSql = (
+export const runSetWhereSql = <Time>(
   filter: RunFilter,
   allowed: readonly RunStatus[],
   op: string,
-  o: PurgeSqlOpts,
-): { where: string; params: unknown[] } | undefined => {
+  o: PurgeSqlOpts<Time>,
+): { where: string; params: (string | number)[] } | undefined => {
   const statuses = runSetStatuses(filter, allowed, op);
   if (statuses.length === 0) return undefined;
-  const params: unknown[] = [];
+  const params: (string | number)[] = [];
   const where = [`status IN ${o.statusTuple(statuses)}`];
-  const add = (column: string, value: unknown): void => {
+  const add = (column: string, value: string | number): void => {
     params.push(value);
     where.push(`${column} ${o.placeholder(params.length)}`);
   };
@@ -98,11 +98,11 @@ export const runSetWhereSql = (
 };
 
 /** Dialect specifics for {@link purgeWhereSql}. */
-export interface PurgeSqlOpts {
+export interface PurgeSqlOpts<Time> {
   /** Renders the nth (1-based) bind placeholder: `` (n) => `$${n}` `` for Postgres, `() => "?"` else. */
   placeholder: (n: number) => string;
   /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
-  time: (at: Date) => unknown;
+  time: (at: Date) => Time;
   /** Renders a status set as a SQL literal tuple, e.g. `('done','failed')`. Literals, not binds:
    *  a partial index over the terminal statuses is only usable when the planner can prove the
    *  query's predicate implies the index's, which it cannot do through a bind parameter. */
@@ -118,15 +118,15 @@ export interface PurgeSqlOpts {
  * rather than emitting an empty `IN ()`. Binds are numbered from 1, so a trailing `LIMIT` takes
  * `placeholder(params.length + 1)`.
  */
-export const purgeWhereSql = (
+export const purgeWhereSql = <Time>(
   filter: PurgeFilter,
-  o: PurgeSqlOpts,
-): { where: string; params: unknown[] } | undefined => {
+  o: PurgeSqlOpts<Time>,
+): { where: string; params: (string | number | Time)[] } | undefined => {
   const statuses = purgeStatuses(filter);
   if (statuses.length === 0) return undefined;
-  const params: unknown[] = [];
+  const params: (string | number | Time)[] = [];
   const where = [`status IN ${o.statusTuple(statuses)}`];
-  const add = (column: string, value: unknown): void => {
+  const add = (column: string, value: string | number | Time): void => {
     params.push(value);
     where.push(`${column} ${o.placeholder(params.length)}`);
   };

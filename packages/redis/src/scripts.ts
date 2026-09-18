@@ -13,26 +13,68 @@ local function iflow_enqueue(qKey, runId, jobKey, runKey, runAtMs, priority)
   redis.call('HINCRBY', jobKey, '${JOB.version}', 1)
 end`;
 
-type Command = (...a: (string | number)[]) => Promise<unknown>;
-type Run = (keys: string[], args: (string | number)[]) => Promise<unknown>;
+/**
+ * A script reply with every scalar in its string form (an integer reply arrives as `"1"`, Lua
+ * `nil`/`false` as `null`). The scripts here nest at most two levels (CLAIM's rows).
+ * @internal
+ */
+export type LuaReply = string | null | (string | null | string[])[];
+
+const unexpected = (reply: LuaReply, want: string): Error =>
+  new Error(`redis: expected a Lua ${want} reply, got ${JSON.stringify(reply)}`);
+
+/** @internal */
+export const replyText = (reply: LuaReply): string => {
+  if (reply === null || Array.isArray(reply)) throw unexpected(reply, "string");
+  return reply;
+};
+
+/** @internal */
+export const replyNumber = (reply: LuaReply): number | undefined => {
+  if (reply === null) return undefined;
+  const n = Number(replyText(reply));
+  if (Number.isNaN(n)) throw unexpected(reply, "number");
+  return n;
+};
+
+/** @internal */
+export const replyList = (reply: LuaReply): string[] => {
+  if (!Array.isArray(reply)) throw unexpected(reply, "list");
+  return reply.map((item) => {
+    if (item === null || Array.isArray(item)) throw unexpected(reply, "list of strings");
+    return item;
+  });
+};
+
+/** @internal */
+export const replyRows = (reply: LuaReply): string[][] => {
+  if (!Array.isArray(reply)) throw unexpected(reply, "list");
+  return reply.map((item) => {
+    if (!Array.isArray(item)) throw unexpected(reply, "list of rows");
+    return item;
+  });
+};
 
 /**
- * A content-addressed Lua runner. Each distinct script is registered once as an EVALSHA-cached custom
- * command named by its hash — ioredis then ships the body only on the first call (or a `NOSCRIPT`
- * miss), not on every invocation, so the hot outbox/claim scripts aren't re-sent per step. Hashing
- * the body makes the command name stable across store/queue instances that share a client.
+ * A content-addressed Lua runner: EVALSHA first, shipping the body only on a `NOSCRIPT` miss, so the
+ * hot outbox/claim scripts aren't re-sent per step. The reply is decoded into a {@link LuaReply}.
  */
 export const luaRunner = (client: RedisClient) => {
-  const runners = new Map<string, Run>();
-  const c = client as unknown as Record<string, Command | undefined>;
-  return <T>(lua: string, keys: string[], args: (string | number)[]): Promise<T> => {
-    let run = runners.get(lua);
-    if (!run) {
-      const cmd = `iflow_${createHash("sha1").update(lua).digest("hex").slice(0, 16)}`;
-      if (!c[cmd]) client.defineCommand(cmd, { lua });
-      run = (k, a) => c[cmd]!(k.length, ...k, ...a);
-      runners.set(lua, run);
+  const shas = new Map<string, string>();
+  return async (lua: string, keys: string[], args: (string | number)[]): Promise<LuaReply> => {
+    let sha = shas.get(lua);
+    if (!sha) {
+      sha = createHash("sha1").update(lua).digest("hex");
+      shas.set(lua, sha);
     }
-    return run(keys, args) as Promise<T>;
+    const raw = await client.evalsha(sha, keys.length, ...keys, ...args).catch((cause) => {
+      if (!(cause instanceof Error && cause.message.startsWith("NOSCRIPT"))) throw cause;
+      return client.eval(lua, keys.length, ...keys, ...args);
+    });
+    if (raw === null || raw === undefined) return null;
+    if (!Array.isArray(raw)) return String(raw);
+    return raw.map((item) =>
+      item === null ? null : Array.isArray(item) ? item.map(String) : String(item),
+    );
   };
 };

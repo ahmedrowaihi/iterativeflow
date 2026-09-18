@@ -26,8 +26,11 @@ describe.skipIf(skip)("mongodb pendingWorkPipeline — autoscaling backlog", () 
   });
 
   const backlog = async (db: Db, asOf: Date): Promise<number> => {
-    const [row] = await db.collection(n.jobs).aggregate(pendingWorkPipeline(asOf)).toArray();
-    return (row?.pendingWork as number) ?? 0;
+    const [row] = await db
+      .collection(n.jobs)
+      .aggregate<{ pendingWork: number }>(pendingWorkPipeline(asOf))
+      .toArray();
+    return row?.pendingWork ?? 0;
   };
 
   it("agrees with the summed port methods (whole backlog) at a fixed instant", async () => {

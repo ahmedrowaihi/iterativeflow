@@ -1,9 +1,9 @@
-import type { Sql } from "@iterativeflow/sqlite";
+import { type Sql, type SqlBinding, type SqlRow, mapParams } from "@iterativeflow/sqlite";
 
 /** The subset of Cloudflare's `SqlStorage` (`ctx.storage.sql`) the adapter uses — structural, so no
  *  `@cloudflare/workers-types` dependency is required. */
 export interface SqlStorage {
-  exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] };
+  exec(query: string, ...bindings: SqlBinding[]): { toArray(): SqlRow[] };
 }
 
 /**
@@ -19,8 +19,7 @@ export interface SqlStorage {
  */
 export const doStorageSql = (storage: SqlStorage): Sql => {
   const self: Sql = {
-    query: <R>(text: string, params?: readonly unknown[]) =>
-      Promise.resolve(storage.exec(text, ...(params ?? [])).toArray() as R[]),
+    query: async (text, params = []) => storage.exec(text, ...mapParams(params)).toArray(),
     tx: (fn) => fn(self),
   };
   return self;

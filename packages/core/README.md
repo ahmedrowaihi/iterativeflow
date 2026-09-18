@@ -33,7 +33,7 @@ const handle = await engine.submit(double, { x: 21 });
 const stop = engine.run(); // resident worker loop; returns a stop fn
 const res = await engine.result(handle, { timeoutMs: 5_000 });
 await stop();
-// res.output === 42
+// res.output === 42 (typed `unknown`; pass `{ output: schema }` to validate and type it)
 ```
 
 `submit` returns a `RunHandle` (a branded run id) you pass straight to
@@ -47,7 +47,9 @@ Swap `createMemoryBackend()` for `createPgBackend(...)` or
 Inside `run`, `ctx` is the durable surface. Every call is a checkpoint:
 
 - `ctx.step(label, fn)` — run `fn` once; its result is memoized and replayed on
-  every subsequent attempt. The unit of at-least-once execution.
+  every subsequent attempt. The unit of at-least-once execution. A step is a
+  leaf: its body must not call `ctx`. Put durable waits in the flow body, and
+  nested durable work in a child flow (`ctx.invoke`).
 - `ctx.sleep(ms)` — suspend and resume after a durable timer.
 - `ctx.signal(name)` — park until an external `signalRun` delivers a typed payload.
 - `ctx.signal(name, { timeoutMs })` — the same wait with a deadline; resolves
@@ -105,9 +107,9 @@ the actual failure.
 
 ## Typed contracts
 
-`submit` returns a `RunHandle<Output, Signals>`; `result` recovers the output
-type; signals are typed on both the `defineFlow` declaration and the
-`signalRun` call. See [docs/v2/CONTRACTS.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/CONTRACTS.md).
+Signals are declared as Standard Schemas on `defineFlow` and are typed on both
+`ctx.signal` and `engine.signal`. `result` types the output only when you pass
+an `output` schema, which also validates it. See [docs/v2/CONTRACTS.md](https://github.com/ahmedrowaihi/iterativeflow/blob/main/docs/v2/CONTRACTS.md).
 
 ## Determinism & drift
 

@@ -1,97 +1,113 @@
-import type { CronRow, DeliveredSignal, RunRow, StepOutcome } from "@iterativeflow/core/backend";
+import {
+  type CronRow,
+  type DeliveredSignal,
+  type Json,
+  type RunRow,
+  type RunStatus,
+  type StepOutcome,
+  CRON_OVERLAPS,
+  RUN_STATUSES,
+  STEP_STATUSES,
+  decodeFlowError,
+  decodeOneOf,
+  decodeTags,
+} from "@iterativeflow/core/backend";
+import type { SqlRow, SqlValue } from "#sql";
 
 /** @internal */
-export const j = (value: unknown): string | null =>
+export const j = <T>(value: T): string | null =>
   value === undefined ? null : JSON.stringify(value);
 
-const p = <T>(text: string | null): T | undefined =>
-  text === null ? undefined : (JSON.parse(text) as T);
+const cell = (row: SqlRow, column: string): SqlValue => {
+  const value = row[column];
+  if (value === undefined) throw new Error(`mysql: result has no column "${column}"`);
+  return value;
+};
 
-const orUndef = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
+/** @internal */
+export const textOrNull = (row: SqlRow, column: string): string | null => {
+  const value = cell(row, column);
+  return value === null ? null : String(value);
+};
 
-// mysql2 hands BIGINT columns back as strings; coerce every epoch-ms read through Number.
-const at = (v: number | string): Date => new Date(Number(v));
+/** @internal */
+export const text = (row: SqlRow, column: string): string => {
+  const value = textOrNull(row, column);
+  if (value === null) throw new Error(`mysql: column "${column}" is NULL`);
+  return value;
+};
 
-export interface RunRecord {
-  id: string;
-  name: string;
-  version: number;
-  status: RunRow["status"];
-  input: string | null;
-  output: string | null;
-  error: string | null;
-  attempts: number;
-  idempotency_key: string | null;
-  tags: string | null;
-  parent_run_id: string | null;
-  parent_cursor_key: string | null;
-  depth: number;
-  created_at: number | string;
-}
+// mysql2 hands BIGINT columns back as strings; coerce every numeric read through Number.
+/** @internal */
+export const intOrNull = (row: SqlRow, column: string): number | null => {
+  const value = cell(row, column);
+  return value === null ? null : Number(value);
+};
 
-export const mapRun = (r: RunRecord): RunRow => ({
-  id: r.id,
-  name: r.name,
-  version: r.version,
-  status: r.status,
-  input: p(r.input),
-  attempts: r.attempts,
-  output: p(r.output),
-  error: p<RunRow["error"]>(r.error),
-  idempotencyKey: orUndef(r.idempotency_key),
-  tags: p<string[]>(r.tags),
-  parentRunId: orUndef(r.parent_run_id),
-  parentCursorKey: orUndef(r.parent_cursor_key),
-  depth: r.depth,
-  createdAt: at(r.created_at),
+/** @internal */
+export const int = (row: SqlRow, column: string): number => Number(text(row, column));
+
+const oneOf = <T extends string>(allowed: readonly T[], row: SqlRow, column: string): T =>
+  decodeOneOf(allowed, text(row, column), `mysql: column "${column}"`);
+
+/** @internal */
+export const runStatus = (row: SqlRow): RunStatus => oneOf(RUN_STATUSES, row, "status");
+
+const optionalText = (row: SqlRow, column: string): string | undefined =>
+  textOrNull(row, column) ?? undefined;
+
+const json = (row: SqlRow, column: string): Json | undefined => {
+  const value = textOrNull(row, column);
+  return value === null ? undefined : JSON.parse(value);
+};
+
+const at = (row: SqlRow, column: string): Date => new Date(int(row, column));
+
+export const mapRun = (r: SqlRow): RunRow => ({
+  id: text(r, "id"),
+  name: text(r, "name"),
+  version: int(r, "version"),
+  status: runStatus(r),
+  input: json(r, "input"),
+  attempts: int(r, "attempts"),
+  output: json(r, "output"),
+  error: decodeFlowError(json(r, "error"), `mysql: column "error"`),
+  idempotencyKey: optionalText(r, "idempotency_key"),
+  tags: decodeTags(json(r, "tags"), `mysql: column "tags"`),
+  parentRunId: optionalText(r, "parent_run_id"),
+  parentCursorKey: optionalText(r, "parent_cursor_key"),
+  depth: int(r, "depth"),
+  createdAt: at(r, "created_at"),
 });
 
-export interface StepRecord {
-  status: StepOutcome["status"];
-  result: string | null;
-  error: string | null;
-  attempts: number;
-  shape?: string | null;
-}
+// The `shape` column predates the `call` rename; `call` itself is reserved in MySQL.
+/** @internal */
+export const STEP_COLUMNS = "status, result, error, attempts, shape AS memo_call";
 
-export const mapStep = (r: StepRecord): StepOutcome => ({
-  status: r.status,
-  result: p(r.result),
-  error: p<StepOutcome["error"]>(r.error),
-  attempts: r.attempts,
-  shape: orUndef(r.shape ?? null),
+export const mapStep = (r: SqlRow): StepOutcome => ({
+  status: oneOf(STEP_STATUSES, r, "status"),
+  result: json(r, "result"),
+  error: decodeFlowError(json(r, "error"), `mysql: column "error"`),
+  attempts: int(r, "attempts"),
+  call: optionalText(r, "memo_call"),
 });
 
-export interface SignalRecord {
-  id: string;
-  name: string;
-  payload: string | null;
-}
-
-export const mapSignal = (r: SignalRecord): DeliveredSignal => ({
-  id: r.id,
-  name: r.name,
-  payload: p(r.payload),
+export const mapSignal = (r: SqlRow): DeliveredSignal => ({
+  id: text(r, "id"),
+  name: text(r, "name"),
+  payload: json(r, "payload"),
 });
 
-export interface CronRecord {
-  name: string;
-  schedule: string;
-  flow_name: string;
-  flow_version: number;
-  input: string | null;
-  overlap: "allow" | "skip";
-  next_run_at: number | string;
-  last_run_at: number | string | null;
-}
-
-export const mapCron = (r: CronRecord): CronRow => ({
-  name: r.name,
-  schedule: r.schedule,
-  flowName: r.flow_name,
-  flowVersion: r.flow_version,
-  input: p(r.input),
-  overlap: r.overlap,
-  nextRunAt: at(r.next_run_at),
-  lastRunAt: r.last_run_at === null ? undefined : at(r.last_run_at),
-});
+export const mapCron = (r: SqlRow): CronRow => {
+  const lastRunAt = intOrNull(r, "last_run_at");
+  return {
+    name: text(r, "name"),
+    schedule: text(r, "schedule"),
+    flowName: text(r, "flow_name"),
+    flowVersion: int(r, "flow_version"),
+    input: json(r, "input"),
+    overlap: oneOf(CRON_OVERLAPS, r, "overlap"),
+    nextRunAt: at(r, "next_run_at"),
+    lastRunAt: lastRunAt === null ? undefined : new Date(lastRunAt),
+  };
+};

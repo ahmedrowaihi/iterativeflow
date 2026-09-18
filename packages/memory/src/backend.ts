@@ -5,6 +5,7 @@ import {
   type DeliveredSignal,
   type EnqueueOpts,
   type IdGen,
+  durable,
   type Lease,
   type Outbox,
   type OrphanView,
@@ -37,13 +38,6 @@ interface Job {
   leaseToken?: string;
   leaseExpiresMs?: number;
 }
-
-/**
- * Clone a value the way a real backend stores it: through JSON. `structuredClone` would preserve a
- * `Date`, `Map` or `Set` that every serializing backend turns into a string or a plain object — so a
- * flow could pass in memory and break in production on the same code.
- */
-const durable = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
 
 const idemKey = (name: string, version: number, key: string): string =>
   JSON.stringify([name, version, key]);
@@ -229,9 +223,9 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       const outcome: StepOutcome = {
         status: c.status,
         result: durable(c.result),
-        error: c.error ? durable(c.error) : undefined,
+        error: c.error ? structuredClone(c.error) : undefined,
         attempts: c.attempts,
-        shape: c.shape,
+        call: c.call,
       };
       stepMap.set(c.cursorKey, outcome);
       commitOutbox(fx); // atomic with the checkpoint, and only on the first write
@@ -252,7 +246,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (!row) throw new Error(`markTerminal: run ${runId} not found`);
       if (isTerminal(row.status)) return;
       row.status = outcome.status;
-      row.output = outcome.status === "done" ? outcome.output : undefined;
+      row.output = outcome.status === "done" ? durable(outcome.output) : undefined;
       row.error = outcome.status === "done" ? undefined : outcome.error;
       commitOutbox(fx);
     },

@@ -1,4 +1,4 @@
-import { createEngine, defineFlow } from "@iterativeflow/core";
+import { type Contract, createEngine, defineFlow } from "@iterativeflow/core";
 import { describe, expect, it } from "vitest";
 import { createMemoryBackend } from "#index";
 
@@ -47,18 +47,22 @@ describe("createEngine — the cohesive facade", () => {
           version: 1,
           vendor: "test",
           validate: (v) =>
-            typeof (v as { n?: unknown })?.n === "number"
-              ? { value: v as { n: number } }
+            v instanceof Object && "n" in v && Number.isFinite(v.n)
+              ? { value: { n: Number(v.n) } }
               : { issues: [{ message: "n must be a number" }] },
         },
       },
     });
     const engine = createEngine(createMemoryBackend(), [flow]);
-    await expect(engine.submit(flow, { n: "oops" } as unknown as { n: number })).rejects.toThrow(
-      /n must be a number/,
-    );
+    // A caller holding a looser contract than the worker's schema, as an untyped client would.
+    const loose: Contract<{ n: number | string }, number> = {
+      name: flow.name,
+      version: flow.version,
+      input: flow.input,
+    };
+    await expect(engine.submit(loose, { n: "oops" })).rejects.toThrow(/n must be a number/);
     const ok = await engine.submit(flow, { n: 5 });
-    expect(typeof ok).toBe("string");
+    expect(ok).toEqual(expect.any(String));
   });
 
   it("rejects a submit whose payload exceeds maxPayloadBytes", async () => {
@@ -89,8 +93,8 @@ describe("createEngine — the cohesive facade", () => {
     });
 
     const unhandled: unknown[] = [];
-    const onRej = (e: unknown): void => {
-      unhandled.push(e);
+    const onRej: NodeJS.UnhandledRejectionListener = (reason) => {
+      unhandled.push(reason);
     };
     process.on("unhandledRejection", onRej);
     try {

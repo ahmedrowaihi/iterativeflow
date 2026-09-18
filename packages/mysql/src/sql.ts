@@ -1,3 +1,4 @@
+import type { Json } from "@iterativeflow/core/backend";
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 
 /** What a write reports — MySQL has no `RETURNING`, so first-writer-wins reads `affectedRows`. */
@@ -5,6 +6,17 @@ export interface WriteResult {
   affectedRows: number;
   insertId: number;
 }
+
+type SqlScalar = string | number | boolean | Date | null;
+
+/** A value bound to a positional `?`; an array expands to a list (`IN (?)`). */
+export type SqlParam = SqlScalar | readonly SqlScalar[];
+
+/** A column value as `mysql2` decodes it. */
+export type SqlValue = Json | bigint | Date | Buffer;
+
+/** One result row, keyed by column name or alias. */
+export type SqlRow = Readonly<Record<string, SqlValue>>;
 
 /**
  * The minimal SQL surface the backend needs: positional-`?` `query` for reads, `exec` for writes
@@ -14,20 +26,23 @@ export interface WriteResult {
  * gives contention-free batch claims.
  */
 export interface Sql {
-  query<R = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
-  exec(text: string, params?: readonly unknown[]): Promise<WriteResult>;
+  query(text: string, params?: readonly SqlParam[]): Promise<SqlRow[]>;
+  exec(text: string, params?: readonly SqlParam[]): Promise<WriteResult>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
 
-const write = (r: [unknown, unknown]): WriteResult => {
-  const h = r[0] as ResultSetHeader;
-  return { affectedRows: h.affectedRows, insertId: h.insertId };
-};
-
 const bind = (q: Pool | PoolConnection): Pick<Sql, "query" | "exec"> => ({
-  query: <R>(text: string, params?: readonly unknown[]) =>
-    q.query(text, params as unknown[]).then((r) => r[0] as RowDataPacket[] as R[]),
-  exec: (text, params) => q.query(text, params as unknown[]).then(write),
+  query: async (text, params) => {
+    const [result] = await q.query<RowDataPacket[] | ResultSetHeader>(text, params && [...params]);
+    return Array.isArray(result) ? result : [];
+  },
+  exec: async (text, params) => {
+    const [{ affectedRows, insertId }] = await q.query<ResultSetHeader>(
+      text,
+      params && [...params],
+    );
+    return { affectedRows, insertId };
+  },
 });
 
 const onConn = (c: PoolConnection): Sql => ({ ...bind(c), tx: (fn) => fn(onConn(c)) });

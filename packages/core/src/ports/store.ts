@@ -80,10 +80,10 @@ export interface Store {
    * `idempotencyKey` (scoped to the run) — a retried delivery lands once. Returns whether the
    * signal was newly delivered (`false` = idempotent duplicate).
    */
-  postSignal(
+  postSignal<P>(
     runId: string,
     name: string,
-    payload: unknown,
+    payload: P,
     opts?: { idempotencyKey?: string },
   ): Promise<{ delivered: boolean }>;
 

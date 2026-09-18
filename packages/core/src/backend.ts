@@ -36,14 +36,16 @@ export type {
   TerminalOutcome,
   DeliveredSignal,
   FlowError,
+  CronOverlap,
   CronRow,
   CronSpec,
 } from "#types";
 
 export type { EventSink, EventType, FlowEvent } from "#engine/observe";
+export { EVENT_TYPES, isEventType } from "#engine/observe";
 
 export { createLocalWakeup } from "#local-wakeup";
-export { RUN_STATUSES } from "#types";
+export { CRON_OVERLAPS, RUN_STATUSES, STEP_STATUSES } from "#types";
 export {
   TERMINAL_STATUSES,
   NON_SUCCESS_TERMINAL_STATUSES,
@@ -54,6 +56,8 @@ export {
   statusList,
   zeroRunStats,
 } from "#status";
+export { decodeFlowError, decodeOneOf, decodeTags, durable, isJsonString } from "#json";
+export type { Json } from "#json";
 export { newId } from "#id";
 export type { IdGen } from "#id";
 export { purgeStatuses, purgeMatcher, purgeWhereSql, runSetStatuses, runSetWhereSql } from "#purge";

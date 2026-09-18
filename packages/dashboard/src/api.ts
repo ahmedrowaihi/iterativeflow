@@ -9,7 +9,7 @@ export interface DashboardOpts {
   events?: (runId: string) => Promise<readonly FlowEvent[]>;
 }
 
-const json = (body: unknown, status = 200): Response =>
+const json = <T>(body: T, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -94,24 +94,20 @@ export const createDashboard = (
       return json({ retried: await engine.retry(decodeURIComponent(retry[1])) });
     }
 
-    const signal = path.match(/^\/api\/runs\/([^/]+)\/signal$/);
+    const signal = path.match(/^\/api\/runs\/([^/]+)\/signals\/([^/]+)$/);
     if (signal && req.method === "POST") {
-      const body = (await req.json()) as {
-        name?: unknown;
-        payload?: unknown;
-        idempotencyKey?: unknown;
-      };
-      if (typeof body?.name !== "string" || body.name === "") {
-        return json({ error: "signal requires a non-empty `name`" }, 400);
-      }
-      if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== "string") {
-        return json({ error: "`idempotencyKey` must be a string" }, 400);
+      const text = await req.text();
+      let payload;
+      try {
+        payload = text === "" ? undefined : JSON.parse(text);
+      } catch {
+        return json({ error: "signal payload must be JSON" }, 400);
       }
       const delivered = await engine.signal(
         decodeURIComponent(signal[1]),
-        body.name,
-        body.payload,
-        { idempotencyKey: body.idempotencyKey },
+        decodeURIComponent(signal[2]),
+        payload,
+        { idempotencyKey: req.headers.get("idempotency-key") ?? undefined },
       );
       return json({ delivered });
     }

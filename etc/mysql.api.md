@@ -5,7 +5,7 @@
 ## index.d.mts
 
 ```ts
-import { Backend, IdGen } from "@iterativeflow/core/backend";
+import { Backend, IdGen, Json } from "@iterativeflow/core/backend";
 import { Pool } from "mysql2/promise";
 //#region src/sql.d.ts
 /** What a write reports — MySQL has no `RETURNING`, so first-writer-wins reads `affectedRows`. */
@@ -13,6 +13,13 @@ interface WriteResult {
   affectedRows: number;
   insertId: number;
 }
+type SqlScalar = string | number | boolean | Date | null;
+/** A value bound to a positional `?`; an array expands to a list (`IN (?)`). */
+type SqlParam = SqlScalar | readonly SqlScalar[];
+/** A column value as `mysql2` decodes it. */
+type SqlValue = Json | bigint | Date | Buffer;
+/** One result row, keyed by column name or alias. */
+type SqlRow = Readonly<Record<string, SqlValue>>;
 /**
  * The minimal SQL surface the backend needs: positional-`?` `query` for reads, `exec` for writes
  * (returning `affectedRows`, since MySQL has no `RETURNING`), and a `tx` that runs a unit of work on
@@ -21,8 +28,8 @@ interface WriteResult {
  * gives contention-free batch claims.
  */
 interface Sql {
-  query<R = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
-  exec(text: string, params?: readonly unknown[]): Promise<WriteResult>;
+  query(text: string, params?: readonly SqlParam[]): Promise<SqlRow[]>;
+  exec(text: string, params?: readonly SqlParam[]): Promise<WriteResult>;
   tx<T>(fn: (t: Sql) => Promise<T>): Promise<T>;
 }
 /** Options for {@link mysqlPool}. */
@@ -87,5 +94,5 @@ declare const applySchema: (sql: Sql, prefix?: string) => Promise<void>;
  */
 declare const inTx: <T>(pool: Pool, fn: (backend: Backend, tx: Sql) => Promise<T>, opts?: MysqlBackendOpts) => Promise<T>;
 //#endregion
-export { type MysqlBackendOpts, type Sql, applySchema, createMysqlBackend, ddl, inTx, mysqlPool };
+export { type MysqlBackendOpts, type Sql, type SqlParam, type SqlRow, type SqlValue, applySchema, createMysqlBackend, ddl, inTx, mysqlPool };
 ```

@@ -40,22 +40,17 @@ describe("dashboard fetch handler", () => {
     const id = await engine.submit(flow, { x: 21 });
     await drive(engine, id);
 
-    const runs = (await (await handler(new Request("http://x/api/runs"))).json()) as {
-      runs: { id: string }[];
-    };
-    expect(runs.runs.map((r) => r.id)).toContain(id);
+    const runs = await (await handler(new Request("http://x/api/runs"))).json();
+    expect(runs).toMatchObject({ runs: expect.arrayContaining([expect.objectContaining({ id })]) });
 
-    const health = (await (await handler(new Request("http://x/api/health"))).json()) as {
-      done: number;
-    };
-    expect(health.done).toBe(1);
+    const health = await (await handler(new Request("http://x/api/health"))).json();
+    expect(health).toMatchObject({ done: 1 });
 
-    const detail = (await (await handler(new Request(`http://x/api/runs/${id}`))).json()) as {
-      run: { output: number };
-      steps: { cursorKey: string }[];
-    };
-    expect(detail.run.output).toBe(42);
-    expect(detail.steps.map((s) => s.cursorKey)).toContain("s0");
+    const detail = await (await handler(new Request(`http://x/api/runs/${id}`))).json();
+    expect(detail).toMatchObject({
+      run: { output: 42 },
+      steps: expect.arrayContaining([expect.objectContaining({ cursorKey: "s0" })]),
+    });
   });
 
   it("cancels a run through the API", async () => {
@@ -63,7 +58,7 @@ describe("dashboard fetch handler", () => {
     const handler = createDashboard(engine);
     const id = await engine.submit(flow, { x: 1 });
     const res = await handler(new Request(`http://x/api/runs/${id}/cancel`, { method: "POST" }));
-    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect(await res.json()).toEqual({ ok: true });
     expect((await engine.status(id))?.run.status).toBe("canceled");
   });
 
@@ -77,13 +72,13 @@ describe("dashboard fetch handler", () => {
   it("clamps a hostile ?limit instead of passing it to the store", async () => {
     const { engine } = buildEngine();
     const seen: number[] = [];
-    const spy = {
+    const spy: typeof engine = {
       ...engine,
-      listRuns: (filter: Parameters<typeof engine.listRuns>[0], page: { limit: number }) => {
+      listRuns: (filter, page) => {
         seen.push(page.limit);
         return engine.listRuns(filter, page);
       },
-    } as typeof engine;
+    };
     const app = createDashboard(spy);
     for (const raw of ["-1", "abc", "0", "99999", "25"]) {
       expect((await app(new Request(`http://x/api/runs?limit=${raw}`))).status).toBe(200);
@@ -91,15 +86,41 @@ describe("dashboard fetch handler", () => {
     expect(seen).toEqual([50, 50, 50, 200, 25]);
   });
 
-  it("rejects a signal body with no name instead of passing it to the engine", async () => {
+  it("delivers a signal named in the path, with the body as payload and a header idempotency key", async () => {
+    const { engine, flow } = buildEngine();
+    const app = createDashboard(engine);
+    const handle = await engine.submit(flow, { x: 1 });
+    const post = () =>
+      app(
+        new Request(`http://x/api/runs/${handle}/signals/go`, {
+          method: "POST",
+          headers: { "idempotency-key": "k" },
+          body: JSON.stringify({ a: 1 }),
+        }),
+      );
+    expect(await (await post()).json()).toEqual({ delivered: true });
+    expect(await (await post()).json()).toEqual({ delivered: false });
+    expect((await engine.status(handle))?.signals).toMatchObject([
+      { name: "go", payload: { a: 1 } },
+    ]);
+  });
+
+  it("delivers a signal with no body as an undefined payload", async () => {
     const { engine, flow } = buildEngine();
     const app = createDashboard(engine);
     const handle = await engine.submit(flow, { x: 1 });
     const res = await app(
-      new Request(`http://x/api/runs/${handle}/signal`, {
-        method: "POST",
-        body: JSON.stringify({ payload: { a: 1 } }),
-      }),
+      new Request(`http://x/api/runs/${handle}/signals/go`, { method: "POST" }),
+    );
+    expect(await res.json()).toEqual({ delivered: true });
+  });
+
+  it("rejects a non-JSON signal payload", async () => {
+    const { engine, flow } = buildEngine();
+    const app = createDashboard(engine);
+    const handle = await engine.submit(flow, { x: 1 });
+    const res = await app(
+      new Request(`http://x/api/runs/${handle}/signals/go`, { method: "POST", body: "nope" }),
     );
     expect(res.status).toBe(400);
   });

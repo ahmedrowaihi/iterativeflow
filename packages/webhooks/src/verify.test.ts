@@ -11,11 +11,10 @@ const hmac = (body: string, secret: string, algo = "sha256"): string =>
   createHmac(algo, secret).update(body).digest("hex");
 const ghSign = (body: string, secret = SECRET): string => `sha256=${hmac(body, secret)}`;
 
-const ghHeaders = (sig: string, extra: Record<string, string> = {}): Record<string, string> => ({
+const ghHeaders = (sig: string) => ({
   "X-Hub-Signature-256": sig,
   "X-GitHub-Event": "issue_comment",
   "X-GitHub-Delivery": "guid-1",
-  ...extra,
 });
 
 describe("github preset verifier", () => {
@@ -24,8 +23,11 @@ describe("github preset verifier", () => {
   it("accepts a correctly signed body, normalizing to id/type/payload", async () => {
     const body = JSON.stringify({ action: "created", number: 7 });
     const event = await verify({ body, headers: ghHeaders(ghSign(body)) });
-    expect(event).toEqual({ id: "guid-1", type: "issue_comment", payload: expect.anything() });
-    expect((event.payload as { number: number }).number).toBe(7);
+    expect(event).toEqual({
+      id: "guid-1",
+      type: "issue_comment",
+      payload: { action: "created", number: 7 },
+    });
   });
 
   it("reads headers case-insensitively and from a Headers instance", async () => {

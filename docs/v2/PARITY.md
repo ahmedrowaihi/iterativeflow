@@ -9,7 +9,6 @@ feature is silently missing.
 | Capability                    | v2 surface                                                                                                                                                                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Imperative authoring          | `defineFlow`                                                                                                                                                                                                                                                   |
-| Fluent authoring              | `builder().step().output()` (typed accumulator, per-step policy)                                                                                                                                                                                               |
 | Durable steps + memo          | `ctx.step`, first-writer-wins checkpoint                                                                                                                                                                                                                       |
 | Step policy                   | retries, retryDelayMs, timeoutMs, `classify` transient/permanent, AbortSignal + attempt                                                                                                                                                                        |
 | Sleep                         | `ctx.sleep` / `ctx.sleepUntil` (durable, memoized deadline)                                                                                                                                                                                                    |
@@ -29,7 +28,7 @@ feature is silently missing.
 | Observability events          | gated durable event log (`all`/`lifecycle`/`off`) + Postgres sink + `listEvents`                                                                                                                                                                               |
 | Metrics hooks                 | `Metrics` callbacks (runStarted/Settled/Suspended/stepFinished)                                                                                                                                                                                                |
 | Input validation              | Standard-Schema `input` on a flow, checked at submit                                                                                                                                                                                                           |
-| Per-flow type-safety          | `submit` → `RunHandle<O, S>`, `result` recovers `O`, `signal` typed by the flow's `signals` map — restores v1 `FlowContract<I,O>` typing, adds typed signals ([CONTRACTS.md](CONTRACTS.md))                                                                    |
+| Per-flow type-safety          | `submit` → `RunHandle<O, S>`, `result` validates + types `O` from an output schema, `signal` typed by the flow's `signals` map — restores v1 `FlowContract<I,O>` typing, adds typed signals ([CONTRACTS.md](CONTRACTS.md))                                     |
 | Flow drift guard              | replay compares each `ctx` call's `kind:label` to the memo; a body reordered/refactored under a live run parks (`flow_drift`) or fails (`FLOW_DRIFT`) per `driftPolicy` — restores v1 static-drift detection as a runtime check ([CONTRACTS.md](CONTRACTS.md)) |
 | Cohesive engine               | `createEngine(backend, flows, opts)` — the facade + resident `run()` loop                                                                                                                                                                                      |
 | Payload guard                 | `maxPayloadBytes` on the engine                                                                                                                                                                                                                                |
@@ -56,8 +55,9 @@ All eight backends implement the same four ports and pass the same nine conforma
   re-homed as first-class v2 features above.
 - **Custom-column table extension (`FlowTables` generic)** — dropped per decision. Correlate via
   run **tags + your own tables** (the transactional-enqueue pattern), not by extending core tables.
-- **Graph builder nodes + static drift detection** — dropped per decision. The linear builder plus
-  imperative `defineFlow` (which does sleep/signal/loop/branch via `ctx`) covers control flow.
+- **Graph builder nodes + static drift detection** — dropped per decision. The imperative `defineFlow`
+  (which does sleep/signal/loop/branch via `ctx`) covers control flow.
+- **Fluent `builder()`** — removed. Its steps are a plain `ctx.step` sequence in `defineFlow`.
 
 ## Done since the first alpha
 

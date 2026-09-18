@@ -1,5 +1,5 @@
 export { pgPool } from "#sql";
-export type { Sql } from "#sql";
+export type { Sql, SqlParam, SqlRow, SqlValue } from "#sql";
 export { applySchema, ddl, pendingWorkDdl } from "#schema";
 export { pgClassify } from "#classify";
 export { drizzleSchema } from "#drizzle";

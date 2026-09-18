@@ -1,9 +1,7 @@
 import {
-  type CronRow,
   type IdGen,
   type PurgeFilter,
   type RunSpec,
-  type RunStatus,
   type StartResult,
   type Store,
   type SuspendStatus,
@@ -17,32 +15,21 @@ import {
   statusList,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
-import { type RunRecord, type StepRecord, j, mapRun, mapStep } from "#codec";
+import {
+  STEP_COLUMNS,
+  bigintText,
+  int,
+  j,
+  mapCron,
+  mapRun,
+  mapSignal,
+  mapStep,
+  runStatus,
+  text,
+} from "#codec";
 import { type Tables, tables } from "#schema";
 import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
-import type { Sql } from "#sql";
-
-interface CronRow_ {
-  name: string;
-  schedule: string;
-  flow_name: string;
-  flow_version: number;
-  input: unknown;
-  overlap: "allow" | "skip";
-  next_run_at: Date;
-  last_run_at: Date | null;
-}
-
-const mapCronRow = (r: CronRow_): CronRow => ({
-  name: r.name,
-  schedule: r.schedule,
-  flowName: r.flow_name,
-  flowVersion: r.flow_version,
-  input: r.input,
-  overlap: r.overlap,
-  nextRunAt: r.next_run_at,
-  lastRunAt: r.last_run_at ?? undefined,
-});
+import type { Sql, SqlParam } from "#sql";
 
 const sqlTuple = (statuses: readonly string[]): string =>
   `(${statuses.map((s) => `'${s}'`).join(",")})`;
@@ -62,8 +49,8 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const t: Tables = tables(schema);
 
   const loadStep = async (exec: Sql, runId: string, cursorKey: string) => {
-    const rows = await exec.query<StepRecord>(
-      `SELECT status, result, error, attempts, shape FROM ${t.step} WHERE run_id = $1 AND cursor_key = $2`,
+    const rows = await exec.query(
+      `SELECT ${STEP_COLUMNS} FROM ${t.step} WHERE run_id = $1 AND cursor_key = $2`,
       [runId, cursorKey],
     );
     const row = rows[0];
@@ -74,7 +61,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const startOne = async (exec: Sql, spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     if (spec.idempotencyKey) {
-      const ins = await exec.query<{ id: string }>(
+      const ins = await exec.query(
         `INSERT INTO ${t.run}
            (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, created_at, priority)
          VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
@@ -95,12 +82,17 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           spec.priority ?? 0,
         ],
       );
-      if (ins[0]) return { runId: ins[0].id, created: true, status: "pending" };
-      const hit = await exec.query<{ id: string; status: RunStatus }>(
+      if (ins[0]) return { runId: text(ins[0], "id"), created: true, status: "pending" };
+      const hit = await exec.query(
         `SELECT id, status FROM ${t.run} WHERE name = $1 AND version = $2 AND idempotency_key = $3`,
         [spec.name, spec.version, spec.idempotencyKey],
       );
-      return { runId: hit[0].id, created: false, status: hit[0].status };
+      const row = hit[0];
+      if (!row)
+        throw new Error(
+          `startRun: idempotency key ${spec.idempotencyKey} conflicted but no run holds it`,
+        );
+      return { runId: text(row, "id"), created: false, status: runStatus(row) };
     }
     await exec.query(
       `INSERT INTO ${t.run}
@@ -131,13 +123,13 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
       const ids = (
-        await tx.query<{ id: string }>(
+        await tx.query(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
              ${order} LIMIT $${params.length}`,
           params,
         )
-      ).map((r) => r.id);
+      ).map((r) => text(r, "id"));
       if (ids.length === 0) return 0;
       // step/signal FK the run; event/job/timer don't — delete all before the run itself.
       await tx.query(`DELETE FROM ${t.step} WHERE run_id = ANY($1)`, [ids]);
@@ -166,12 +158,9 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
 
     async loadRun(runId) {
       const [runRows, stepRows, sigRows] = await Promise.all([
-        sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]),
-        sql.query<StepRecord & { cursor_key: string }>(
-          `SELECT cursor_key, status, result, error, attempts, shape FROM ${t.step} WHERE run_id = $1`,
-          [runId],
-        ),
-        sql.query<{ id: string; name: string; payload: unknown }>(
+        sql.query(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]),
+        sql.query(`SELECT cursor_key, ${STEP_COLUMNS} FROM ${t.step} WHERE run_id = $1`, [runId]),
+        sql.query(
           `SELECT id, name, payload FROM ${t.signal} WHERE run_id = $1 AND NOT consumed ORDER BY seq`,
           [runId],
         ),
@@ -180,36 +169,34 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       if (!runRow) return undefined;
       return {
         run: mapRun(runRow),
-        steps: new Map(stepRows.map((r) => [r.cursor_key, mapStep(r)])),
-        signals: sigRows.map((r) => ({ id: r.id, name: r.name, payload: r.payload })),
+        steps: new Map(stepRows.map((r) => [text(r, "cursor_key"), mapStep(r)])),
+        signals: sigRows.map(mapSignal),
       };
     },
 
     async loadRunRow(runId) {
-      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]);
+      const rows = await sql.query(`SELECT * FROM ${t.run} WHERE id = $1`, [runId]);
       return rows[0] ? mapRun(rows[0]) : undefined;
     },
 
     async loadRunRows(runIds) {
       if (runIds.length === 0) return [];
-      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE id = ANY($1)`, [
-        runIds,
-      ]);
-      const byId = new Map(rows.map((r) => [r.id, mapRun(r)]));
+      const rows = await sql.query(`SELECT * FROM ${t.run} WHERE id = ANY($1)`, [runIds]);
+      const byId = new Map(rows.map((r) => [text(r, "id"), mapRun(r)]));
       return runIds.map((runId) => byId.get(runId));
     },
 
     async arriveAtJoin(parentRunId) {
-      const rows = await sql.query<{ join_remaining: number }>(
+      const rows = await sql.query(
         `UPDATE ${t.run} SET join_remaining = join_remaining - 1 WHERE id = $1 RETURNING join_remaining`,
         [parentRunId],
       );
-      return rows[0] ? rows[0].join_remaining : undefined;
+      return rows[0] ? int(rows[0], "join_remaining") : undefined;
     },
 
     async postSignal(runId, name, payload, opts) {
       return sql.tx(async (tx) => {
-        const ins = await tx.query<{ id: string }>(
+        const ins = await tx.query(
           `INSERT INTO ${t.signal} (id, run_id, name, payload, idem_key)
            VALUES ($1, $2, $3, $4::jsonb, $5)
            ON CONFLICT (run_id, idem_key) WHERE idem_key IS NOT NULL DO NOTHING
@@ -223,20 +210,17 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async markRunning(runId) {
-      const rows = await sql.query<{ attempts: number }>(
+      const rows = await sql.query(
         `UPDATE ${t.run} SET attempts = attempts + 1, status = 'running'
          WHERE id = $1 AND status NOT IN ${TERMINAL}
          RETURNING attempts`,
         [runId],
       );
-      if (rows[0]) return rows[0].attempts;
+      if (rows[0]) return int(rows[0], "attempts");
       // Terminal (must not resurrect) or missing (must throw): read the current state to tell them apart.
-      const cur = await sql.query<{ attempts: number }>(
-        `SELECT attempts FROM ${t.run} WHERE id = $1`,
-        [runId],
-      );
+      const cur = await sql.query(`SELECT attempts FROM ${t.run} WHERE id = $1`, [runId]);
       if (!cur[0]) throw new Error(`markRunning: run ${runId} not found`);
-      return cur[0].attempts;
+      return int(cur[0], "attempts");
     },
 
     checkpointStep(c, fx) {
@@ -247,11 +231,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
             [c.runId, c.cursorKey],
           );
           if (existing.length === 0) {
-            const job = await tx.query<{ version: number | string }>(
+            const job = await tx.query(
               `SELECT version FROM ${t.job} WHERE run_id = $1 FOR UPDATE`,
               [c.runId],
             );
-            if (!job[0] || Number(job[0].version) !== fx.requireVersion) {
+            if (!job[0] || int(job[0], "version") !== fx.requireVersion) {
               return { status: c.status, attempts: c.attempts, committed: false };
             }
           }
@@ -261,7 +245,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
            ON CONFLICT (run_id, cursor_key) DO NOTHING
            RETURNING 1`,
-          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.shape ?? null],
+          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.call ?? null],
         );
         // Outbox rides ONLY the first write; a concurrent writer that won the insert already ran it.
         if (ins.length > 0 && fx) await applyOutbox(tx, t, fx);
@@ -297,7 +281,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     async listRuns(filter, page) {
       const statuses = statusList(filter.status);
       const where: string[] = [];
-      const params: unknown[] = [];
+      const params: SqlParam[] = [];
       if (statuses) {
         params.push(statuses);
         where.push(`status = ANY($${params.length}::text[])`);
@@ -320,13 +304,13 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       }
       params.push(page.limit);
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-      const rows = await sql.query<RunRecord & { seq: string }>(
+      const rows = await sql.query(
         `SELECT * FROM ${t.run} ${clause} ORDER BY seq DESC LIMIT $${params.length}`,
         params,
       );
       const last = rows[rows.length - 1];
-      const cursor = rows.length === page.limit && last ? String(last.seq) : undefined;
-      return { runs: rows.map((r) => mapRun(r)), cursor };
+      const cursor = rows.length === page.limit && last ? bigintText(last, "seq") : undefined;
+      return { runs: rows.map(mapRun), cursor };
     },
 
     async cancelRuns(filter, limit) {
@@ -335,11 +319,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       const params = [...q.params, limit];
       return sql.tx(async (tx) => {
         const ids = (
-          await tx.query<{ id: string }>(
+          await tx.query(
             `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT $${params.length} FOR UPDATE`,
             params,
           )
-        ).map((r) => r.id);
+        ).map((r) => text(r, "id"));
         if (ids.length === 0) return 0;
         await tx.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1)`, [ids]);
         await tx.query(`UPDATE ${t.run} SET status = 'canceled' WHERE id = ANY($1)`, [ids]);
@@ -353,11 +337,11 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
       const params = [...q.params, limit];
       return sql.tx(async (tx) => {
         const ids = (
-          await tx.query<{ id: string }>(
+          await tx.query(
             `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT $${params.length} FOR UPDATE`,
             params,
           )
-        ).map((r) => r.id);
+        ).map((r) => text(r, "id"));
         if (ids.length === 0) return 0;
         await tx.query(
           `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0 WHERE id = ANY($1)`,
@@ -373,23 +357,21 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async childrenOf(runId) {
-      const rows = await sql.query<RunRecord>(`SELECT * FROM ${t.run} WHERE parent_run_id = $1`, [
-        runId,
-      ]);
-      return rows.map((r) => mapRun(r));
+      const rows = await sql.query(`SELECT * FROM ${t.run} WHERE parent_run_id = $1`, [runId]);
+      return rows.map(mapRun);
     },
 
     async runStats() {
-      const rows = await sql.query<{ status: RunStatus; n: number }>(
+      const rows = await sql.query(
         `SELECT status, count(*)::int AS n FROM ${t.run} GROUP BY status`,
       );
       const stats = zeroRunStats();
-      for (const r of rows) stats[r.status] = r.n;
+      for (const r of rows) stats[runStatus(r)] = int(r, "n");
       return stats;
     },
 
     async orphanedRuns(limit) {
-      const rows = await sql.query<{ id: string }>(
+      const rows = await sql.query(
         orphanedRunsSql({
           run: t.run,
           job: t.job,
@@ -402,7 +384,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         }),
         [limit],
       );
-      return rows.map((r) => r.id);
+      return rows.map((r) => text(r, "id"));
     },
 
     deleteRuns,
@@ -448,25 +430,16 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async dueCrons(now, limit) {
-      const rows = await sql.query<{
-        name: string;
-        schedule: string;
-        flow_name: string;
-        flow_version: number;
-        input: unknown;
-        overlap: "allow" | "skip";
-        next_run_at: Date;
-        last_run_at: Date | null;
-      }>(
+      const rows = await sql.query(
         `SELECT * FROM ${t.cron} WHERE next_run_at <= $1::timestamptz ORDER BY next_run_at LIMIT $2`,
         [now, limit],
       );
-      return rows.map(mapCronRow);
+      return rows.map(mapCron);
     },
 
     async listCrons() {
-      const rows = await sql.query<CronRow_>(`SELECT * FROM ${t.cron} ORDER BY name`);
-      return rows.map(mapCronRow);
+      const rows = await sql.query(`SELECT * FROM ${t.cron} ORDER BY name`);
+      return rows.map(mapCron);
     },
 
     async removeCron(name) {
@@ -475,12 +448,12 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async dueCronCount(now, names) {
-      const rows = await sql.query<{ n: number }>(
+      const rows = await sql.query(
         `SELECT count(*)::int AS n FROM ${t.cron}
          WHERE next_run_at <= $1::timestamptz AND ($2::text[] IS NULL OR flow_name = ANY($2))`,
         [now, names ?? null],
       );
-      return rows[0].n;
+      return rows[0] ? int(rows[0], "n") : 0;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {
