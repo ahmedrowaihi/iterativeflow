@@ -1,5 +1,17 @@
 # @iterativeflow/dashboard
 
+## 3.0.0
+
+### Patch Changes
+
+- Updated dependencies [b4707aa]
+- Updated dependencies [8a9d860]
+- Updated dependencies [aed7cc2]
+- Updated dependencies [a905beb]
+- Updated dependencies [2d86163]
+- Updated dependencies [57a5c90]
+  - @iterativeflow/core@3.0.0
+
 ## 2.7.0
 
 ### Patch Changes
