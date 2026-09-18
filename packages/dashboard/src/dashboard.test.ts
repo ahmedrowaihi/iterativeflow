@@ -53,6 +53,36 @@ describe("dashboard fetch handler", () => {
     });
   });
 
+  it("shows a parent's children, and each child links back to its parent", async () => {
+    const child = defineFlow<{ x: number }, number>({
+      name: "child",
+      version: 1,
+      run: async (ctx) => {
+        await ctx.signal("never");
+        return 1;
+      },
+    });
+    const parent = defineFlow<{ x: number }, number>({
+      name: "parent",
+      version: 1,
+      run: async (ctx, input) => ctx.invoke(child, input),
+    });
+    const engine = createEngine(createMemoryBackend(), [parent, child]);
+    const handler = createDashboard(engine);
+    const id = await engine.submit(parent, { x: 1 });
+    await engine.tick();
+    await engine.tick();
+    const [kid] = await engine.backend.store.childrenOf(id);
+
+    const detail = await (await handler(new Request(`http://x/api/runs/${id}`))).json();
+    expect(detail).toMatchObject({
+      run: { status: "awaiting_child" },
+      children: [{ id: kid?.id, name: "child", version: 1, status: "awaiting_signal" }],
+    });
+    const kidDetail = await (await handler(new Request(`http://x/api/runs/${kid?.id}`))).json();
+    expect(kidDetail).toMatchObject({ run: { parentRunId: id } });
+  });
+
   it("cancels a run through the API", async () => {
     const { engine, flow } = buildEngine();
     const handler = createDashboard(engine);

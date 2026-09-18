@@ -1,4 +1,5 @@
 import {
+  type AnyFlow,
   type Backend,
   type Flow,
   type RetryPolicy,
@@ -390,6 +391,206 @@ export const engineConformance = (
       expect(kids).toHaveLength(2);
       expect(kids.every((k) => isTerminal(k.status))).toBe(true);
       expect(kids.some((k) => k.status === "canceled")).toBe(true);
+    });
+
+    it("a settled fan-out returns every child's result and cancels no sibling", async () => {
+      const backend = await makeBackend();
+      const ok = defineFlow({
+        name: "settle-ok",
+        version: 1,
+        run: async (_ctx, n: number): Promise<number> => n,
+      });
+      const boom = defineFlow({
+        name: "settle-boom",
+        version: 1,
+        run: async (): Promise<number> => {
+          throw new Error("boom");
+        },
+      });
+      const parent = defineFlow({
+        name: "settle-fan",
+        version: 1,
+        run: async (ctx) =>
+          ctx.invoke(
+            [
+              { flow: ok, input: 1 },
+              { flow: boom, input: {} },
+              { flow: ok, input: 2 },
+            ],
+            { onChildFailure: "settle" },
+          ),
+      });
+      const runId = await submit(backend, parent, {});
+      const run = await drive(backend, registry([parent, ok, boom]), runId, {
+        maxAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+      });
+      expect(run).toMatchObject({
+        status: "done",
+        output: [
+          { status: "done", output: 1 },
+          { status: "failed", error: { message: "boom" } },
+          { status: "done", output: 2 },
+        ],
+      });
+      const kids = await backend.store.childrenOf(runId);
+      expect(kids.filter((k) => k.status === "canceled")).toHaveLength(0);
+    });
+
+    const waiter = defineFlow({
+      name: "waits-forever",
+      version: 1,
+      run: async (ctx): Promise<number> => {
+        await ctx.signal("never");
+        return 1;
+      },
+    });
+
+    const parkOnChild = async (backend: Backend, parent: AnyFlow) => {
+      const flows = registry([parent, waiter]);
+      const runId = await submit(backend, parent, {});
+      const now = () => new Date("2030-01-01T00:00:00Z");
+      await tickOnce(backend, flows, { ...base, now });
+      await tickOnce(backend, flows, { ...base, now });
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("awaiting_child");
+      const [child] = await backend.store.childrenOf(runId);
+      return { runId, childId: child.id, tick: () => tickOnce(backend, flows, { ...base, now }) };
+    };
+
+    it("canceling a child wakes its fail-fast parent without waiting for reconcile", async () => {
+      const backend = await makeBackend();
+      const parent = defineFlow({
+        name: "waits-on-child",
+        version: 1,
+        run: async (ctx): Promise<number> => ctx.invoke(waiter, {}),
+      });
+      const { runId, childId, tick } = await parkOnChild(backend, parent);
+      await cancelRun(backend, childId);
+      await tick();
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("failed");
+    });
+
+    it("a settled parent reports a canceled child as canceled and completes", async () => {
+      const backend = await makeBackend();
+      const parent = defineFlow({
+        name: "settles-on-child",
+        version: 1,
+        run: async (ctx) => ctx.invoke(waiter, {}, { onChildFailure: "settle" }),
+      });
+      const { runId, childId, tick } = await parkOnChild(backend, parent);
+      await cancelRun(backend, childId);
+      await tick();
+      expect(await backend.store.loadRunRow(runId)).toMatchObject({
+        status: "done",
+        output: { status: "canceled" },
+      });
+    });
+
+    const wide = (inc: Flow<number, number>) =>
+      defineFlow({
+        name: "wide-chunks",
+        version: 1,
+        run: async (ctx): Promise<readonly number[]> =>
+          ctx.invoke(Array.from({ length: 45 }, (_v, n) => ({ flow: inc, input: n }))),
+      });
+    const inc = defineFlow({
+      name: "inc-chunk",
+      version: 1,
+      run: async (_ctx, n: number): Promise<number> => n + 1,
+    });
+    const secondChunk = (call?: string): boolean => call?.startsWith("invokeAll:1:") ?? false;
+
+    it("a crash right after a spawn chunk commits spawns no child twice", async () => {
+      const real = await makeBackend();
+      let crashed = false;
+      const backend: Backend = {
+        ...real,
+        store: {
+          ...real.store,
+          checkpointStep: async (c, fx) => {
+            const stored = await real.store.checkpointStep(c, fx);
+            if (!crashed && secondChunk(c.call)) {
+              crashed = true;
+              throw new Error("worker died after the commit");
+            }
+            return stored;
+          },
+        },
+      };
+      const parent = wide(inc);
+      const runId = await submit(backend, parent, {});
+      const run = await drive(backend, registry([parent, inc]), runId);
+      expect(crashed).toBe(true);
+      expect(run.output).toEqual(Array.from({ length: 45 }, (_v, n) => n + 1));
+      expect(await backend.store.childrenOf(runId)).toHaveLength(45);
+    });
+
+    it("a parent canceled between spawn chunks leaves no child running", async () => {
+      const real = await makeBackend();
+      const parent = wide(inc);
+      const runId = await submit(real, parent, {});
+      let canceled = false;
+      const backend: Backend = {
+        ...real,
+        store: {
+          ...real.store,
+          checkpointStep: async (c, fx) => {
+            if (!canceled && secondChunk(c.call)) {
+              canceled = true;
+              await cancelRun(real, runId);
+            }
+            return real.store.checkpointStep(c, fx);
+          },
+        },
+      };
+      const flows = registry([parent, inc]);
+      const now = () => new Date("2030-01-01T00:00:00Z");
+      for (let i = 0; i < 10; i++) await tickOnce(backend, flows, { ...base, now });
+      expect(canceled).toBe(true);
+      expect((await backend.store.loadRunRow(runId))?.status).toBe("canceled");
+      const kids = await backend.store.childrenOf(runId);
+      expect(kids.length).toBeGreaterThan(0);
+      expect(kids.every((k) => k.status === "canceled")).toBe(true);
+    });
+
+    it("a child that finishes while its parent is mid-replay still wakes the parent", async () => {
+      const real = await makeBackend();
+      const quick = defineFlow({
+        name: "quick-child",
+        version: 1,
+        run: async (): Promise<number> => 7,
+      });
+      const parent = defineFlow({
+        name: "replaying-parent",
+        version: 1,
+        run: async (ctx): Promise<number> => ctx.invoke(quick, {}),
+      });
+      const flows = registry([parent, quick]);
+      const now = () => new Date("2030-01-01T00:00:00Z");
+      let raced = false;
+      // The parent reads its child as still pending, and the child finishes (waking the leased
+      // parent) before the parent parks — the wake must survive the parent's own ack.
+      const backend: Backend = {
+        ...real,
+        store: {
+          ...real.store,
+          loadRunRow: async (id) => {
+            const row = await real.store.loadRunRow(id);
+            if (!raced && row?.name === "quick-child") {
+              raced = true;
+              await tickOnce(real, flows, { ...base, now, names: ["quick-child"] });
+            }
+            return row;
+          },
+        },
+      };
+      const runId = await submit(backend, parent, {});
+      await tickOnce(backend, flows, { ...base, now, names: ["replaying-parent"] });
+      expect(raced).toBe(true);
+      expect((await real.store.loadRunRow(runId))?.status).toBe("awaiting_child");
+      const run = await drive(real, flows, runId);
+      expect(run).toMatchObject({ status: "done", output: 7 });
     });
 
     it("a re-enqueue with no priority keeps the run's own priority", async () => {

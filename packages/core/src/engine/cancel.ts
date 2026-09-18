@@ -3,12 +3,22 @@ import { isTerminal } from "#status";
 
 /**
  * Cancel a run and cascade to its non-terminal descendants. Cancel is sticky and clears the run's
- * pending timer atomically. In-flight step effects on a worker mid-tick may still land (cooperative
- * cancel) — the run's markRunning guard stops the NEXT dispatch, not the one already executing.
+ * pending timer atomically, and a canceled child wakes the parent waiting on it. In-flight step
+ * effects on a worker mid-tick may still land (cooperative cancel) — the run's markRunning guard
+ * stops the NEXT dispatch, not the one already executing.
  */
 export const cancelRun = async (backend: Backend, runId: string): Promise<void> => {
+  const run = await backend.store.loadRunRow(runId);
   await backend.store.markTerminal(runId, { status: "canceled" }, { cancelTimers: [runId] });
+  if (run?.parentRunId && !isTerminal(run.status)) await wakeParent(backend, run.parentRunId);
   await cancelDescendants(backend, runId);
+};
+
+const wakeParent = async (backend: Backend, parentRunId: string): Promise<void> => {
+  const parent = await backend.store.loadRunRow(parentRunId);
+  if (!parent || isTerminal(parent.status)) return;
+  await backend.store.arriveAtJoin(parentRunId);
+  await backend.queue.enqueue(parentRunId);
 };
 
 /**

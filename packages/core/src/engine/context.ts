@@ -3,9 +3,12 @@ import type { Backend } from "#ports/outbox";
 import type { DeliveredSignal, RunRow, RunSnapshot, RunSpec } from "#types";
 import {
   type AnyFlow,
+  type ChildResult,
+  type ChildResults,
   type Flow,
   type FlowOutputs,
   type InvokeSpec,
+  type InvokeOpts,
   type InvokeSpecFor,
   type SignalMap,
   type SignalName,
@@ -94,18 +97,35 @@ export interface Ctx<S extends SignalMap = SignalMap> {
   /**
    * Spawn `flow(input)` as a child run and return its output. The child is created exactly
    * once (recorded in the step memo); the parent parks until the child completes, then
-   * resumes with the child's output. A child failure surfaces as a thrown error.
+   * resumes with the child's output. A child failure surfaces as a thrown error; pass
+   * `{ onChildFailure: "settle" }` to get the child's {@link ChildResult} instead.
    */
-  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
+  invoke<CI, CO>(
+    flow: Flow<CI, CO, any>,
+    input: CI,
+    opts?: { onChildFailure: "fail" },
+  ): Promise<CO>;
+  invoke<CI, CO>(
+    flow: Flow<CI, CO, any>,
+    input: CI,
+    opts: { onChildFailure: "settle" },
+  ): Promise<ChildResult<CO>>;
 
   /**
    * Fan out: spawn every child in parallel and join, resolving with the outputs in order. Fast-fail
    * — if any child fails (or is canceled), the parent fails and its still-running siblings are
-   * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
+   * cancelled (structured concurrency). With `{ onChildFailure: "settle" }` it instead waits for
+   * every child and resolves with each one's {@link ChildResult}. Children spawn in chunks, each an
+   * atomic memoized checkpoint.
    */
-  invoke<const F extends readonly AnyFlow[]>(specs: {
-    readonly [K in keyof F]: InvokeSpecFor<F[K]>;
-  }): Promise<FlowOutputs<F>>;
+  invoke<const F extends readonly AnyFlow[]>(
+    specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]> },
+    opts?: { onChildFailure: "fail" },
+  ): Promise<FlowOutputs<F>>;
+  invoke<const F extends readonly AnyFlow[]>(
+    specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]> },
+    opts: { onChildFailure: "settle" },
+  ): Promise<ChildResults<F>>;
 
   /**
    * Durably wait for an external signal named `name` and return its payload. If a matching
@@ -149,12 +169,6 @@ const MAX_DEPTH = 32;
 // must not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
 // atomic-write budget; each backend guards its own limit at checkpoint time.
 const FAN_OUT_CHUNK = 40;
-
-/** A child run's join state: `done` once it succeeded, with its output. */
-interface ChildOutcome {
-  done: boolean;
-  output?: unknown;
-}
 
 /** Anything carrying a value this run already wrote to its durable log, or a child run's output. */
 interface Logged {
@@ -242,15 +256,7 @@ const runWithPolicy = async <T>(
   }
 };
 
-/**
- * Records the suspends a run's calls threw, so a swallowed suspend re-propagates. The executor
- * owns the holder and re-throws `signal` if the flow body returns with one still pending (a `catch`
- * that ate the suspend and never issued another `ctx.*` call). Concurrent branches can each
- * suspend; `wakeAt` is the earliest deadline among them, so none of their timers is lost.
- * `inflight` holds every ctx call not yet settled: the executor waits for them before it decides,
- * because `Promise.all` rejects on the first suspend while its siblings are still writing.
- * @internal
- */
+/** @internal */
 export interface SuspendHolder {
   signal?: ControlSignal;
   wakeAt?: Date;
@@ -299,11 +305,8 @@ export const makeCtx = ({
   const traceId = obs.tracer ? traceIdOf(runId) : "";
   const consumed = new Set<string>();
 
-  // Record a suspend's control signal in the shared holder and hand it back to `throw`, so every
-  // suspend path records-then-throws through one idiom — the executor re-throws a recorded-but-
-  // swallowed signal, and record + throw can never diverge.
-  // A suspend armed in the current synchronous turn doesn't stop siblings issued in that same turn
-  // (`Promise.all([...])`) from starting; only a call made after the turn ends has seen it swallowed.
+  // Siblings issued in the same synchronous turn (`Promise.all`) still start; a call made after the
+  // turn means the suspend was swallowed, so memoAt re-throws it.
   let armedThisTurn = false;
   const arm = (sig: ControlSignal): ControlSignal => {
     if (!suspend.signal) {
@@ -349,18 +352,29 @@ export const makeCtx = ({
     }
   };
 
-  // A child's join outcome. Throws StepFailedError on a failed/canceled child (fast-fail); `done`
-  // false means the child is still running (or not yet visible), so the caller parks.
-  const childOutcome = (row: RunRow | undefined): ChildOutcome => {
-    if (!row) return { done: false };
-    if (row.status === "failed" || row.status === "canceled") {
+  // undefined while the child still runs; without `settle` a failed or canceled child throws.
+  const childResult = (
+    row: RunRow | undefined,
+    settle: boolean,
+  ): ChildResult<unknown> | undefined => {
+    if (row?.status === "done") return { status: "done", output: row.output };
+    if (row?.status !== "failed" && row?.status !== "canceled") return undefined;
+    if (!settle) {
       throw new StepFailedError(
         row.error?.code ?? "CHILD_FAILED",
         row.error?.message ?? "child did not complete",
       );
     }
-    return row.status === "done" ? { done: true, output: row.output } : { done: false };
+    if (row.status === "canceled") return { status: "canceled" };
+    return {
+      status: "failed",
+      error: row.error ?? { code: "CHILD_FAILED", message: "child did not complete" },
+    };
   };
+
+  const outputOf = (result: ChildResult<unknown>): Logged => ({
+    result: result.status === "done" ? result.output : undefined,
+  });
 
   const pendingFor = (name: string): DeliveredSignal | undefined =>
     snap.signals.find((s) => s.name === name && !consumed.has(s.id));
@@ -455,7 +469,7 @@ export const makeCtx = ({
     throw arm(new SleepSignal(at));
   };
 
-  const invokeOne = async <CO, I>(flow: AnyFlow, input: I): Promise<CO> => {
+  const invokeOne = async <I>(flow: AnyFlow, input: I, settle: boolean): Promise<Logged> => {
     guardDepth();
     const call = `invoke:${flowKey(flow.name, flow.version)}`;
     const { key, memo } = memoAt(call);
@@ -475,14 +489,12 @@ export const makeCtx = ({
       );
       childId = String(stored.result);
     }
-    const outcome = childOutcome(await backend.store.loadRunRow(childId));
-    if (!outcome.done) throw arm(new AwaitChildSignal(childId));
-    return fromLog<CO>({ result: outcome.output });
+    const result = childResult(await backend.store.loadRunRow(childId), settle);
+    if (!result) throw arm(new AwaitChildSignal(childId));
+    return settle ? { result } : outputOf(result);
   };
 
-  const invokeMany = async <const F extends readonly AnyFlow[]>(
-    specs: readonly InvokeSpec[],
-  ): Promise<FlowOutputs<F>> => {
+  const invokeMany = async (specs: readonly InvokeSpec[], settle: boolean): Promise<Logged> => {
     guardDepth();
     const cap = maxFanOut ?? MAX_FAN_OUT;
     if (specs.length > cap) {
@@ -508,33 +520,73 @@ export const makeCtx = ({
       childIds.push(...childIdsOf(stored));
       await keepalive?.renew();
     }
-    const joinCall = `invokeAllJoin:${specs.length}`;
+    // Per-mode call: the memo holds outputs or ChildResults, so a mode switch must read as drift.
+    const joinCall = `${settle ? "invokeAllSettled" : "invokeAllJoin"}:${specs.length}`;
     const { key: joinKey, memo: joinMemo } = memoAt(joinCall);
-    if (joinMemo) return fromLog<FlowOutputs<F>>(joinMemo);
-    const outcomes = (await backend.store.loadRunRows(childIds)).map(childOutcome);
-    if (outcomes.some((o) => !o.done)) throw arm(new AwaitChildSignal(childIds[0] ?? runId));
-    const stored = await backend.store.checkpointStep({
+    if (joinMemo) return joinMemo;
+    const rows = await backend.store.loadRunRows(childIds);
+    const results: ChildResult<unknown>[] = [];
+    for (const row of rows) {
+      const result = childResult(row, settle);
+      if (!result) throw arm(new AwaitChildSignal(childIds[0] ?? runId));
+      results.push(result);
+    }
+    return backend.store.checkpointStep({
       runId,
       cursorKey: joinKey,
       status: "ok",
-      result: outcomes.map((o) => o.output),
+      result: settle ? results : results.map((r) => outputOf(r).result),
       attempts: attempt,
       call: joinCall,
     });
-    return fromLog<FlowOutputs<F>>(stored);
   };
 
-  function invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
-  function invoke<const F extends readonly AnyFlow[]>(specs: {
-    readonly [K in keyof F]: InvokeSpecFor<F[K]>;
-  }): Promise<FlowOutputs<F>>;
+  const settles = <V>(opts: V): boolean =>
+    opts instanceof Object && "onChildFailure" in opts && opts.onChildFailure === "settle";
+
+  function invoke<CI, CO>(
+    flow: Flow<CI, CO, any>,
+    input: CI,
+    opts?: { onChildFailure: "fail" },
+  ): Promise<CO>;
+  function invoke<CI, CO>(
+    flow: Flow<CI, CO, any>,
+    input: CI,
+    opts: { onChildFailure: "settle" },
+  ): Promise<ChildResult<CO>>;
+  function invoke<const F extends readonly AnyFlow[]>(
+    specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]> },
+    opts?: { onChildFailure: "fail" },
+  ): Promise<FlowOutputs<F>>;
+  function invoke<const F extends readonly AnyFlow[]>(
+    specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]> },
+    opts: { onChildFailure: "settle" },
+  ): Promise<ChildResults<F>>;
   function invoke<CI, CO>(
     target: Flow<CI, CO, any> | readonly InvokeSpec[],
-    input?: CI,
-  ): Promise<CO> | Promise<FlowOutputs<readonly AnyFlow[]>> {
-    return "run" in target
-      ? track(invokeOne<CO, CI | undefined>(target, input))
-      : track(invokeMany(target));
+    second?: CI | InvokeOpts,
+    third?: InvokeOpts,
+  ):
+    | Promise<CO>
+    | Promise<ChildResult<CO>>
+    | Promise<FlowOutputs<readonly AnyFlow[]>>
+    | Promise<ChildResults<readonly AnyFlow[]>> {
+    if ("run" in target) {
+      if (settles(third)) {
+        return track<ChildResult<CO>>(
+          invokeOne(target, second, true).then(fromLog<ChildResult<CO>>),
+        );
+      }
+      return track<CO>(invokeOne(target, second, false).then(fromLog<CO>));
+    }
+    if (settles(second)) {
+      return track<ChildResults<readonly AnyFlow[]>>(
+        invokeMany(target, true).then(fromLog<ChildResults<readonly AnyFlow[]>>),
+      );
+    }
+    return track<FlowOutputs<readonly AnyFlow[]>>(
+      invokeMany(target, false).then(fromLog<FlowOutputs<readonly AnyFlow[]>>),
+    );
   }
 
   // Unbounded wait: park until the signal arrives, then return its payload.

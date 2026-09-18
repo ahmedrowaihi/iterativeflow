@@ -104,7 +104,11 @@ export const createTestHarness = (
     const { status } = snap.run;
     if (status === "awaiting_signal")
       return `run ${runId} is awaiting a signal with no pending timer — deliver it with engine.signal(handle, name, payload)`;
-    if (status === "awaiting_child") return `run ${runId} is awaiting a child that never settled`;
+    if (status === "awaiting_child") {
+      const live = (await backend.store.childrenOf(runId)).filter((c) => !isTerminal(c.status));
+      const blocking = live.map((c) => `${c.id} (${c.name} v${c.version}, ${c.status})`).join(", ");
+      return `run ${runId} is awaiting children that never settled: ${blocking || "none found"}`;
+    }
     if (status === "parked")
       return `run ${runId} is parked: no registered flow matches its name and version, or its body drifted — register the flow the run was started with`;
     return `run ${runId} is ${status} with nothing scheduled to wake it`;

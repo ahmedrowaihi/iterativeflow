@@ -293,7 +293,7 @@ export const runTick = async (
   // `snap` was loaded after the claim, so it already holds every durable step + signal; the
   // exclusive lease means nothing else writes them mid-tick. No second load needed.
   const suspendState: SuspendHolder = { inflight: new Set() };
-  // A branch still running after a sibling settled can issue further calls; wait for those too.
+  // `Promise.all` rejects on the first suspend while sibling calls are still writing.
   const settleInflight = async (): Promise<void> => {
     while (suspendState.inflight.size > 0) await Promise.allSettled(suspendState.inflight);
   };

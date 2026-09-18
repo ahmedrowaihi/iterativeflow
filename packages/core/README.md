@@ -64,6 +64,34 @@ Inside `run`, `ctx` is the durable surface. Every call is a checkpoint:
 Child flows form a tree: when a run terminates without success, cancellation
 cascades to its descendants (structured concurrency).
 
+### Composing flows
+
+Pick the lightest tool that does the job:
+
+- **Reuse a sequence of steps:** a plain function that takes `ctx`. It runs in the
+  caller's run, with nothing extra stored.
+
+  ```ts
+  const charge = async (ctx: Ctx, order: Order) => {
+    const intent = await ctx.step("create-intent", () => stripe.createIntent(order));
+    return ctx.step("confirm", () => stripe.confirm(intent.id));
+  };
+  ```
+
+- **Run independent calls at the same time:** `Promise.all` over steps. They run
+  in the same worker.
+- **Give a unit of work its own run:** `ctx.invoke`. The child has its own retries,
+  version, cancel and dashboard entry, and may run on another worker. Use it for
+  per-item work in a batch, or for work long enough to track on its own.
+
+By default a failed child fails the parent and cancels its siblings. To keep the
+children that succeeded, settle instead:
+
+```ts
+const results = await ctx.invoke(items, { onChildFailure: "settle" });
+// [{ status: "done", output }, { status: "failed", error }, { status: "canceled" }, …]
+```
+
 ### Step policy — retries, timeout, fail-fast
 
 `ctx.step(label, fn, policy)` takes an optional `StepPolicy`:

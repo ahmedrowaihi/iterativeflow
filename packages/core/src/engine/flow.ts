@@ -1,4 +1,4 @@
-import type { DriftPolicy } from "#types";
+import type { DriftPolicy, FlowError } from "#types";
 import type { Ctx } from "#engine/context";
 
 /** The Standard Schema calling surface (spec v1) — zod/valibot/arktype schemas all satisfy it. */
@@ -155,6 +155,26 @@ export type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? { flow: F; i
 export type FlowOutputs<F extends readonly AnyFlow[]> = {
   readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never;
 };
+
+/** How one child of `ctx.invoke(…, { onChildFailure: "settle" })` ended. */
+export type ChildResult<O> =
+  | { status: "done"; output: O }
+  | { status: "failed"; error: FlowError }
+  | { status: "canceled" };
+
+/** The tuple a settled fan-out over flows `F` resolves to — each child's {@link ChildResult}, in order. */
+export type ChildResults<F extends readonly AnyFlow[]> = {
+  readonly [K in keyof F]: ChildResult<F[K] extends Flow<any, infer CO, any> ? CO : never>;
+};
+
+/**
+ * What `ctx.invoke` does when a child fails or is canceled. `fail` (the default) fails the parent at
+ * once and cancels the children still running. `settle` waits for every child and returns each
+ * one's {@link ChildResult}, like `Promise.allSettled`, so a batch can keep the items that worked.
+ */
+export interface InvokeOpts {
+  onChildFailure: "fail" | "settle";
+}
 
 /** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
 export type FlowRegistry = ReadonlyMap<string, AnyFlow>;

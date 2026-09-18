@@ -241,15 +241,28 @@ interface Ctx<S extends SignalMap = SignalMap> {
   /**
    * Spawn `flow(input)` as a child run and return its output. The child is created exactly
    * once (recorded in the step memo); the parent parks until the child completes, then
-   * resumes with the child's output. A child failure surfaces as a thrown error.
+   * resumes with the child's output. A child failure surfaces as a thrown error; pass
+   * `{ onChildFailure: "settle" }` to get the child's {@link ChildResult} instead.
    */
-  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI): Promise<CO>;
+  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI, opts?: {
+    onChildFailure: "fail";
+  }): Promise<CO>;
+  invoke<CI, CO>(flow: Flow<CI, CO, any>, input: CI, opts: {
+    onChildFailure: "settle";
+  }): Promise<ChildResult<CO>>;
   /**
    * Fan out: spawn every child in parallel and join, resolving with the outputs in order. Fast-fail
    * — if any child fails (or is canceled), the parent fails and its still-running siblings are
-   * cancelled (structured concurrency). Children spawn in chunks, each an atomic memoized checkpoint.
+   * cancelled (structured concurrency). With `{ onChildFailure: "settle" }` it instead waits for
+   * every child and resolves with each one's {@link ChildResult}. Children spawn in chunks, each an
+   * atomic memoized checkpoint.
    */
-  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }): Promise<FlowOutputs<F>>;
+  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }, opts?: {
+    onChildFailure: "fail";
+  }): Promise<FlowOutputs<F>>;
+  invoke<const F extends readonly AnyFlow[]>(specs: { readonly [K in keyof F]: InvokeSpecFor<F[K]>; }, opts: {
+    onChildFailure: "settle";
+  }): Promise<ChildResults<F>>;
   /**
    * Durably wait for an external signal named `name` and return its payload. If a matching
    * signal is already in the inbox it is consumed immediately; otherwise the run parks until
@@ -400,6 +413,26 @@ type InvokeSpecFor<F> = F extends Flow<infer CI, any, any> ? {
 } : never;
 /** The tuple of child outputs a fan-out over flows `F` resolves to — each flow's output, in order. */
 type FlowOutputs<F extends readonly AnyFlow[]> = { readonly [K in keyof F]: F[K] extends Flow<any, infer CO, any> ? CO : never; };
+/** How one child of `ctx.invoke(…, { onChildFailure: "settle" })` ended. */
+type ChildResult<O> = {
+  status: "done";
+  output: O;
+} | {
+  status: "failed";
+  error: FlowError;
+} | {
+  status: "canceled";
+};
+/** The tuple a settled fan-out over flows `F` resolves to — each child's {@link ChildResult}, in order. */
+type ChildResults<F extends readonly AnyFlow[]> = { readonly [K in keyof F]: ChildResult<F[K] extends Flow<any, infer CO, any> ? CO : never>; };
+/**
+ * What `ctx.invoke` does when a child fails or is canceled. `fail` (the default) fails the parent at
+ * once and cancels the children still running. `settle` waits for every child and returns each
+ * one's {@link ChildResult}, like `Promise.allSettled`, so a batch can keep the items that worked.
+ */
+interface InvokeOpts {
+  onChildFailure: "fail" | "settle";
+}
 /** A registry the executor resolves a run's `(name, version)` against to its {@link Flow}. */
 type FlowRegistry = ReadonlyMap<string, AnyFlow>;
 /** Build a {@link FlowRegistry} from a list of flows. */
@@ -805,7 +838,7 @@ interface Engine<N extends string = string> {
 }
 declare const createEngine: <const F extends readonly AnyFlow[]>(backend: Backend, flows: F, opts?: EngineOpts) => Engine<F[number]["name"]>;
 //#endregion
-export { validateInput as $, RetryPolicy as A, FlowPolicy as B, submit as C, cronTag as D, CronDef as E, runTick as F, NoSignals as G, InputSchema as H, AnyFlow as I, SignalSchema as J, OutputSchema as K, Contract as L, TickResult as M, TickStatus as N, registerCron as O, defaultRetry as P, registry as Q, Flow as R, signalRun as S, tickOnce as T, InvokeSpec as U, FlowRegistry as V, InvokeSpecFor as W, defineContract as X, SignalSchemas as Y, defineFlow as Z, purge as _, RunLoopOpts as a, systemClock as at, retryRun as b, ResultOpts as c, SubmitOpts as d, validateSignal as et, SubmitSpec as f, prune as g, drainTimers as h, ResultWait as i, StepPolicy as it, TickOpts as j, runDueCrons as k, RunHandle as l, TickOnceOpts as m, EngineOpts as n, Ctx as nt, createEngine as o, SweepResult as p, SignalMap as q, Liveness as r, StepArg as rt, OnDuplicate as s, Engine as t, Clock as tt, RunResult as u, reconcile as v, submitMany as w, serverlessTick as x, result as y, FlowOutputs as z };
+export { defineContract as $, RetryPolicy as A, Flow as B, submit as C, cronTag as D, CronDef as E, runTick as F, InvokeOpts as G, FlowPolicy as H, AnyFlow as I, NoSignals as J, InvokeSpec as K, ChildResult as L, TickResult as M, TickStatus as N, registerCron as O, defaultRetry as P, SignalSchemas as Q, ChildResults as R, signalRun as S, tickOnce as T, FlowRegistry as U, FlowOutputs as V, InputSchema as W, SignalMap as X, OutputSchema as Y, SignalSchema as Z, purge as _, RunLoopOpts as a, Ctx as at, retryRun as b, ResultOpts as c, systemClock as ct, SubmitOpts as d, defineFlow as et, SubmitSpec as f, prune as g, drainTimers as h, ResultWait as i, Clock as it, TickOpts as j, runDueCrons as k, RunHandle as l, TickOnceOpts as m, EngineOpts as n, validateInput as nt, createEngine as o, StepArg as ot, SweepResult as p, InvokeSpecFor as q, Liveness as r, validateSignal as rt, OnDuplicate as s, StepPolicy as st, Engine as t, registry as tt, RunResult as u, reconcile as v, submitMany as w, serverlessTick as x, result as y, Contract as z };
 ```
 
 ## id-<hash>.d.mts
@@ -1507,7 +1540,7 @@ export { TerminalStatus as $, CRON_OVERLAPS as A, RunFilter as B, EnqueueOpts as
 ```ts
 import { $ as TerminalStatus, B as RunFilter, D as QueueDepth, F as DriftPolicy, G as RunStatus, H as RunRow, I as FlowError, J as StepOutcome, L as Page, P as DeliveredSignal, R as PurgeFilter, U as RunSnapshot, V as RunPage, Y as StepStatus, a as EventSink, c as Metrics, d as Tracer, h as Backend, i as EventLevel, l as ObserveOpts, n as newId, o as EventType, s as FlowEvent, t as IdGen, u as Span, z as RUN_STATUSES } from "./id-<hash>.mjs";
 import { i as isRunStatus } from "./status-<hash>.mjs";
-import { $ as validateInput, A as RetryPolicy, B as FlowPolicy, C as submit, D as cronTag, E as CronDef, F as runTick, G as NoSignals, H as InputSchema, I as AnyFlow, J as SignalSchema, K as OutputSchema, L as Contract, M as TickResult, N as TickStatus, O as registerCron, P as defaultRetry, Q as registry, R as Flow, S as signalRun, T as tickOnce, U as InvokeSpec, V as FlowRegistry, W as InvokeSpecFor, X as defineContract, Y as SignalSchemas, Z as defineFlow, _ as purge, a as RunLoopOpts, at as systemClock, b as retryRun, c as ResultOpts, d as SubmitOpts, et as validateSignal, f as SubmitSpec, g as prune, h as drainTimers, i as ResultWait, it as StepPolicy, j as TickOpts, k as runDueCrons, l as RunHandle, m as TickOnceOpts, n as EngineOpts, nt as Ctx, o as createEngine, p as SweepResult, q as SignalMap, r as Liveness, rt as StepArg, s as OnDuplicate, t as Engine, tt as Clock, u as RunResult, v as reconcile, w as submitMany, x as serverlessTick, y as result, z as FlowOutputs } from "./engine-<hash>.mjs";
+import { $ as defineContract, A as RetryPolicy, B as Flow, C as submit, D as cronTag, E as CronDef, F as runTick, G as InvokeOpts, H as FlowPolicy, I as AnyFlow, J as NoSignals, K as InvokeSpec, L as ChildResult, M as TickResult, N as TickStatus, O as registerCron, P as defaultRetry, Q as SignalSchemas, R as ChildResults, S as signalRun, T as tickOnce, U as FlowRegistry, V as FlowOutputs, W as InputSchema, X as SignalMap, Y as OutputSchema, Z as SignalSchema, _ as purge, a as RunLoopOpts, at as Ctx, b as retryRun, c as ResultOpts, ct as systemClock, d as SubmitOpts, et as defineFlow, f as SubmitSpec, g as prune, h as drainTimers, i as ResultWait, it as Clock, j as TickOpts, k as runDueCrons, l as RunHandle, m as TickOnceOpts, n as EngineOpts, nt as validateInput, o as createEngine, ot as StepArg, p as SweepResult, q as InvokeSpecFor, r as Liveness, rt as validateSignal, s as OnDuplicate, st as StepPolicy, t as Engine, tt as registry, u as RunResult, v as reconcile, w as submitMany, x as serverlessTick, y as result, z as Contract } from "./engine-<hash>.mjs";
 //#region src/engine/signals.d.ts
 /**
  * Control-flow signals thrown by the context to unwind a flow invocation without it being
@@ -1577,8 +1610,9 @@ declare class PollTimeoutError extends Error {
 //#region src/engine/cancel.d.ts
 /**
  * Cancel a run and cascade to its non-terminal descendants. Cancel is sticky and clears the run's
- * pending timer atomically. In-flight step effects on a worker mid-tick may still land (cooperative
- * cancel) — the run's markRunning guard stops the NEXT dispatch, not the one already executing.
+ * pending timer atomically, and a canceled child wakes the parent waiting on it. In-flight step
+ * effects on a worker mid-tick may still land (cooperative cancel) — the run's markRunning guard
+ * stops the NEXT dispatch, not the one already executing.
  */
 declare const cancelRun: (backend: Backend, runId: string) => Promise<void>;
 //#endregion
@@ -1592,7 +1626,7 @@ declare const cancelRun: (backend: Backend, runId: string) => Promise<void>;
 declare const parseCron: (expr: string) => void;
 declare const nextCronAfter: (expr: string, from: Date) => Date;
 //#endregion
-export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type OutputSchema, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type ResultOpts, type ResultWait, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
+export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type ChildResult, type ChildResults, type Clock, type Contract, type ControlSignal, type CronDef, type Ctx, type DeliveredSignal, type DriftPolicy, DuplicateRunError, type Engine, type EngineOpts, type EventLevel, type EventSink, type EventType, type Flow, FlowDriftError, type FlowError, type FlowEvent, type FlowOutputs, type FlowPolicy, type FlowRegistry, type IdGen, type InputSchema, type InvokeOpts, type InvokeSpec, type InvokeSpecFor, type Liveness, type Metrics, type NoSignals, type ObserveOpts, type OnDuplicate, type OutputSchema, type Page, PollTimeoutError, type PurgeFilter, type QueueDepth, RUN_STATUSES, type ResultOpts, type ResultWait, type RetryPolicy, type RunFilter, type RunHandle, type RunLoopOpts, type RunPage, type RunResult, type RunRow, type RunSnapshot, type RunStatus, type SignalMap, type SignalSchema, type SignalSchemas, SleepSignal, type Span, type StepArg, StepFailedError, type StepOutcome, type StepPolicy, type StepStatus, StepTimeoutError, type SubmitOpts, type SubmitSpec, type SweepResult, type TerminalStatus, type TickOnceOpts, type TickOpts, type TickResult, type TickStatus, type Tracer, cancelRun, createEngine, cronTag, defaultRetry, defineContract, defineFlow, drainTimers, isControlSignal, isRunStatus, newId, nextCronAfter, parseCron, prune, purge, reconcile, registerCron, registry, result, retryRun, runDueCrons, runTick, serverlessTick, signalRun, submit, submitMany, systemClock, tickOnce, validateInput, validateSignal };
 ```
 
 ## status-<hash>.d.mts
@@ -1637,7 +1671,7 @@ export { isTerminal as a, isRunStatus as i, NON_SUCCESS_TERMINAL_STATUSES as n, 
 
 ```ts
 import { h as Backend } from "./id-<hash>.mjs";
-import { I as AnyFlow, K as OutputSchema, l as RunHandle, n as EngineOpts, t as Engine, u as RunResult } from "./engine-<hash>.mjs";
+import { I as AnyFlow, Y as OutputSchema, l as RunHandle, n as EngineOpts, t as Engine, u as RunResult } from "./engine-<hash>.mjs";
 //#region src/testing.d.ts
 /** A virtual-time engine plus the controls to move its clock. Build one with {@link createTestHarness}. */
 interface TestHarness {

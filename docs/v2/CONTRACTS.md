@@ -117,7 +117,8 @@ const [invoice, shipment] = await ctx.invoke([
 **Fast-fail + cascade.** If any child fails (or is cancelled), the `await` throws immediately and the
 parent's still-running siblings are **cancelled** — a run's children never outlive its non-success
 termination. That cascade is first-class in all cases: an explicit `cancelRun`, _and_ a plain failure,
-cancel every non-terminal descendant. Children spawn in chunks, each an atomic memoized checkpoint, so
+cancel every non-terminal descendant. Pass `{ onChildFailure: "settle" }` to wait for every child
+instead and get each one's result (`done` with its output, `failed` with its error, or `canceled`). Children spawn in chunks, each an atomic memoized checkpoint, so
 a fan-out is crash-safe on every backend.
 
 ## Idempotency policy

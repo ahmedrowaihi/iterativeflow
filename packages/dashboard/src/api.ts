@@ -79,6 +79,12 @@ export const createDashboard = (
         run: snap.run,
         steps: [...snap.steps].map(([cursorKey, outcome]) => ({ cursorKey, ...outcome })),
         signals: snap.signals,
+        children: (await engine.backend.store.childrenOf(id)).map((c) => ({
+          id: c.id,
+          name: c.name,
+          version: c.version,
+          status: c.status,
+        })),
         events: opts.events ? await opts.events(id) : [],
       });
     }

@@ -86,18 +86,22 @@ async function openRun(id){
   const dr = document.getElementById("drawer");
   const steps = d.steps.map(s=>'<li><code>'+esc(s.cursorKey)+'</code> '+badge(s.status)+
     ' <span style="color:var(--mut)">'+esc(JSON.stringify(s.result ?? s.error ?? "")).slice(0,80)+'</span></li>').join("");
+  const children = d.children.map(c=>'<li><a href="#" class="child" data-id="'+esc(c.id)+'"><code>'+esc(c.id.slice(0,8))+'</code></a> '+
+    esc(c.name)+' v'+c.version+' '+badge(c.status)+'</li>').join("");
   const events = d.events.map(e=>'<li><code>'+esc(new Date(e.at).toISOString().slice(11,19))+'</code> '+esc(e.type)+'</li>').join("");
   dr.innerHTML =
     '<div class="row"><h2>'+esc(d.run.name)+' v'+d.run.version+'</h2><button class="x">close</button></div>'+
     '<div class="kv"><div>id</div><div><code>'+esc(d.run.id)+'</code></div>'+
     '<div>status</div><div>'+badge(d.run.status)+'</div>'+
     '<div>attempts</div><div>'+d.run.attempts+'</div>'+
-    (d.run.tags?.length?'<div>tags</div><div>'+esc(d.run.tags.join(", "))+'</div>':'')+'</div>'+
+    (d.run.tags?.length?'<div>tags</div><div>'+esc(d.run.tags.join(", "))+'</div>':'')+
+    (d.run.parentRunId?'<div>parent</div><div><a href="#" class="child" data-id="'+esc(d.run.parentRunId)+'"><code>'+esc(d.run.parentRunId)+'</code></a></div>':'')+'</div>'+
     '<div class="row">'+
       '<button class="act" id="do-retry">Retry</button>'+
       '<button id="do-cancel">Cancel</button>'+
     '</div>'+
     (steps?'<h2>Steps</h2><ul class="timeline">'+steps+'</ul>':'')+
+    (children?'<h2>Children</h2><ul class="timeline">'+children+'</ul>':'')+
     (d.run.input!==undefined?'<h2>Input</h2><pre>'+esc(JSON.stringify(d.run.input,null,2))+'</pre>':'')+
     (d.run.output!==undefined?'<h2>Output</h2><pre>'+esc(JSON.stringify(d.run.output,null,2))+'</pre>':'')+
     (d.run.error?'<h2>Error</h2><pre>'+esc(JSON.stringify(d.run.error,null,2))+'</pre>':'')+
@@ -106,6 +110,8 @@ async function openRun(id){
   dr.querySelector(".x").onclick = closeRun;
   dr.querySelector("#do-retry").onclick = () => act(id,"retry");
   dr.querySelector("#do-cancel").onclick = () => act(id,"cancel");
+  for (const a of dr.querySelectorAll("a.child"))
+    a.onclick = (e) => { e.preventDefault(); openRun(a.dataset.id); };
   dr.classList.add("open");
 }
 function closeRun(){ document.getElementById("drawer").classList.remove("open"); }
