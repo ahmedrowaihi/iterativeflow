@@ -107,6 +107,10 @@ await ctx.step("charge", chargeCard, {
 });
 ```
 
+A timeout abandons `fn`, it does not stop it: unless `fn` passes its `AbortSignal` to the client, the
+timed-out attempt keeps running while the retry starts. So a policy with both `timeoutMs` and
+`retries` must set `retryDelayMs`. It's a compile error otherwise, and `0` explicitly accepts the overlap.
+
 `classify` is how you make a 4xx/validation error stop retrying while a 5xx/timeout keeps retrying —
 no need to hand-roll a wrapper that re-throws as a terminal error. For Postgres,
 `@iterativeflow/postgres` ships a ready preset: `classify: pgClassify` fails fast on the deterministic

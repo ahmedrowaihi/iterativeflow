@@ -96,6 +96,24 @@ defineFlow({
   },
 });
 
+defineFlow({
+  name: "step-policy-strict",
+  version: 1,
+  run: async (ctx) => {
+    await ctx.step("retries-only", () => 1, { retries: 3 });
+    await ctx.step("timeout-only", () => 1, { timeoutMs: 1_000 });
+    await ctx.step("timeout-no-retry", () => 1, { timeoutMs: 1_000, retries: 0 });
+    await ctx.step("timeout-retry-spaced", () => 1, {
+      timeoutMs: 1_000,
+      retries: 3,
+      retryDelayMs: 0,
+    });
+    // @ts-expect-error a retry after a timeout overlaps the abandoned attempt, so retryDelayMs is required
+    await ctx.step("timeout-retry-unspaced", () => 1, { timeoutMs: 1_000, retries: 3 });
+    return 0;
+  },
+});
+
 describe("typed contract", () => {
   it("threads output type through submit → result and payload type through signal", async () => {
     const backend = createMemoryBackend();

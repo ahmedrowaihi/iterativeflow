@@ -177,19 +177,20 @@ import { B as RunFilter, C as EnqueueOpts, D as QueueDepth, F as DriftPolicy, G 
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
-  /** Aborts when the step times out or its final in-invocation attempt fails. Wire into fetch/etc. */
+  /** Aborts when this attempt times out or throws; each attempt gets a fresh one. Wire into fetch/etc. */
   signal: AbortSignal;
   /** 1-indexed in-invocation attempt number. */
   attempt: number;
 }
-/** Per-step execution policy. Retries and timeout are within-invocation (fast transient recovery). */
-interface StepPolicy {
+interface StepPolicyFields {
   /** Extra in-invocation attempts on throw before the step's error propagates. Default 0. */
   retries?: number;
   /** Delay between those in-invocation retries. Blocks the worker, so keep it small; for long
-   *  durable backoff, let the step throw and use run-level retry. Default 0. */
+   *  durable backoff, let the step throw and use run-level retry. Default 0, but required when
+   *  `timeoutMs` and `retries` are both set. */
   retryDelayMs?: number;
   /** Reject the step's `fn` if it runs longer than this (and abort its signal). No timeout by default.
+   *  A timeout abandons `fn`, it does not stop it: work that ignores the signal keeps running.
    *  Declaring it also holds the run's lease open while the step runs, so a step longer than
    *  `leaseMs` is not re-claimed mid-flight; without it, one that is runs again on another worker. */
   timeoutMs?: number;
@@ -201,6 +202,20 @@ interface StepPolicy {
    */
   classify?: (cause: unknown, attempt: number) => "transient" | "permanent";
 }
+/**
+ * Per-step execution policy. Retries and timeout are within-invocation (fast transient recovery).
+ *
+ * With both `timeoutMs` and `retries`, `retryDelayMs` is required: the next attempt starts while
+ * the timed-out one may still be running, so the policy must say how far apart they start. Pass
+ * `0` to accept overlapping attempts; honour `StepArg.signal` in `fn` to stop the abandoned one.
+ */
+type StepPolicy = StepPolicyFields & ({
+  timeoutMs?: undefined;
+} | {
+  retries?: 0;
+} | {
+  retryDelayMs: number;
+});
 /** The result of a `ctx.signal(name, { timeoutMs })` await: the delivered payload, or a timeout. */
 type SignalOutcome<T> = {
   received: true;
