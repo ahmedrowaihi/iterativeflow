@@ -94,7 +94,7 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       const q = await makeQueue();
       await q.enqueue("r1");
       const [stale] = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      await q.claim({ limit: 10, leaseMs: 1000, now: at(1001) }); // re-claim
+      await q.claim({ limit: 10, leaseMs: 1000, now: at(1001) });
       await q.ack(stale, { now: at(1002) }); // stale token — must not remove
       const still = await q.claim({ limit: 10, leaseMs: 1000, now: at(2002) });
       expect(still.map((l) => l.runId)).toEqual(["r1"]);
@@ -107,7 +107,7 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       await q.enqueue("r1"); // a child-wake / postSignal bumps the version while we hold the lease
       await q.ack(lease, { now: at(1) }); // version changed → must NOT delete
       const again = await q.claim({ limit: 10, leaseMs: 1000, now: at(2) });
-      expect(again.map((l) => l.runId)).toEqual(["r1"]); // still there, immediately re-claimable
+      expect(again.map((l) => l.runId)).toEqual(["r1"]);
     });
 
     it("an expired ack is a no-op — an expired owner can't delete a re-claimable run", async () => {
@@ -130,8 +130,8 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       const q = await makeQueue();
       await q.enqueue("r1");
       await q.claim({ limit: 10, leaseMs: 1000, now: at(0) }); // leased until at(1000)
-      await q.enqueue("r1", { priority: 1 }); // re-enqueue while leased
-      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(500) })).toEqual([]); // still held
+      await q.enqueue("r1", { priority: 1 });
+      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(500) })).toEqual([]);
     });
 
     it("claim honours the batch limit", async () => {
@@ -191,16 +191,19 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(0) })).toEqual([]);
     });
 
-    it("enqueueMany collapses duplicate runIds into one upsert, bumping version once", async () => {
+    it("enqueueMany collapses duplicate runIds into one upsert — the last one's priority wins", async () => {
       const q = await makeQueue();
+      await q.enqueue("mid", { priority: 5 });
       await q.enqueueMany([
         { runId: "r1", opts: { priority: 9 } },
         { runId: "r1", opts: { priority: 2 } },
       ]);
-      const leases = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      expect(leases.map((l) => l.runId)).toEqual(["r1"]); // one job, not two
+      const [first] = await q.claim({ limit: 1, leaseMs: 1000, now: at(0) });
+      expect(first.runId).toBe("r1");
       // Exactly one bump, so a backend cannot quietly apply duplicates as N upserts.
-      expect(leases[0].version).toBe(1);
+      expect(first.version).toBe(1);
+      const rest = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
+      expect(rest.map((l) => l.runId)).toEqual(["mid"]);
     });
 
     it("enqueueMany does not yank an active lease, and its wake survives the ack", async () => {
@@ -208,7 +211,7 @@ export const queueConformance = (label: string, makeQueue: () => Queue | Promise
       await q.enqueue("r1");
       const [lease] = await q.claim({ limit: 10, leaseMs: 1000, now: at(0) });
       await q.enqueueMany([{ runId: "r1" }]); // bulk wake lands mid-lease
-      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(500) })).toEqual([]); // still held
+      expect(await q.claim({ limit: 10, leaseMs: 1000, now: at(500) })).toEqual([]);
       await q.ack(lease, { now: at(600) }); // version moved → release, don't delete
       const again = await q.claim({ limit: 10, leaseMs: 1000, now: at(601) });
       expect(again.map((l) => l.runId)).toEqual(["r1"]);

@@ -2,16 +2,13 @@ import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import { int, intOrNull, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
+import { inList, scheduleStmt } from "#statements";
 
 /** @internal */
 export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
   return {
     async schedule(runId, fireAt) {
-      await sql.exec(
-        `INSERT INTO ${t.timer} (run_id, fire_at) VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE fire_at = VALUES(fire_at)`,
-        [runId, fireAt.getTime()],
-      );
+      await scheduleStmt(sql, t, runId, fireAt);
     },
 
     async dueBatch({ now, limit }: TimerDueOpts) {
@@ -23,8 +20,7 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
         );
         if (!due.length) return [];
         const ids = due.map((r) => text(r, "run_id"));
-        const holes = ids.map(() => "?").join(", ");
-        await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN (${holes})`, ids);
+        await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inList(ids.length)}`, ids);
         return ids;
       });
     },
@@ -32,7 +28,7 @@ export const createMysqlTimer = (sql: Sql, t: Tables): Timer => {
     async dueCount(now, names) {
       if (names && names.length === 0) return 0;
       const namePredicate = names
-        ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
+        ? ` AND (r.name IS NULL OR r.name IN ${inList(names.length)})`
         : "";
       const params = names ? [now.getTime(), ...names] : [now.getTime()];
       const [row] = await sql.query(

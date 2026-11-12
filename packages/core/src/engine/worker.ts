@@ -1,10 +1,9 @@
-import type { IdGen } from "#id";
 import type { Backend } from "#ports/outbox";
 import type { EnqueueOpts } from "#ports/queue";
 import { isTerminal } from "#status";
-import type { FlowError, PurgeFilter, RunStatus } from "#types";
-import { type Clock, systemClock } from "#engine/context";
-import { type DriftPolicy, type RetryPolicy, type TickResult, runTick } from "#engine/executor";
+import { type Clock, systemClock } from "#clock";
+import type { FlowError, PurgeFilter, TerminalStatus } from "#types";
+import { type TickOpts, type TickResult, runTick } from "#engine/executor";
 import {
   type Contract,
   type Flow,
@@ -19,7 +18,6 @@ import {
 } from "#engine/flow";
 import { runDueCrons } from "#engine/schedule";
 import { DuplicateRunError, PollTimeoutError } from "#engine/signals";
-import type { ObserveOpts } from "#engine/observe";
 
 /**
  * A run id, branded with the flow's output type `O` and signal map `S`. It IS a string at runtime;
@@ -63,7 +61,7 @@ export const submit = async <I, O, S extends SignalMap = NoSignals>(
     priority: opts?.priority,
   });
   if (created) {
-    await backend.queue.enqueue(runId, { runAt: opts?.runAt, priority: opts?.priority ?? 0 });
+    await backend.queue.enqueue(runId, { runAt: opts?.runAt });
   } else if (opts?.onDuplicate === "error") {
     throw new DuplicateRunError(runId, opts.idempotencyKey ?? "");
   }
@@ -105,9 +103,7 @@ export const submitMany = async <I>(
   const results = await backend.store.startManyRuns(specs);
   await backend.queue.enqueueMany(
     results.flatMap((r, i) =>
-      r.created
-        ? [{ runId: r.runId, opts: { runAt: items[i].runAt, priority: items[i].priority ?? 0 } }]
-        : [],
+      r.created ? [{ runId: r.runId, opts: { runAt: items[i].runAt } }] : [],
     ),
   );
   return results.map((r) => r.runId);
@@ -136,7 +132,7 @@ export const signalRun = async <
 
 /** The settled outcome of a run, as returned by {@link result}. `O` is the flow's output type. */
 export interface RunResult<O = unknown> {
-  status: Extract<RunStatus, "done" | "failed" | "canceled">;
+  status: TerminalStatus;
   output?: O;
   error?: FlowError;
 }
@@ -182,7 +178,8 @@ export async function result<O>(
   runId: string,
   opts?: ResultOpts & { output?: OutputSchema<O> },
 ): Promise<RunResult<O> | RunResult<unknown>> {
-  const nowMs = (): number => (opts?.now ? opts.now().getTime() : Date.now());
+  const clock = opts?.now ?? systemClock;
+  const nowMs = (): number => clock().getTime();
   const pollMs = opts?.pollMs ?? 500;
   const deadline =
     opts?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : nowMs() + opts.timeoutMs;
@@ -236,7 +233,7 @@ export const reconcile = async (backend: Backend, opts: { limit: number }): Prom
 export const prune = async (
   backend: Backend,
   opts: { before: Date; limit: number },
-): Promise<number> => backend.store.deleteRunsOlderThan(opts.before, opts.limit);
+): Promise<number> => backend.store.deleteRuns({ before: opts.before }, opts.limit);
 
 /**
  * Targeted retention: the same sweep as {@link prune}, but narrowed by flow name, flow version and
@@ -249,14 +246,9 @@ export const purge = async (
   opts: { filter: PurgeFilter; limit: number },
 ): Promise<number> => backend.store.deleteRuns(opts.filter, opts.limit);
 
-export interface TickOnceOpts {
+/** One worker cycle's options: the batch it claims, and the per-run {@link TickOpts} it runs them with. */
+export interface TickOnceOpts extends TickOpts {
   batchMax: number;
-  leaseMs: number;
-  retry?: RetryPolicy;
-  now?: Clock;
-  id?: IdGen;
-  observe?: ObserveOpts;
-  driftPolicy?: DriftPolicy;
   names?: readonly string[];
   pollTimeoutMs?: number;
   reconcileLimit?: number;
@@ -312,19 +304,26 @@ export const tickOnce = async (
     opts.pollTimeoutMs,
   );
   const results: TickResult[] = [];
-  for (const lease of leases) {
-    results.push(
-      await runTick(backend, flows, lease, {
-        now,
-        retry: opts.retry,
-        id: opts.id,
-        observe: opts.observe,
-        driftPolicy: opts.driftPolicy,
-        leaseMs: opts.leaseMs,
-      }),
-    );
-  }
+  for (const lease of leases) results.push(await runTick(backend, flows, lease, opts));
   return results;
+};
+
+/**
+ * The earliest durable deadline — a pending timer (sleep / retry backoff / redeploy recheck) or a
+ * cron's next fire — or `null` when nothing is scheduled. Timers or crons left overdue (more were due
+ * than one cycle drains) mean wake now. Signals and child-joins wake by enqueue, so they
+ * are not here.
+ * @internal
+ */
+export const nextWakeAt = async (backend: Backend, now: Date): Promise<Date | null> => {
+  const [overdue, timer, cron] = await Promise.all([
+    backend.timer.dueCount(now),
+    backend.timer.nextDueAt(now),
+    backend.store.nextCronAt(),
+  ]);
+  if (overdue > 0) return now;
+  const times = [timer, cron].flatMap((at) => (at ? [at.getTime()] : []));
+  return times.length ? new Date(Math.min(...times)) : null;
 };
 
 /** What one {@link serverlessTick} advanced — for the invoking cron Lambda's logs/metrics. */
@@ -373,7 +372,5 @@ export const serverlessTick = async (
     reconcile(backend, { limit: opts.reconcileLimit ?? DEFAULT_RECONCILE_LIMIT }),
   ]);
   const results = await tickOnce(backend, flows, opts);
-  // After the tick drained the due timers, the earliest remaining is the next wake horizon.
-  const nextWakeAt = await backend.timer.nextDueAt(now());
-  return { fired, reconciled, results, nextWakeAt };
+  return { fired, reconciled, results, nextWakeAt: await nextWakeAt(backend, now()) };
 };

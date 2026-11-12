@@ -1,11 +1,11 @@
 import type { Backend } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
-import { at } from "#clock";
+import { T0, at } from "#clock";
 
 /**
  * `orphanedRuns` as executable invariants — what the reconciler re-drives. A run is an orphan
  * only when it truly can't make progress on its own: non-terminal but off the queue with no
- * pending timer, OR an `awaiting_signal` parent whose child already finished (lost wake). A
+ * pending timer, OR an `awaiting_child` parent whose child already finished (lost wake). A
  * run that is queued, timing, terminal, or legitimately waiting on an external signal is NOT.
  */
 export const reconcileConformance = (
@@ -16,7 +16,7 @@ export const reconcileConformance = (
     it("a non-terminal run with no job and no timer is an orphan", async () => {
       const { store } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
-      expect(await store.orphanedRuns(10)).toContain(runId); // pending, never enqueued
+      expect(await store.orphanedRuns(10)).toContain(runId);
     });
 
     it("a queued run is not an orphan", async () => {
@@ -53,7 +53,7 @@ export const reconcileConformance = (
       });
       await store.markRunning(parent.runId);
       await store.suspendRun(parent.runId, "awaiting_child");
-      await store.markTerminal(child.runId, { status: "done", output: 1 }); // child done, wake lost
+      await store.markTerminal(child.runId, { status: "done", output: 1 });
       expect(await store.orphanedRuns(10)).toContain(parent.runId);
     });
 
@@ -66,7 +66,7 @@ export const reconcileConformance = (
       ]);
       await store.markRunning(parent.runId);
       await store.suspendRun(parent.runId, "awaiting_child");
-      await store.markTerminal(kids[0].runId, { status: "done", output: 1 }); // 1 of 2 done, 1 running
+      await store.markTerminal(kids[0].runId, { status: "done", output: 1 });
       expect(await store.orphanedRuns(10)).not.toContain(parent.runId);
     });
 
@@ -82,7 +82,7 @@ export const reconcileConformance = (
       await store.markTerminal(kids[0].runId, {
         status: "failed",
         error: { code: "X", message: "boom" },
-      }); // one failed, sibling still running — parent must fast-fail
+      });
       expect(await store.orphanedRuns(10)).toContain(parent.runId);
     });
 
@@ -93,20 +93,42 @@ export const reconcileConformance = (
       expect(await store.orphanedRuns(10)).not.toContain(runId);
     });
 
-    it("retryRuns re-enqueues, and cancelRuns clears the timer — not just a status flip", async () => {
+    it("orphanedRuns honours its limit on a backlog larger than one sweep", async () => {
+      const { store } = await makeBackend();
+      const ids = await Promise.all(
+        Array.from({ length: 3 }, async () => {
+          const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
+          return runId;
+        }),
+      );
+      const swept = await store.orphanedRuns(2);
+      expect(swept).toHaveLength(2);
+      expect(ids).toEqual(expect.arrayContaining([...swept]));
+    });
+
+    it("retryRuns re-enqueues, and cancelRuns clears the timer — only for the runs each sweep took", async () => {
       const { store, queue, timer } = await makeBackend();
-      const now = new Date("2030-01-01T00:00:00Z");
-      const failed = (await store.startRun({ name: "f", version: 1, input: {} })).runId;
-      await store.markTerminal(failed, { status: "failed", error: { code: "X", message: "x" } });
-      const live = (await store.startRun({ name: "g", version: 1, input: {} })).runId;
-      await timer.schedule(live, now);
+      const start = async (name: string) =>
+        (await store.startRun({ name, version: 1, input: {} })).runId;
+      const failed = [await start("f"), await start("f")];
+      for (const id of failed) {
+        await store.markTerminal(id, { status: "failed", error: { code: "X", message: "x" } });
+      }
+      const live = [await start("g"), await start("g")];
+      for (const id of live) await timer.schedule(id, T0);
+      const claimed = async () =>
+        (await queue.claim({ limit: 10, leaseMs: 1000, now: T0 })).map((l) => l.runId);
 
-      expect(await store.retryRuns({ name: "f" }, 10)).toBe(1);
-      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now });
-      expect(leases.map((l) => l.runId)).toContain(failed); // claimable, not merely `pending`
+      expect(await store.retryRuns({ name: "f" }, 1)).toBe(1);
+      const first = await claimed(); // claimable, not merely `pending`
+      expect(first).toHaveLength(1);
+      expect(await store.retryRuns({ name: "f" }, 1)).toBe(1);
+      expect([...first, ...(await claimed())].sort()).toEqual([...failed].sort());
 
-      expect(await store.cancelRuns({ name: "g" }, 10)).toBe(1);
-      expect(await timer.dueCount(now)).toBe(0); // its wake timer went with it
+      expect(await store.cancelRuns({ name: "g" }, 1)).toBe(1);
+      expect(await timer.dueCount(T0)).toBe(1);
+      expect(await store.cancelRuns({ name: "g" }, 1)).toBe(1);
+      expect(await timer.dueCount(T0)).toBe(0);
     });
   });
 };

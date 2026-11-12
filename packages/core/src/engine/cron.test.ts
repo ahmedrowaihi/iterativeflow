@@ -13,9 +13,10 @@ describe("cron expression parser", () => {
   });
 
   it("applies the OR rule when day-of-month and day-of-week are both restricted", () => {
-    // 1st of the month OR any Monday. 2030-03-15 is a Friday; next is Monday the 18th.
-    const next = nextCronAfter("0 0 1 * 1", new Date("2030-03-15T00:00:00Z"));
-    expect(next.getUTCDay()).toBe(1); // Monday
+    // 1st of the month OR any Monday. AND would give 2030-04-01 (a Monday 1st) and 2030-07-01.
+    const at = (iso: string) => nextCronAfter("0 0 1 * 1", new Date(iso)).toISOString();
+    expect(at("2030-03-15T00:00:00Z")).toBe("2030-03-18T00:00:00.000Z");
+    expect(at("2030-04-30T00:00:00Z")).toBe("2030-05-01T00:00:00.000Z");
   });
 
   it("rejects malformed expressions", () => {

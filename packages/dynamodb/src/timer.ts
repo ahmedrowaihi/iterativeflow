@@ -5,30 +5,19 @@ import {
   QueryCommand,
   type QueryCommandInput,
 } from "@aws-sdk/lib-dynamodb";
-import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
+import { type Timer, type TimerDueOpts, shardAdmits } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { num, parseTimer, str } from "#codec";
 import { countQuery } from "#count";
 import { runNames } from "#run-names";
 import { TIMER_GSI_PK, key, pad } from "#schema";
+import { timerItem } from "#statements";
 
 /** @internal */
 export const createDynamoTimer = (doc: Doc, table: string): Timer => {
   return {
     async schedule(runId, fireAt) {
-      await doc.send(
-        new PutCommand({
-          TableName: table,
-          Item: {
-            ...key.timer(runId),
-            type: "timer",
-            runId,
-            fireAt: fireAt.getTime(),
-            gsi1pk: TIMER_GSI_PK,
-            gsi1sk: pad(fireAt.getTime()),
-          },
-        }),
-      );
+      await doc.send(new PutCommand({ TableName: table, Item: timerItem(runId, fireAt) }));
     },
 
     async dueBatch({ now, limit }: TimerDueOpts) {
@@ -50,12 +39,14 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
             new DeleteCommand({
               TableName: table,
               Key: key.timer(it.runId),
-              ConditionExpression: "attribute_exists(pk)",
+              // The GSI read is eventually consistent; a timer re-armed later since must not fire.
+              ConditionExpression: "fireAt <= :now",
+              ExpressionAttributeValues: { ":now": t },
             }),
           );
           fired.push(it.runId); // won the fire-once delete
         } catch (e) {
-          if (!(e instanceof ConditionalCheckFailedException)) throw e; // a concurrent drain took it
+          if (!(e instanceof ConditionalCheckFailedException)) throw e; // drained or re-armed concurrently
         }
       }
       return fired;
@@ -96,8 +87,6 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
           ExpressionAttributeValues: values,
         });
       }
-      const wanted = new Set(names);
-      if (wanted.size === 0) return 0;
       const due: string[] = [];
       let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
       do {
@@ -115,11 +104,7 @@ export const createDynamoTimer = (doc: Doc, table: string): Timer => {
         ExclusiveStartKey = res.LastEvaluatedKey;
       } while (ExclusiveStartKey);
       const nameById = await runNames(doc, table, due);
-      // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
-      return due.filter((runId) => {
-        const name = nameById.get(runId);
-        return name === undefined || wanted.has(name);
-      }).length;
+      return due.filter((runId) => shardAdmits(names, nameById.get(runId))).length;
     },
   };
 };

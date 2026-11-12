@@ -5,26 +5,14 @@ import { at } from "#clock";
 /**
  * The transactional-outbox seam as executable invariants: a durable Store write and the
  * side-effects it carries commit together, and — critically — the outbox fires exactly
- * ONCE even when the write is replayed. Every backend (memory, Postgres, DynamoDB) must
- * satisfy this; it is the property that makes crash recovery correct rather than just
- * plausible.
+ * ONCE even when the write is replayed. Every backend must satisfy this; it is the property
+ * that makes crash recovery correct rather than just plausible.
  */
 export const outboxConformance = (
   label: string,
   makeBackend: () => Backend | Promise<Backend>,
 ): void => {
   describe(`Outbox conformance — ${label}`, () => {
-    it("checkpointStep commits its enqueue atomically — the run is claimable after", async () => {
-      const { store, queue } = await makeBackend();
-      const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
-      await store.checkpointStep(
-        { runId, cursorKey: "a", status: "ok", result: 1, attempts: 1 },
-        { enqueue: [{ runId }] },
-      );
-      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      expect(leases.map((l) => l.runId)).toEqual([runId]);
-    });
-
     it("checkpointStep spawns a child run + enqueues it atomically", async () => {
       const { store, queue } = await makeBackend();
       const { runId } = await store.startRun({ name: "parent", version: 1, input: {} });
@@ -42,20 +30,43 @@ export const outboxConformance = (
       const { store, queue } = await makeBackend();
       const { runId } = await store.startRun({ name: "parent", version: 1, input: {} });
       const childId = "22222222-2222-2222-2222-222222222222";
-      const spawn = {
-        spawn: [{ runId: childId, spec: { name: "child", version: 1, input: {} } }],
-      };
+      const replayId = "44444444-4444-4444-4444-444444444444";
+      const spawnOf = (id: string) => ({
+        spawn: [{ runId: id, spec: { name: "child", version: 1, input: {} } }],
+      });
       await store.checkpointStep(
         { runId, cursorKey: "spawn", status: "ok", result: childId, attempts: 1 },
-        spawn,
+        spawnOf(childId),
       );
       // Replay: same cursorKey, first-writer-wins → the outbox must be skipped entirely.
       await store.checkpointStep(
-        { runId, cursorKey: "spawn", status: "ok", result: childId, attempts: 2 },
-        spawn,
+        { runId, cursorKey: "spawn", status: "ok", result: replayId, attempts: 2 },
+        spawnOf(replayId),
       );
+      expect(await store.loadRunRow(replayId)).toBeUndefined();
       const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      expect(leases.filter((l) => l.runId === childId)).toHaveLength(1); // not two enqueues
+      expect(leases.map((l) => l.runId)).toEqual([childId]);
+    });
+
+    it("a spawn of an existing run id leaves that run untouched — the first spawn wins", async () => {
+      const { store } = await makeBackend();
+      const { runId } = await store.startRun({ name: "parent", version: 1, input: {} });
+      const childId = "33333333-3333-3333-3333-333333333333";
+      const spawnAt = (cursorKey: string, n: number) =>
+        store.checkpointStep(
+          { runId, cursorKey, status: "ok", result: childId, attempts: 1 },
+          { spawn: [{ runId: childId, spec: { name: "child", version: 1, input: { n } } }] },
+        );
+      await spawnAt("first", 1);
+      await store.markTerminal(childId, { status: "done", output: "kept" });
+      const second = await spawnAt("second", 2);
+      expect(second.committed).not.toBe(false);
+      expect((await store.loadRun(runId))?.steps.has("second")).toBe(true);
+      expect(await store.loadRunRow(childId)).toMatchObject({
+        status: "done",
+        output: "kept",
+        input: { n: 1 },
+      });
     });
 
     it("suspendRun(sleeping) sets status + wake timer atomically", async () => {
@@ -74,27 +85,7 @@ export const outboxConformance = (
       await store.markTerminal(runId, { status: "done", output: 1 });
       await store.suspendRun(runId, "sleeping", { timers: [{ runId, fireAt: at(5000) }] });
       expect((await store.loadRun(runId))?.run.status).toBe("done");
-      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]); // outbox skipped
-    });
-
-    it("markTerminal wakes a suspended parent atomically (enqueue in the same write)", async () => {
-      const { store, queue } = await makeBackend();
-      const parent = await store.startRun({ name: "parent", version: 1, input: {} });
-      const child = await store.startRun({
-        name: "child",
-        version: 1,
-        input: {},
-        parentRunId: parent.runId,
-      });
-      await store.markTerminal(
-        child.runId,
-        { status: "done", output: 7 },
-        {
-          enqueue: [{ runId: parent.runId }],
-        },
-      );
-      const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      expect(leases.map((l) => l.runId)).toContain(parent.runId);
+      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]);
     });
 
     it("markTerminal cancels a pending timer atomically (no stale wake after completion)", async () => {
@@ -103,16 +94,20 @@ export const outboxConformance = (
       await store.markRunning(runId);
       await store.suspendRun(runId, "awaiting_signal", { timers: [{ runId, fireAt: at(5000) }] });
       await store.markTerminal(runId, { status: "done", output: 1 }, { cancelTimers: [runId] });
-      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]); // timeout was cleared
+      expect(await timer.dueBatch({ now: at(5000), limit: 10 })).toEqual([]);
     });
 
     it("a canceled run's markTerminal is sticky AND skips its outbox", async () => {
-      const { store, queue } = await makeBackend();
+      const { store, timer } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
       await store.markTerminal(runId, { status: "canceled" });
-      await store.markTerminal(runId, { status: "done", output: 1 }, { enqueue: [{ runId }] });
+      await store.markTerminal(
+        runId,
+        { status: "done", output: 1 },
+        { timers: [{ runId, fireAt: at(0) }] },
+      );
       expect((await store.loadRun(runId))?.run.status).toBe("canceled");
-      expect(await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) })).toEqual([]);
+      expect(await timer.dueBatch({ now: at(0), limit: 10 })).toEqual([]);
     });
   });
 };

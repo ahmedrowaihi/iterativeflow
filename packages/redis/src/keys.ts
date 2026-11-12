@@ -4,7 +4,7 @@
  *
  * Per-run keys carry a `{runId}` hash-tag so a future Redis Cluster co-locates them on one slot; the
  * shared dispatch keys (`queue`, `timers`, …) don't, so a Lua touching both is single-node only for
- * now — see the study doc. On a single node (Valkey/Dragonfly) the tags are inert.
+ * now. On a single node (Valkey/Dragonfly) the tags are inert.
  */
 export interface Keys {
   run(runId: string): string;
@@ -12,10 +12,14 @@ export interface Keys {
   inbox(runId: string): string;
   sigIdem(runId: string): string;
   job(runId: string): string;
-  jobAffix: readonly [string, string];
-  runAffix: readonly [string, string];
   /** SET of a run's direct child ids — powers `childrenOf` without a full scan. Written on spawn. */
   children(runId: string): string;
+  /** Every per-run key above — what deleting a run removes. */
+  perRun(runId: string): string[];
+  /** `job(id)` split around the id, for a Lua that builds job keys from run ids it reads. */
+  jobAffix: readonly [string, string];
+  /** `run(id)` split around the id, for a Lua that builds run keys from run ids it reads. */
+  runAffix: readonly [string, string];
   queue: string;
   timers: string;
   runIndex: string;
@@ -25,23 +29,34 @@ export interface Keys {
   seq: string;
 }
 
-export const makeKeys = (prefix: string): Keys => ({
-  run: (r) => `${prefix}:run:{${r}}`,
-  steps: (r) => `${prefix}:steps:{${r}}`,
-  inbox: (r) => `${prefix}:inbox:{${r}}`,
-  sigIdem: (r) => `${prefix}:sigidem:{${r}}`,
-  job: (r) => `${prefix}:job:{${r}}`,
-  jobAffix: [`${prefix}:job:{`, "}"],
-  runAffix: [`${prefix}:run:{`, "}"],
-  children: (r) => `${prefix}:children:{${r}}`,
-  queue: `${prefix}:queue`,
-  timers: `${prefix}:timers`,
-  runIndex: `${prefix}:runs`,
-  idem: `${prefix}:idem`,
-  crons: `${prefix}:crons`,
-  cronsDue: `${prefix}:cronsdue`,
-  seq: `${prefix}:seq`,
-});
+export const makeKeys = (prefix: string): Keys => {
+  const affix = (kind: string) => [`${prefix}:${kind}:{`, "}"] as const;
+  const scoped = (kind: string) => {
+    const [head, tail] = affix(kind);
+    return (runId: string) => `${head}${runId}${tail}`;
+  };
+  const perRun = {
+    run: scoped("run"),
+    steps: scoped("steps"),
+    inbox: scoped("inbox"),
+    sigIdem: scoped("sigidem"),
+    job: scoped("job"),
+    children: scoped("children"),
+  };
+  return {
+    ...perRun,
+    perRun: (runId) => Object.values(perRun).map((key) => key(runId)),
+    jobAffix: affix("job"),
+    runAffix: affix("run"),
+    queue: `${prefix}:queue`,
+    timers: `${prefix}:timers`,
+    runIndex: `${prefix}:runs`,
+    idem: `${prefix}:idem`,
+    crons: `${prefix}:crons`,
+    cronsDue: `${prefix}:cronsdue`,
+    seq: `${prefix}:seq`,
+  };
+};
 
 /**
  * `run:{id}` HASH fields — the run row. All values are strings; ints and JSON are encoded/decoded by

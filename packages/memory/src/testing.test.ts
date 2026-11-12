@@ -109,6 +109,29 @@ describe("test harness — virtual time over a real engine", () => {
     expect(t.now().toISOString()).toBe("2031-06-03T00:00:00.000Z");
   });
 
+  it("advanceToNextWake jumps to a cron's next fire and runs it", async () => {
+    const ping = defineFlow({ name: "ping", version: 1, run: async () => "pong" });
+    const t = createTestHarness(createMemoryBackend(), [ping]);
+    await t.engine.registerCron({ name: "daily", schedule: "0 9 * * *", flow: ping, input: {} });
+    expect(await t.advanceToNextWake()).toBe(true);
+    expect(t.now().toISOString()).toBe("2030-01-01T09:00:00.000Z");
+    const { runs } = await t.engine.listRuns({ name: "ping" }, { limit: 10 });
+    expect(runs.map((r) => [r.status, r.output])).toEqual([["done", "pong"]]);
+  });
+
+  it("settle still reports a stalled run when a cron is registered", async () => {
+    const ping = defineFlow({ name: "ping", version: 1, run: async () => "pong" });
+    const waits = defineFlow({
+      name: "waits",
+      version: 1,
+      run: async (ctx) => ctx.signal("never"),
+    });
+    const t = createTestHarness(createMemoryBackend(), [ping, waits]);
+    await t.engine.registerCron({ name: "hourly", schedule: "0 * * * *", flow: ping, input: {} });
+    const handle = await t.engine.submit(waits, {});
+    await expect(t.settle(handle)).rejects.toThrow(/awaiting a signal/);
+  });
+
   it("advanceToNextWake reports when nothing is scheduled", async () => {
     const t = createTestHarness(createMemoryBackend(), []);
     expect(await t.advanceToNextWake()).toBe(false);

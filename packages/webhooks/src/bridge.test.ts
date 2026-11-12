@@ -1,5 +1,6 @@
 import {
   type Backend,
+  createEngine,
   defineFlow,
   registry,
   type SignalSchema,
@@ -7,25 +8,15 @@ import {
   tickOnce,
 } from "@iterativeflow/core";
 import { createMemoryBackend } from "@iterativeflow/memory";
+import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { webhookSignalBridge } from "#bridge";
 import { github } from "#github";
 
 const SECRET = "hook-secret";
 
-async function ghSign(body: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-  const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `sha256=${hex}`;
-}
+const ghSign = (body: string): string =>
+  `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
 
 interface IssueCommentPayload {
   action?: string;
@@ -75,7 +66,7 @@ describe("webhookSignalBridge (github preset)", () => {
     return {
       body,
       headers: {
-        "X-Hub-Signature-256": await ghSign(body),
+        "X-Hub-Signature-256": ghSign(body),
         "X-GitHub-Event": "issue_comment",
         "X-GitHub-Delivery": delivery,
       },
@@ -84,7 +75,7 @@ describe("webhookSignalBridge (github preset)", () => {
 
   it("delivers a webhook as a signal that resumes the parked run", async () => {
     const runId = await parkOnSignal({ pr: 42 });
-    const bridge = webhookSignalBridge(backend, {
+    const bridge = webhookSignalBridge(createEngine(backend, [approvalFlow]), {
       verify: github(SECRET),
       correlate: (event) => {
         expect(event.payload).toEqual({ action: "created", number: 42 });
@@ -106,7 +97,7 @@ describe("webhookSignalBridge (github preset)", () => {
 
   it("is idempotent on the delivery id (a provider redelivery lands once)", async () => {
     const runId = await parkOnSignal({ pr: 1 });
-    const bridge = webhookSignalBridge(backend, {
+    const bridge = webhookSignalBridge(createEngine(backend, [approvalFlow]), {
       verify: github(SECRET),
       correlate: () => [{ runId, name: "qa:approved", payload: { by: "bob" } }],
     });
@@ -121,7 +112,7 @@ describe("webhookSignalBridge (github preset)", () => {
   it("fans one webhook out to several parked runs", async () => {
     const a = await parkOnSignal({ pr: 7 });
     const b = await parkOnSignal({ pr: 7 });
-    const bridge = webhookSignalBridge(backend, {
+    const bridge = webhookSignalBridge(createEngine(backend, [approvalFlow]), {
       verify: github(SECRET),
       correlate: () => [
         { runId: a, name: "qa:approved", payload: { by: "x" } },
@@ -132,8 +123,15 @@ describe("webhookSignalBridge (github preset)", () => {
     expect(result.deliveries.map((d) => d.delivered)).toEqual([true, true]);
   });
 
-  it("rejects an unsigned/forged webhook before touching the store", async () => {
-    const bridge = webhookSignalBridge(backend, { verify: github(SECRET), correlate: () => [] });
+  it("rejects a forged webhook before correlating it", async () => {
+    let correlated = 0;
+    const bridge = webhookSignalBridge(createEngine(backend, [approvalFlow]), {
+      verify: github(SECRET),
+      correlate: () => {
+        correlated++;
+        return [];
+      },
+    });
     await expect(
       bridge({
         body: JSON.stringify({ number: 1 }),
@@ -144,5 +142,17 @@ describe("webhookSignalBridge (github preset)", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "invalid_signature" });
+    expect(correlated).toBe(0);
+  });
+
+  it("rejects a delivery over the engine's maxPayloadBytes", async () => {
+    const runId = await parkOnSignal({ pr: 9 });
+    const engine = createEngine(backend, [approvalFlow], { maxPayloadBytes: 64 });
+    const bridge = webhookSignalBridge(engine, {
+      verify: github(SECRET),
+      correlate: () => [{ runId, name: "qa:approved", payload: { by: "x".repeat(100) } }],
+    });
+    await expect(bridge(await webhook({ number: 9 }, "d-big"))).rejects.toThrow(/maxPayloadBytes/);
+    expect((await backend.store.loadRun(runId))?.signals).toEqual([]);
   });
 });

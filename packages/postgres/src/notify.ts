@@ -1,7 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { type Wakeup, assertSqlIdentifier, createLocalWakeup } from "@iterativeflow/core/backend";
+import {
+  type Wakeup,
+  TERMINAL_STATUSES,
+  assertSqlIdentifier,
+  createLocalWakeup,
+  sqlStatusTuple,
+} from "@iterativeflow/core/backend";
 import type { Pool, PoolClient } from "pg";
-import { tables } from "#schema";
+import { DEFAULT_SCHEMA, tables } from "#schema";
 import type { Sql } from "#sql";
 
 /**
@@ -28,7 +34,7 @@ const progressChannel = (schema: string): string => `${schema}_progress`;
  * into one delivery. `done` fires per-row when a run first reaches a terminal status (it needs the
  * run id in the payload). Idempotent.
  */
-export const notifyDdl = (schema = "workflow"): string => {
+export const notifyDdl = (schema = DEFAULT_SCHEMA): string => {
   const t = tables(schema);
   const q = `"${schema}"`;
   return `
@@ -47,13 +53,13 @@ CREATE TRIGGER if_wake AFTER INSERT ON ${t.job}
 DROP TRIGGER IF EXISTS if_done ON ${t.run};
 CREATE TRIGGER if_done AFTER UPDATE ON ${t.run}
   FOR EACH ROW
-  WHEN (OLD.status IS DISTINCT FROM NEW.status AND NEW.status IN ('done', 'failed', 'canceled'))
+  WHEN (OLD.status IS DISTINCT FROM NEW.status AND NEW.status IN ${sqlStatusTuple(TERMINAL_STATUSES)})
   EXECUTE FUNCTION ${q}.if_notify_done();
 `;
 };
 
 /** Install the NOTIFY triggers. Run once (idempotent), after {@link applySchema}. */
-export const applyNotifyTriggers = async (sql: Sql, schema = "workflow"): Promise<void> => {
+export const applyNotifyTriggers = async (sql: Sql, schema = DEFAULT_SCHEMA): Promise<void> => {
   await sql.query(notifyDdl(schema));
 };
 
@@ -63,7 +69,7 @@ export const applyNotifyTriggers = async (sql: Sql, schema = "workflow"): Promis
  * to fire on, so it pays nothing. Install it ONLY on a dashboard host (never a worker pod) — see the
  * progress-push spec. The payload is tiny (id + type); an observer reads the full row by id.
  */
-export const progressDdl = (schema = "workflow"): string => {
+export const progressDdl = (schema = DEFAULT_SCHEMA): string => {
   const t = tables(schema);
   const q = `"${schema}"`;
   return `
@@ -79,7 +85,7 @@ CREATE TRIGGER if_progress AFTER INSERT ON ${t.event}
 };
 
 /** Install the opt-in progress trigger. Run once (idempotent) on a dashboard host, after {@link applySchema}. */
-export const applyProgressTrigger = async (sql: Sql, schema = "workflow"): Promise<void> => {
+export const applyProgressTrigger = async (sql: Sql, schema = DEFAULT_SCHEMA): Promise<void> => {
   await sql.query(progressDdl(schema));
 };
 
@@ -89,12 +95,12 @@ export interface ProgressEvent {
   type: string;
 }
 
-/** @internal */
+/** The {@link PgListener}'s connection lifecycle. */
 export type ListenerState = "idle" | "listening" | "reconnecting" | "stopped";
 
 /** The shared LISTEN connection: a completion {@link Wakeup} plus a dispatch `waitForWork`. */
 export interface PgListener {
-  /** Completion push for `result()` — pass as `createPgBackend(sql, { wakeup })`. */
+  /** Completion push for `result()` — wired by `createPgBackend(sql, { listener })`. */
   readonly wakeup: Wakeup;
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
    *  enqueue notify, when `signal` aborts, or after `timeoutMs`. */
@@ -124,6 +130,9 @@ const decodeProgress = (payload: string): ProgressEvent | undefined => {
 export interface PgListenerOpts {
   /** Schema whose channels to listen on. Must match the backend's schema. Default `workflow`. */
   schema?: string;
+  /** A failed connect or `LISTEN` — the listener retries with backoff either way. A bad credential
+   *  shows up here on every attempt. Default `console.error`. */
+  onError?: (cause: unknown) => void;
 }
 
 const backoffMs = (attempt: number): number =>
@@ -136,8 +145,10 @@ const backoffMs = (attempt: number): number =>
  * so a wake missed while disconnected costs at most one poll, never a stall.
  */
 export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListener => {
-  const schema = opts.schema ?? "workflow";
+  const schema = opts.schema ?? DEFAULT_SCHEMA;
   assertSqlIdentifier(schema);
+  const onError =
+    opts.onError ?? ((cause: unknown) => console.error("iterativeflow listener:", cause));
   const wake = wakeChannel(schema);
   const done = doneChannel(schema);
   const progress = progressChannel(schema);
@@ -221,8 +232,8 @@ export const createPgListener = (pool: Pool, opts: PgListenerOpts = {}): PgListe
           signal.addEventListener("abort", release, { once: true });
           await closed;
           signal.removeEventListener("abort", release);
-        } catch {
-          // connect/LISTEN failed — fall through to backoff
+        } catch (cause) {
+          if (!signal.aborted) onError(cause);
         } finally {
           try {
             client?.release(true); // keeps the persistent 'error' handler → no unhandled teardown crash

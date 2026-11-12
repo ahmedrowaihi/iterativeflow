@@ -4,34 +4,31 @@ import {
   type Outbox,
   type OrphanView,
   type PurgeFilter,
+  type RunSelection,
   type RunSpec,
   type StartResult,
   type StepOutcome,
   type Store,
   type SuspendStatus,
-  ACTIVE_STATUSES,
+  TERMINAL_STATUSES,
+  cancelSelection,
   durable,
   isOrphaned,
   isTerminal,
-  purgeStatuses,
-  runSetStatuses,
-  statusList,
+  listSelection,
+  purgeSelection,
+  resetsAttempts,
+  retrySelection,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
-import {
-  type ClientSession,
-  type Db,
-  type Filter,
-  type MongoClient,
-  MongoServerError,
-  ObjectId,
-} from "mongodb";
+import { type ClientSession, type Db, type Filter, type MongoClient, ObjectId } from "mongodb";
 import type { Names } from "#collections";
 import {
   type CronDoc,
   type RunDoc,
   type SignalDoc,
   type StepDoc,
+  type TimerDoc,
   buildRunDoc,
   durableError,
   mapCron,
@@ -41,10 +38,13 @@ import {
 } from "#codec";
 import { type JobDoc, enqueueJobs } from "#queue";
 
-const DUPLICATE_KEY = 11000;
-
-const isDuplicateKey = (cause: unknown): boolean =>
-  cause instanceof MongoServerError && cause.code === DUPLICATE_KEY;
+const selectionFilter = (sel: RunSelection): Filter<RunDoc> => ({
+  status: { $in: [...sel.statuses] },
+  ...(sel.name !== undefined && { name: sel.name }),
+  ...(sel.version !== undefined && { version: sel.version }),
+  ...(sel.tag !== undefined && { tags: sel.tag }),
+  ...(sel.before !== undefined && { created_at: { $lt: sel.before.getTime() } }),
+});
 
 /**
  * The MongoDB {@link Store}: runs/steps/signals/crons as documents, the outbox committed across
@@ -64,7 +64,7 @@ export const createMongoStore = (
   const signals = db.collection<SignalDoc>(n.signals);
   const crons = db.collection<CronDoc>(n.crons);
   const jobs = db.collection<JobDoc>(n.jobs);
-  const timers = db.collection<{ _id: string; fire_at: number }>(n.timers);
+  const timers = db.collection<TimerDoc>(n.timers);
 
   const inTx = async <T>(fn: (session: ClientSession) => Promise<T>): Promise<T> => {
     if (boundSession) return fn(boundSession); // already in the caller's transaction — mongo can't nest
@@ -84,24 +84,24 @@ export const createMongoStore = (
     runId: string,
     session: ClientSession,
   ): Promise<void> => {
-    try {
-      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), {
-        session,
-      });
-    } catch (e) {
-      // insert-by-id is first-writer-wins: replay re-issues the same spawn
-      if (!isDuplicateKey(e)) throw e;
-    }
+    // An upsert, not insert-and-catch: a duplicate-key error inside a transaction aborts the whole
+    // transaction, so first-writer-wins has to be expressed as a write that cannot fail.
+    const { _id, ...doc } = buildRunDoc(spec, runId, new ObjectId());
+    await runs.updateOne({ _id }, { $setOnInsert: doc }, { upsert: true, session });
   };
 
   const commitOutbox = async (fx: Outbox | undefined, session: ClientSession): Promise<void> => {
     if (!fx) return;
-    for (const s of fx.spawn ?? []) await insertSpawn(s.spec, s.runId, session);
-    const enqueues = [
-      ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
-      ...(fx.enqueue ?? []),
-    ];
-    if (enqueues.length) await enqueueJobs(jobs, runs, enqueues, session);
+    const spawns = fx.spawn ?? [];
+    for (const s of spawns) await insertSpawn(s.spec, s.runId, session);
+    if (spawns.length) {
+      await enqueueJobs(
+        jobs,
+        runs,
+        spawns.map((s) => ({ runId: s.runId })),
+        session,
+      );
+    }
     for (const t of fx.timers ?? []) {
       await timers.updateOne(
         { _id: t.runId },
@@ -130,54 +130,103 @@ export const createMongoStore = (
 
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
-    try {
-      await runs.insertOne(buildRunDoc(spec, runId, new ObjectId()), {
-        session: boundSession,
-      });
-      return { runId, created: true, status: "pending" };
-    } catch (e) {
-      if (!isDuplicateKey(e)) throw e;
-      const existing = await runs.findOne(
-        {
-          name: spec.name,
-          version: spec.version,
-          idempotency_key: spec.idempotencyKey,
-        },
-        { session: boundSession },
-      );
-      if (!existing)
-        throw new Error(`startRun: idempotency collision without a matching run`, { cause: e });
-      return { runId: existing._id, created: false, status: existing.status };
+    const created: StartResult = { runId, created: true, status: "pending" };
+    const run = buildRunDoc(spec, runId, new ObjectId());
+    if (!spec.idempotencyKey) {
+      await runs.insertOne(run, { session: boundSession });
+      return created;
     }
+    // An upsert, not insert-and-catch, for the reason on insertSpawn: under `inTx` a duplicate-key
+    // error would abort the caller's transaction.
+    const { name, version, idempotency_key, ...rest } = run;
+    const existing = await runs.findOneAndUpdate(
+      { name, version, idempotency_key },
+      { $setOnInsert: rest },
+      { upsert: true, returnDocument: "before", session: boundSession },
+    );
+    return existing ? { runId: existing._id, created: false, status: existing.status } : created;
+  };
+
+  const selectIds = async (
+    q: Filter<RunDoc>,
+    limit: number,
+    session: ClientSession,
+  ): Promise<string[]> => {
+    const docs = await runs
+      .find(q, { session })
+      .sort({ ord: 1 })
+      .limit(limit)
+      .project<Pick<RunDoc, "_id">>({ _id: 1 })
+      .toArray();
+    return docs.map((r) => r._id);
+  };
+
+  const dropChildrenOfLiveParents = [
+    {
+      $lookup: {
+        from: n.runs,
+        let: { parent: "$parent_run_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ["$_id", "$$parent"] },
+              status: { $nin: [...TERMINAL_STATUSES] },
+            },
+          },
+          { $project: { _id: 1 } },
+        ],
+        as: "live_parent",
+      },
+    },
+    { $match: { live_parent: { $size: 0 } } },
+  ];
+
+  const selectPurgeIds = async (
+    sel: RunSelection,
+    limit: number,
+    session: ClientSession,
+  ): Promise<string[]> => {
+    const docs = await runs
+      .aggregate<Pick<RunDoc, "_id">>(
+        [
+          { $match: selectionFilter(sel) },
+          { $sort: { ord: 1 } },
+          ...(sel.spareChildrenOfLiveParents ? dropChildrenOfLiveParents : []),
+          { $limit: limit },
+          { $project: { _id: 1 } },
+        ],
+        { session },
+      )
+      .toArray();
+    return docs.map((r) => r._id);
   };
 
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
-    const q: Filter<RunDoc> = {
-      status: { $in: [...purgeStatuses(filter)] },
-      ...(filter.before !== undefined && {
-        created_at: { $lt: filter.before.getTime() },
-      }),
-      ...(filter.name !== undefined && { name: filter.name }),
-      ...(filter.version !== undefined && { version: filter.version }),
-    };
-    const victims = await runs.find(q).sort({ ord: 1 }).limit(limit).toArray();
-    if (victims.length === 0) return 0;
-    const ids = victims.map((r) => r._id);
-    await Promise.all([
-      steps.deleteMany({ run_id: { $in: ids } }),
-      signals.deleteMany({ run_id: { $in: ids } }),
-      jobs.deleteMany({ _id: { $in: ids } }),
-      timers.deleteMany({ _id: { $in: ids } }),
-      runs.deleteMany({ _id: { $in: ids } }),
-    ]);
-    return victims.length;
+    const sel = purgeSelection(filter);
+    const q = selectionFilter(sel);
+    return inTx(async (session) => {
+      const ids = await selectPurgeIds(sel, limit, session);
+      if (ids.length === 0) return 0;
+      // A run another writer moved off its terminal status since the read conflicts with this
+      // delete and aborts the transaction into a retry, so every selected id is deleted.
+      const res = await runs.deleteMany({ ...q, _id: { $in: ids } }, { session });
+      await steps.deleteMany({ run_id: { $in: ids } }, { session });
+      await signals.deleteMany({ run_id: { $in: ids } }, { session });
+      await jobs.deleteMany({ _id: { $in: ids } }, { session });
+      await timers.deleteMany({ _id: { $in: ids } }, { session });
+      return res.deletedCount;
+    });
   };
 
   return {
     startRun: startOne,
 
     async startManyRuns(specs) {
-      return Promise.all(specs.map(startOne));
+      if (!boundSession) return Promise.all(specs.map(startOne));
+      // A session runs one operation at a time inside a transaction.
+      const out: StartResult[] = [];
+      for (const spec of specs) out.push(await startOne(spec));
+      return out;
     },
 
     async loadRun(runId) {
@@ -234,17 +283,21 @@ export const createMongoStore = (
           idem_key: opts.idempotencyKey,
         }),
       };
-      try {
-        return await inTx(async (session) => {
+      return inTx(async (session) => {
+        if (signalDoc.idem_key === undefined) {
           await signals.insertOne(signalDoc, { session });
-          await enqueue(runId, undefined, session); // wake the parked run atomically with delivery
-          return { delivered: true };
-        });
-      } catch (e) {
-        // idempotent re-delivery on the idem index
-        if (isDuplicateKey(e)) return { delivered: false };
-        throw e;
-      }
+        } else {
+          const { run_id, idem_key, ...rest } = signalDoc;
+          const prior = await signals.findOneAndUpdate(
+            { run_id, idem_key },
+            { $setOnInsert: rest },
+            { upsert: true, returnDocument: "before", session },
+          );
+          if (prior) return { delivered: false };
+        }
+        await enqueue(runId, undefined, session); // wake the parked run atomically with delivery
+        return { delivered: true };
+      });
     },
 
     async markRunning(runId) {
@@ -272,39 +325,31 @@ export const createMongoStore = (
         ...(c.error !== undefined && { error: durableError(c.error) }),
         ...(c.call !== undefined && { call: c.call }),
       };
-      try {
-        return await inTx(async (session) => {
-          const run = await runs.findOne({ _id: c.runId }, { session });
-          if (!run) throw new Error(`checkpointStep: run ${c.runId} not found`);
-          if (fx?.requireVersion !== undefined) {
-            const existing = await steps.findOne({ _id: stepDoc._id }, { session });
-            if (existing) return mapStep(existing);
-            const touched = await jobs.updateOne(
-              { _id: c.runId, version: fx.requireVersion },
-              { $set: { version: fx.requireVersion } },
-              { session },
-            );
-            if (touched.matchedCount === 0) {
-              return {
-                status: c.status,
-                attempts: c.attempts,
-                committed: false,
-              };
-            }
+      return inTx(async (session) => {
+        const run = await runs.findOne({ _id: c.runId }, { session });
+        if (!run) throw new Error(`checkpointStep: run ${c.runId} not found`);
+        if (fx?.requireVersion !== undefined) {
+          const existing = await steps.findOne({ _id: stepDoc._id }, { session });
+          if (existing) return mapStep(existing);
+          const touched = await jobs.updateOne(
+            { _id: c.runId, version: fx.requireVersion },
+            { $set: { version: fx.requireVersion } },
+            { session },
+          );
+          if (touched.matchedCount === 0) {
+            return { status: c.status, attempts: c.attempts, committed: false };
           }
-          await steps.insertOne(stepDoc, { session });
-          await commitOutbox(fx, session); // atomic with the checkpoint, only on the first write
-          return mapStep(stepDoc);
-        });
-      } catch (e) {
-        if (!isDuplicateKey(e)) throw e;
-        const existing = await steps.findOne({ _id: stepDoc._id }); // first-writer-wins; skip outbox
-        if (!existing)
-          throw new Error(`checkpointStep: step ${stepDoc._id} vanished`, {
-            cause: e,
-          });
-        return mapStep(existing);
-      }
+        }
+        const { _id, ...rest } = stepDoc;
+        const prior = await steps.findOneAndUpdate(
+          { _id },
+          { $setOnInsert: rest },
+          { upsert: true, returnDocument: "before", session },
+        );
+        if (prior) return mapStep(prior); // first-writer-wins; skip the outbox
+        await commitOutbox(fx, session);
+        return mapStep(stepDoc);
+      });
     },
 
     async suspendRun(runId, status: SuspendStatus, fx) {
@@ -312,18 +357,17 @@ export const createMongoStore = (
         const run = await runs.findOne({ _id: runId }, { session });
         if (!run) throw new Error(`suspendRun: run ${runId} not found`);
         if (isTerminal(run.status)) return; // already terminal — nothing to park
-        // forward progress resets the poison-pill cap
-        const set = status === "retrying" ? { status } : { status, attempts: 0 };
+        const set = resetsAttempts(status) ? { status, attempts: 0 } : { status };
         await runs.updateOne({ _id: runId }, { $set: set }, { session });
         await commitOutbox(fx, session);
       });
     },
 
-    async markTerminal(runId, outcome, fx) {
-      await inTx(async (session) => {
+    markTerminal(runId, outcome, fx) {
+      return inTx(async (session) => {
         const run = await runs.findOne({ _id: runId }, { session });
         if (!run) throw new Error(`markTerminal: run ${runId} not found`);
-        if (isTerminal(run.status)) return;
+        if (isTerminal(run.status)) return false;
         const output = outcome.status === "done" ? durable(outcome.output) : undefined;
         const error =
           outcome.status === "done" || outcome.error === undefined
@@ -345,16 +389,13 @@ export const createMongoStore = (
           { session },
         );
         await commitOutbox(fx, session);
+        return true;
       });
     },
 
     async listRuns(filter, page) {
-      const statuses = statusList(filter.status);
       const q: Filter<RunDoc> = {
-        ...(statuses && { status: { $in: statuses } }),
-        ...(filter.name && { name: filter.name }),
-        ...(filter.version !== undefined && { version: filter.version }),
-        ...(filter.tag && { tags: filter.tag }),
+        ...selectionFilter(listSelection(filter)),
         ...(page.cursor && { ord: { $lt: new ObjectId(page.cursor) } }),
       };
       const docs = await runs.find(q).sort({ ord: -1 }).limit(page.limit).toArray();
@@ -364,55 +405,39 @@ export const createMongoStore = (
     },
 
     async cancelRuns(filter, limit) {
-      const statuses = runSetStatuses(filter, ACTIVE_STATUSES, "cancelRuns");
-      if (statuses.length === 0) return 0;
-      const q: Filter<RunDoc> = {
-        status: { $in: [...statuses] },
-        ...(filter.name !== undefined && { name: filter.name }),
-        ...(filter.version !== undefined && { version: filter.version }),
-        ...(filter.tag !== undefined && { tags: filter.tag }),
-      };
-      const victims = await runs
-        .find(q)
-        .limit(limit)
-        .project<Pick<RunDoc, "_id">>({ _id: 1 })
-        .toArray();
-      if (victims.length === 0) return 0;
-      const ids = victims.map((r) => r._id);
-      await timers.deleteMany({ _id: { $in: ids } });
-      const res = await runs.updateMany({ _id: { $in: ids } }, { $set: { status: "canceled" } });
-      return res.modifiedCount;
+      const q = selectionFilter(cancelSelection(filter));
+      return inTx(async (session) => {
+        const ids = await selectIds(q, limit, session);
+        if (ids.length === 0) return 0;
+        const res = await runs.updateMany(
+          { ...q, _id: { $in: ids } },
+          { $set: { status: "canceled" } },
+          { session },
+        );
+        await timers.deleteMany({ _id: { $in: ids } }, { session });
+        return res.modifiedCount;
+      });
     },
 
     async retryRuns(filter, limit) {
-      const statuses = runSetStatuses(filter, ["failed"], "retryRuns");
-      if (statuses.length === 0) return 0;
-      const q: Filter<RunDoc> = {
-        status: { $in: [...statuses] },
-        ...(filter.name !== undefined && { name: filter.name }),
-        ...(filter.version !== undefined && { version: filter.version }),
-        ...(filter.tag !== undefined && { tags: filter.tag }),
-      };
-      const victims = await runs
-        .find(q)
-        .limit(limit)
-        .project<Pick<RunDoc, "_id">>({ _id: 1 })
-        .toArray();
-      if (victims.length === 0) return 0;
-      const ids = victims.map((r) => r._id);
+      const q = selectionFilter(retrySelection(filter));
       return inTx(async (session) => {
-        await runs.updateMany(
-          { _id: { $in: ids } },
+        const ids = await selectIds(q, limit, session);
+        if (ids.length === 0) return 0;
+        const res = await runs.updateMany(
+          { ...q, _id: { $in: ids } },
           { $set: { status: "pending", attempts: 0 }, $unset: { error: "" } },
           { session },
         );
+        // A run another writer moved off `failed` since the read conflicts with this update and
+        // aborts the transaction into a retry, so every selected id was flipped.
         await enqueueJobs(
           jobs,
           runs,
-          victims.map((r) => ({ runId: r._id })),
+          ids.map((runId) => ({ runId })),
           session,
         );
-        return ids.length;
+        return res.modifiedCount;
       });
     },
 
@@ -434,8 +459,6 @@ export const createMongoStore = (
     },
 
     deleteRuns,
-
-    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     async orphanedRuns(limit) {
       const runDocs = await runs.find({}).sort({ ord: 1 }).toArray();
@@ -492,8 +515,8 @@ export const createMongoStore = (
               schedule: spec.schedule,
               flow_name: spec.flowName,
               flow_version: spec.flowVersion,
-              input: spec.input,
-              overlap: spec.overlap ?? "allow",
+              input: durable(spec.input),
+              overlap: spec.overlap,
               next_run_at: {
                 $cond: [
                   { $eq: ["$schedule", spec.schedule] },
@@ -507,6 +530,11 @@ export const createMongoStore = (
         ],
         { upsert: true },
       );
+    },
+
+    async nextCronAt() {
+      const [doc] = await crons.find({}).sort({ next_run_at: 1 }).limit(1).toArray();
+      return doc ? mapCron(doc).nextRunAt : null;
     },
 
     async dueCrons(now, limit) {

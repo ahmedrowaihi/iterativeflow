@@ -11,7 +11,8 @@
  * and asserts the two produce the same columns, keys, and indexes — the emitted file cannot drift
  * from the DDL the engine actually runs on.
  */
-import { pendingWorkDdl } from "#schema";
+import { TERMINAL_STATUSES, sqlStatusTuple } from "@iterativeflow/core/backend";
+import { DEFAULT_SCHEMA, pendingWorkDdl } from "#schema";
 
 interface TableModel {
   sql: string;
@@ -57,6 +58,7 @@ const MODEL: TableModel[] = [
       t("createdAt", `timestamp("created_at", { withTimezone: true }).notNull().defaultNow()`),
     ],
     extras: [
+      { name: "run_created", on: ["createdAt"] },
       { name: "run_parent", on: ["parentRunId"], where: "sql`${t.parentRunId} is not null`" },
       {
         name: "run_idem",
@@ -68,7 +70,7 @@ const MODEL: TableModel[] = [
       {
         name: "run_purge",
         on: ["name", "status", "createdAt"],
-        where: "sql`${t.status} in ('done','failed','canceled')`",
+        where: `sql\`\${t.status} in ${sqlStatusTuple(TERMINAL_STATUSES)}\``,
       },
     ],
   },
@@ -199,7 +201,7 @@ const emitTable = (m: TableModel): string => {
  *
  * @param schema Postgres schema name — must match the one you pass to `createPgBackend` / `ddl`.
  */
-export const drizzleSchema = (schema = "workflow"): string => {
+export const drizzleSchema = (schema = DEFAULT_SCHEMA): string => {
   const tables = MODEL.map(emitTable).join("\n\n");
   const exportNames = MODEL.map((m) => m.sql).join(", ");
   const selectTypes = MODEL.map(

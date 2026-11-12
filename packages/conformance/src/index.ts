@@ -1,3 +1,5 @@
+export { backendConformance } from "#all";
+export type { BackendTraits } from "#all";
 export { storeConformance } from "#store";
 export { queueConformance } from "#queue";
 export { timerConformance } from "#timer";
@@ -9,4 +11,5 @@ export { cronConformance } from "#cron";
 export { engineConformance } from "#engine";
 export { claimFilterConformance } from "#claim-filter";
 export { shardedClaimConformance } from "#sharded-claim";
+export { concurrencyConformance } from "#concurrency";
 export { pendingWorkConformance } from "#pending-work";

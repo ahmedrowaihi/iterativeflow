@@ -1,40 +1,17 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
-
-// Path aliases mirror tsconfig so cross-package imports resolve without a workspace install.
-const pkg = (name: string): string => resolve(__dirname, `packages/${name}/src/index.ts`);
+import tsconfig from "./tsconfig.json" with { type: "json" };
 
 export default defineConfig({
   resolve: {
-    // Ordered: the `/backend` and `/testing` subpaths must match before the bare
-    // `@iterativeflow/core` prefix.
-    alias: [
-      {
-        find: "@iterativeflow/core/backend",
-        replacement: resolve(__dirname, "packages/core/src/backend.ts"),
-      },
-      {
-        find: "@iterativeflow/core/testing",
-        replacement: resolve(__dirname, "packages/core/src/testing.ts"),
-      },
-      { find: "@iterativeflow/core", replacement: pkg("core") },
-      { find: "@iterativeflow/conformance", replacement: pkg("conformance") },
-      { find: "@iterativeflow/memory", replacement: pkg("memory") },
-      { find: "@iterativeflow/postgres", replacement: pkg("postgres") },
-      { find: "@iterativeflow/dynamodb", replacement: pkg("dynamodb") },
-      { find: "@iterativeflow/redis", replacement: pkg("redis") },
-      { find: "@iterativeflow/sqlite", replacement: pkg("sqlite") },
-      { find: "@iterativeflow/mysql", replacement: pkg("mysql") },
-      { find: "@iterativeflow/mongodb", replacement: pkg("mongodb") },
-      { find: "@iterativeflow/durable-objects", replacement: pkg("durable-objects") },
-      { find: "@iterativeflow/dashboard", replacement: pkg("dashboard") },
-      { find: "@iterativeflow/webhooks", replacement: pkg("webhooks") },
-    ],
+    // Longest first: `@iterativeflow/core/backend` must match before the bare `@iterativeflow/core`.
+    alias: Object.entries(tsconfig.compilerOptions.paths)
+      .sort(([a], [b]) => b.length - a.length)
+      .map(([find, [target]]) => ({ find, replacement: resolve(import.meta.dirname, target) })),
   },
   test: {
-    globals: true,
     environment: "node",
-    root: __dirname,
+    root: import.meta.dirname,
     include: ["packages/*/src/**/*.test.ts"],
     coverage: {
       provider: "v8",

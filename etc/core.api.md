@@ -5,8 +5,8 @@
 ## backend.d.mts
 
 ```ts
-import { $ as TerminalStatus, A as CRON_OVERLAPS, B as RunFilter, C as EnqueueOpts, D as QueueDepth, E as Queue, G as RunStatus, H as RunRow, I as FlowError, J as StepOutcome, K as STEP_STATUSES, L as Page, M as CronRow, N as CronSpec, O as distinctEnqueues, P as DeliveredSignal, Q as TerminalOutcome, R as PurgeFilter, S as ClaimOpts, T as Lease, U as RunSnapshot, V as RunPage, W as RunSpec, X as SuspendStatus, Y as StepStatus, Z as TERMINAL_STATUSES, _ as SpawnRequest, a as EventSink, b as Timer, f as isEventType, g as Outbox, h as Backend, j as CronOverlap, k as queueDepthOf, m as Store, n as newId, o as EventType, p as StartResult, q as StepCheckpoint, r as EVENT_TYPES, s as FlowEvent, t as IdGen, v as TimerRequest, w as EnqueueRequest, x as TimerDueOpts, y as Wakeup, z as RUN_STATUSES } from "./id-<hash>.mjs";
-import { a as isTerminal, i as isRunStatus, n as NON_SUCCESS_TERMINAL_STATUSES, o as statusList, r as RECONCILABLE_STATUSES, s as zeroRunStats, t as ACTIVE_STATUSES } from "./status-<hash>.mjs";
+import { $ as StepStatus, A as distinctEnqueues, B as FlowError, C as ClaimOpts, D as Lease, E as EnqueueRequest, F as CronOverlap, G as RunPage, H as PurgeFilter, I as CronRow, J as RunSpec, K as RunRow, L as CronSpec, M as queueDepthOf, N as shardAdmits, O as Queue, P as CRON_OVERLAPS, Q as StepOutcome, R as DeliveredSignal, S as TimerDueOpts, T as EnqueueOpts, U as RUN_STATUSES, V as Page, W as RunFilter, X as STEP_STATUSES, Y as RunStatus, Z as StepCheckpoint, _ as Outbox, a as EventSink, b as Wakeup, et as SuspendStatus, f as isEventType, g as FAN_OUT_CHUNK, h as Backend, j as enqueueFields, k as QueueDepth, m as Store, n as newId, nt as TerminalOutcome, o as EventType, p as StartResult, q as RunSnapshot, r as EVENT_TYPES, rt as TerminalStatus, s as FlowEvent, t as IdGen, tt as TERMINAL_STATUSES, v as SpawnRequest, w as EnqueueFields, x as Timer, y as TimerRequest } from "./id-<hash>.mjs";
+import { a as resetsAttempts, i as isTerminal, n as NON_SUCCESS_TERMINAL_STATUSES, o as zeroRunStats, r as isRunStatus, t as ACTIVE_STATUSES } from "./status-<hash>.mjs";
 //#region src/local-wakeup.d.ts
 /**
  * The process-local, edge-triggered {@link Wakeup} — the connection-safe default shared by
@@ -46,68 +46,79 @@ declare const decodeTags: (value: Json | undefined, where: string) => string[] |
  */
 declare const decodeOneOf: <T extends string>(allowed: readonly T[], value: string, where: string) => T;
 //#endregion
-//#region src/purge.d.ts
+//#region src/selection.d.ts
 /**
- * The statuses a {@link Store.deleteRuns} sweep may delete: `filter.status` intersected with the
- * terminal set, or every terminal state when unset. The intersection is what makes the terminal-only
- * guard unconditional — an untyped caller asking for `running` gets it dropped rather than honoured.
- * An empty result means the filter selects nothing, not everything.
- *
- * @throws {Error} when the filter carries no predicate — "delete all history" must be explicit.
+ * The runs one Store read or bulk write acts on, already narrowed: `statuses` is the filter's status
+ * set intersected with what the operation is defined on, so it can never widen past it (a purge never
+ * reaches a live run, a retry never reaches a non-failed one). Empty `statuses` selects nothing.
  */
-declare const purgeStatuses: (filter: PurgeFilter) => readonly TerminalStatus[];
+interface RunSelection {
+  statuses: readonly RunStatus[];
+  name?: string;
+  version?: number;
+  tag?: string;
+  /** Created strictly before this instant. */
+  before?: Date;
+  /** Leave out runs whose parent is still live: a fan-out parent re-reads every child when it joins,
+   *  so deleting a finished child under it would leave the parent waiting forever. */
+  spareChildrenOfLiveParents?: true;
+}
+/** The selection a {@link Store.listRuns} page reads. An empty filter lists every run. */
+declare const listSelection: (filter: RunFilter) => RunSelection;
 /**
- * The statuses a bulk control operation may touch: `filter.status` intersected with `allowed`, or all
- * of `allowed` when unset. Same shape as {@link purgeStatuses} — the filter narrows within the set
- * the operation is defined on and can never widen past it.
- *
+ * The selection a {@link Store.cancelRuns} sweep cancels: live runs only.
  * @throws {Error} when the filter carries no predicate — a set operation over everything must be
  * spelled out, not defaulted into.
  */
-declare const runSetStatuses: (filter: RunFilter, allowed: readonly RunStatus[], op: string) => readonly RunStatus[];
-/** The minimal run shape a purge reads — satisfied by `RunRow` and by a backend's raw row. */
-interface PurgeRun {
+declare const cancelSelection: (filter: RunFilter) => RunSelection;
+/**
+ * The selection a {@link Store.retryRuns} sweep re-drives: `failed` runs only.
+ * @throws {Error} when the filter carries no predicate.
+ */
+declare const retrySelection: (filter: RunFilter) => RunSelection;
+/**
+ * The selection a {@link Store.deleteRuns} sweep deletes: terminal runs only.
+ * @throws {Error} when the filter carries no predicate — "delete all history" must be explicit.
+ */
+declare const purgeSelection: (filter: PurgeFilter) => RunSelection;
+/** The run fields a selection reads — satisfied by `RunRow` and by a backend's raw row. */
+interface SelectableRun {
   name: string;
   version: number;
   status: RunStatus;
+  tags?: readonly string[];
   createdAt?: Date;
+  parentRunId?: string;
 }
 /**
- * The row predicate for the scanning backends (memory/Redis/DynamoDB), built once per sweep so the
- * status set and cutoff aren't recomputed per row. The SQL backends express the same predicate as
- * {@link purgeWhereSql} — single source, so a new purge predicate lands on both sides at once.
+ * The row predicate of a selection, for the backends that scan instead of querying. `statusOf` looks
+ * up another run's status (`undefined` = gone); a purge selection, which spares children of live
+ * parents, requires it.
  */
-declare const purgeMatcher: (filter: PurgeFilter) => ((run: PurgeRun) => boolean);
-/**
- * The `WHERE` body and binds selecting the rows a bulk cancel/retry acts on. `undefined` when the
- * filter intersects to no usable status — the caller then touches nothing rather than emitting an
- * empty `IN ()`. Statuses render as literals for the reason on {@link PurgeSqlOpts.statusTuple}.
- */
-declare const runSetWhereSql: <Time>(filter: RunFilter, allowed: readonly RunStatus[], op: string, o: PurgeSqlOpts<Time>) => {
-  where: string;
-  params: (string | number)[];
-} | undefined;
-/** Dialect specifics for {@link purgeWhereSql}. */
-interface PurgeSqlOpts<Time> {
+declare const runMatcher: (sel: RunSelection, statusOf?: (runId: string) => RunStatus | undefined) => ((run: SelectableRun) => boolean);
+/** A status set as a SQL literal tuple, e.g. `('done','failed')`. Only ever fed core status constants. */
+declare const sqlStatusTuple: (statuses: readonly RunStatus[]) => string;
+/** Dialect specifics for {@link runSelectionSql}. */
+interface SelectionSqlOpts<Time> {
   /** Renders the nth (1-based) bind placeholder: `` (n) => `$${n}` `` for Postgres, `() => "?"` else. */
   placeholder: (n: number) => string;
   /** How an instant binds — a `Date` for Postgres, epoch ms for the integer-time backends. */
   time: (at: Date) => Time;
-  /** Renders a status set as a SQL literal tuple, e.g. `('done','failed')`. Literals, not binds:
-   *  a partial index over the terminal statuses is only usable when the planner can prove the
-   *  query's predicate implies the index's, which it cannot do through a bind parameter. */
-  statusTuple: (statuses: readonly string[]) => string;
   /** Renders "the run's `tags` contain the value bound at `placeholder`". Required so a backend
    *  cannot silently drop a tag filter and widen a bulk cancel or retry to every tenant. */
   tag: (placeholder: string) => string;
+  /** The run table, rendered (schema/prefix applied) and NOT aliased in the outer query — the
+   *  live-parent guard correlates against it by name. */
+  run: string;
 }
 /**
- * The SQL form of {@link purgeMatcher}: the `WHERE` body and its binds for the run-selecting half of
- * a purge. `undefined` when the filter selects no terminal status at all — the caller deletes nothing
- * rather than emitting an empty `IN ()`. Binds are numbered from 1, so a trailing `LIMIT` takes
- * `placeholder(params.length + 1)`.
+ * The SQL form of {@link runMatcher}: the `WHERE` body and its binds, numbered from 1, so a trailing
+ * clause takes `placeholder(params.length + 1)`. `undefined` when the selection has no status — the
+ * caller touches nothing rather than emitting an empty `IN ()`. Statuses render as literals, not
+ * binds: a partial index over the terminal statuses is only usable when the planner can prove the
+ * query's predicate implies the index's, which it cannot do through a bind parameter.
  */
-declare const purgeWhereSql: <Time>(filter: PurgeFilter, o: PurgeSqlOpts<Time>) => {
+declare const runSelectionSql: <Time>(sel: RunSelection, o: SelectionSqlOpts<Time>) => {
   where: string;
   params: (string | number | Time)[];
 } | undefined;
@@ -136,16 +147,12 @@ interface OrphanView {
  * terminated without success (structured-concurrency cancel that never reached it).
  */
 declare const isOrphaned: (r: OrphanRun, v: OrphanView) => boolean;
-/** Dialect specifics for {@link orphanedRunsSql} — table identifiers and status tuples are already
- *  rendered (schema/prefix applied, `('done',…)`), so the builder stays dialect-neutral. */
+/** Dialect specifics for {@link orphanedRunsSql}: table identifiers already rendered (schema/prefix
+ *  applied), so the builder stays dialect-neutral. */
 interface OrphanSqlOpts {
   run: string;
   job: string;
   timer: string;
-  /** Status sets rendered as SQL tuples, e.g. `('done','failed','canceled')`. */
-  reconcilable: string;
-  terminal: string;
-  nonSuccessTerminal: string;
   /** Insertion-order column to page by, e.g. `r.seq` (Postgres/MySQL) or `r.rowid` (SQLite). */
   order: string;
   /** Bind placeholder for the `LIMIT`, e.g. `$1` (Postgres) or `?` (SQLite/MySQL). */
@@ -167,13 +174,19 @@ declare const orphanedRunsSql: (o: OrphanSqlOpts) => string;
  */
 declare const assertSqlIdentifier: (name: string, what?: string) => void;
 //#endregion
-export { ACTIVE_STATUSES, type Backend, CRON_OVERLAPS, type ClaimOpts, type CronOverlap, type CronRow, type CronSpec, type DeliveredSignal, EVENT_TYPES, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, type FlowError, type FlowEvent, type IdGen, type Json, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type PurgeRun, type PurgeSqlOpts, type Queue, type QueueDepth, RECONCILABLE_STATUSES, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSnapshot, type RunSpec, type RunStatus, STEP_STATUSES, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, createLocalWakeup, decodeFlowError, decodeOneOf, decodeTags, distinctEnqueues, durable, isEventType, isJsonString, isOrphaned, isRunStatus, isTerminal, newId, orphanedRunsSql, purgeMatcher, purgeStatuses, purgeWhereSql, queueDepthOf, runSetStatuses, runSetWhereSql, statusList, zeroRunStats };
+export { ACTIVE_STATUSES, type Backend, CRON_OVERLAPS, type ClaimOpts, type CronOverlap, type CronRow, type CronSpec, type DeliveredSignal, EVENT_TYPES, type EnqueueFields, type EnqueueOpts, type EnqueueRequest, type EventSink, type EventType, FAN_OUT_CHUNK, type FlowError, type FlowEvent, type IdGen, type Json, type Lease, NON_SUCCESS_TERMINAL_STATUSES, type OrphanRun, type OrphanSqlOpts, type OrphanView, type Outbox, type Page, type PurgeFilter, type Queue, type QueueDepth, RUN_STATUSES, type RunFilter, type RunPage, type RunRow, type RunSelection, type RunSnapshot, type RunSpec, type RunStatus, STEP_STATUSES, type SelectableRun, type SelectionSqlOpts, type SpawnRequest, type StartResult, type StepCheckpoint, type StepOutcome, type StepStatus, type Store, type SuspendStatus, TERMINAL_STATUSES, type TerminalOutcome, type TerminalStatus, type Timer, type TimerDueOpts, type TimerRequest, type Wakeup, assertSqlIdentifier, cancelSelection, createLocalWakeup, decodeFlowError, decodeOneOf, decodeTags, distinctEnqueues, durable, enqueueFields, isEventType, isJsonString, isOrphaned, isRunStatus, isTerminal, listSelection, newId, orphanedRunsSql, purgeSelection, queueDepthOf, resetsAttempts, retrySelection, runMatcher, runSelectionSql, shardAdmits, sqlStatusTuple, zeroRunStats };
 ```
 
 ## engine-<hash>.d.mts
 
 ```ts
-import { B as RunFilter, C as EnqueueOpts, D as QueueDepth, F as DriftPolicy, G as RunStatus, I as FlowError, L as Page, M as CronRow, R as PurgeFilter, T as Lease, U as RunSnapshot, V as RunPage, h as Backend, l as ObserveOpts, t as IdGen } from "./id-<hash>.mjs";
+import { B as FlowError, D as Lease, F as CronOverlap, G as RunPage, H as PurgeFilter, I as CronRow, K as RunRow, T as EnqueueOpts, V as Page, W as RunFilter, Y as RunStatus, h as Backend, k as QueueDepth, l as ObserveOpts, q as RunSnapshot, rt as TerminalStatus, t as IdGen, z as DriftPolicy } from "./id-<hash>.mjs";
+//#region src/clock.d.ts
+/** The clock the executor threads in — injectable for deterministic tests. */
+type Clock = () => Date;
+/** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
+declare const systemClock: Clock;
+//#endregion
 //#region src/engine/context.d.ts
 /** What a step's `fn` receives — the abort signal (fires on timeout) and its attempt number. */
 interface StepArg {
@@ -302,10 +315,6 @@ interface Ctx<S extends SignalMap = SignalMap> {
    */
   log<D>(message: string, data?: D): void;
 }
-/** The clock the executor threads in — injectable for deterministic tests. */
-type Clock = () => Date;
-/** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
-declare const systemClock: Clock;
 //#endregion
 //#region src/engine/flow.d.ts
 /** The Standard Schema calling surface (spec v1) — zod/valibot/arktype schemas all satisfy it. */
@@ -478,20 +487,22 @@ interface TickResult {
   error?: FlowError;
   cursorKey?: string;
 }
+/** The per-run half of a worker cycle's options — what {@link runTick} reads. */
 interface TickOpts {
   now?: Clock;
   retry?: RetryPolicy;
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
-  leaseMs?: number;
+  /** The lease length the run was claimed with — what renewal extends it by. */
+  leaseMs: number;
 }
 /**
  * Execute one claimed run to its next durable boundary (completion, suspend, or retry) and
  * release the lease. Idempotent across crashes: a re-claim re-invokes the flow and memoized
  * ctx calls short-circuit, so only un-run work executes again.
  */
-declare const runTick: (backend: Backend, flows: FlowRegistry, lease: Lease, opts?: TickOpts) => Promise<TickResult>;
+declare const runTick: (backend: Backend, flows: FlowRegistry, lease: Lease, opts: TickOpts) => Promise<TickResult>;
 //#endregion
 //#region src/engine/schedule.d.ts
 /** The tag every cron-spawned run carries, so `listRuns({ tag })` finds a cron's history. */
@@ -503,20 +514,20 @@ interface CronDef<I> {
   flow: Flow<I, unknown>;
   input: I;
   /** `skip` won't start a new run while a prior run of this cron is still active. Default `allow`. */
-  overlap?: "allow" | "skip";
+  overlap?: CronOverlap;
 }
 /**
  * Register (or update) a cron. Validates the expression and computes the first fire from `now`.
  * Re-registering keeps the existing schedule timing (the store preserves `nextRunAt`).
  */
-declare const registerCron: <I>(backend: Backend, def: CronDef<I>, now?: () => Date) => Promise<void>;
+declare const registerCron: <I>(backend: Backend, def: CronDef<I>, now?: Clock) => Promise<void>;
 /**
  * Fire every due cron once. Each occurrence's run is deduped across a fleet by the occurrence-scoped
  * idempotency key (`cron:name:fireTime`), and the schedule is advanced by the `advanceCron` CAS so
  * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
  * many occurrences this worker advanced.
  */
-declare const runDueCrons: (backend: Backend, now?: () => Date) => Promise<number>;
+declare const runDueCrons: (backend: Backend, now?: Clock) => Promise<number>;
 //#endregion
 //#region src/engine/worker.d.ts
 /**
@@ -566,7 +577,7 @@ declare const signalRun: <O = unknown, S extends SignalMap = NoSignals, K extend
 }) => Promise<boolean>;
 /** The settled outcome of a run, as returned by {@link result}. `O` is the flow's output type. */
 interface RunResult<O = unknown> {
-  status: Extract<RunStatus, "done" | "failed" | "canceled">;
+  status: TerminalStatus;
   output?: O;
   error?: FlowError;
 }
@@ -628,14 +639,9 @@ declare const purge: (backend: Backend, opts: {
   filter: PurgeFilter;
   limit: number;
 }) => Promise<number>;
-interface TickOnceOpts {
+/** One worker cycle's options: the batch it claims, and the per-run {@link TickOpts} it runs them with. */
+interface TickOnceOpts extends TickOpts {
   batchMax: number;
-  leaseMs: number;
-  retry?: RetryPolicy;
-  now?: Clock;
-  id?: IdGen;
-  observe?: ObserveOpts;
-  driftPolicy?: DriftPolicy;
   names?: readonly string[];
   pollTimeoutMs?: number;
   reconcileLimit?: number;
@@ -779,6 +785,8 @@ interface Engine<N extends string = string> {
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
   listRuns(filter: RunFilter<N>, page: Page): Promise<RunPage>;
+  /** The direct children of a run (spawned via `ctx.invoke`). */
+  children(runId: string): Promise<readonly RunRow[]>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
   /**
@@ -851,9 +859,10 @@ interface Engine<N extends string = string> {
   /** Whether claiming is currently paused. */
   isPaused(): boolean;
 }
+/** Build an {@link Engine} over `backend`, running `flows`. */
 declare const createEngine: <const F extends readonly AnyFlow[]>(backend: Backend, flows: F, opts?: EngineOpts) => Engine<F[number]["name"]>;
 //#endregion
-export { defineContract as $, RetryPolicy as A, Flow as B, submit as C, cronTag as D, CronDef as E, runTick as F, InvokeOpts as G, FlowPolicy as H, AnyFlow as I, NoSignals as J, InvokeSpec as K, ChildResult as L, TickResult as M, TickStatus as N, registerCron as O, defaultRetry as P, SignalSchemas as Q, ChildResults as R, signalRun as S, tickOnce as T, FlowRegistry as U, FlowOutputs as V, InputSchema as W, SignalMap as X, OutputSchema as Y, SignalSchema as Z, purge as _, RunLoopOpts as a, Ctx as at, retryRun as b, ResultOpts as c, systemClock as ct, SubmitOpts as d, defineFlow as et, SubmitSpec as f, prune as g, drainTimers as h, ResultWait as i, Clock as it, TickOpts as j, runDueCrons as k, RunHandle as l, TickOnceOpts as m, EngineOpts as n, validateInput as nt, createEngine as o, StepArg as ot, SweepResult as p, InvokeSpecFor as q, Liveness as r, validateSignal as rt, OnDuplicate as s, StepPolicy as st, Engine as t, registry as tt, RunResult as u, reconcile as v, submitMany as w, serverlessTick as x, result as y, Contract as z };
+export { defineContract as $, RetryPolicy as A, Flow as B, submit as C, cronTag as D, CronDef as E, runTick as F, InvokeOpts as G, FlowPolicy as H, AnyFlow as I, NoSignals as J, InvokeSpec as K, ChildResult as L, TickResult as M, TickStatus as N, registerCron as O, defaultRetry as P, SignalSchemas as Q, ChildResults as R, signalRun as S, tickOnce as T, FlowRegistry as U, FlowOutputs as V, InputSchema as W, SignalMap as X, OutputSchema as Y, SignalSchema as Z, purge as _, RunLoopOpts as a, StepArg as at, retryRun as b, ResultOpts as c, systemClock as ct, SubmitOpts as d, defineFlow as et, SubmitSpec as f, prune as g, drainTimers as h, ResultWait as i, Ctx as it, TickOpts as j, runDueCrons as k, RunHandle as l, TickOnceOpts as m, EngineOpts as n, validateInput as nt, createEngine as o, StepPolicy as ot, SweepResult as p, InvokeSpecFor as q, Liveness as r, validateSignal as rt, OnDuplicate as s, Clock as st, Engine as t, registry as tt, RunResult as u, reconcile as v, submitMany as w, serverlessTick as x, result as y, Contract as z };
 ```
 
 ## id-<hash>.d.mts
@@ -1007,7 +1016,7 @@ interface CronSpec {
   flowName: string;
   flowVersion: number;
   input?: unknown;
-  overlap?: CronOverlap;
+  overlap: CronOverlap;
   nextRunAt: Date;
 }
 /** A terminal transition. */
@@ -1030,8 +1039,17 @@ interface EnqueueOpts {
   /** Lower = sooner. Omitted ⇒ the run's own priority (set at submit), else 0. */
   priority?: number;
 }
-/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany} and of an {@link Outbox}'s
- *  atomic enqueues. */
+/** An enqueue's stored schedule. */
+interface EnqueueFields {
+  runAtMs: number;
+  priority: number;
+}
+/**
+ * The stored schedule of an enqueue: `runAtMs` 0 (the epoch) when `runAt` is omitted, so an
+ * immediate job sorts before every scheduled one; `priority` falls back to the run's own, then 0.
+ */
+declare const enqueueFields: (opts: EnqueueOpts | undefined, runPriority: number | undefined) => EnqueueFields;
+/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany}. */
 interface EnqueueRequest {
   runId: string;
   opts?: EnqueueOpts;
@@ -1053,9 +1071,14 @@ interface ClaimOpts {
    *  names it registered so it never blind-claims a run for a `name` it can't execute (which would
    *  park `unknown_flow` and churn the queue). Matches on `name` only: a registered name at an
    *  unregistered *version* still leases, then parks for redeploy — the intended handoff, not a shard miss.
-   *  Omitted ⇒ no filter (claim any run — a monolith); a set filters, and an empty set leases nothing. */
+   *  Omitted ⇒ no filter (claim any run — a monolith); a set filters, and an empty set leases nothing.
+   *  A job whose run is gone passes every non-empty filter: it is unownable, and the worker that
+   *  leases it acks it, which is what drains it. The same rule scopes `depth`, `Timer.dueCount` and
+   *  `Store.dueCronCount`. */
   names?: readonly string[];
 }
+/** {@link ClaimOpts.names} as a predicate over a job's run name (`undefined` = the run is gone). */
+declare const shardAdmits: (names: readonly string[] | undefined, runName: string | undefined) => boolean;
 /** A liveness snapshot of the dispatch queue — a rising backlog or age means workers can't keep up. */
 interface QueueDepth {
   /** Jobs due and unleased right now — the backlog waiting for a free worker. */
@@ -1066,9 +1089,9 @@ interface QueueDepth {
   oldestClaimableAgeMs: number | null;
 }
 /**
- * Compute a {@link QueueDepth} from an in-memory job set — the shared body of the memory + DynamoDB
- * `Queue.depth`, so the claimable/leased/oldest-age definition lives once. Postgres derives the same
- * numbers in SQL and doesn't use this.
+ * Compute a {@link QueueDepth} from an in-memory job set — the shared body of every scanning
+ * backend's `Queue.depth`, so the claimable/leased/oldest-age definition lives once. The SQL
+ * backends derive the same numbers in one aggregate query.
  */
 declare const queueDepthOf: (jobs: readonly {
   runAt: number;
@@ -1170,8 +1193,8 @@ interface Timer {
   /** Remove a run's pending timer (e.g. the wake landed another way, or the run ended). */
   cancel(runId: string): Promise<void>;
   /**
-   * The earliest pending timer due strictly AFTER `now` (sleep / retry backoff / cron), or `null`
-   * when none is pending — the serverless wake horizon. Timers due at/before `now` are drained by
+   * The earliest pending timer due strictly AFTER `now` (sleep / retry backoff), or `null` when
+   * none is pending — the timer half of the serverless wake horizon (crons are the other half). Timers due at/before `now` are drained by
    * the tick, not reported here. Must be one bounded read on the due-ordered index (min/limit-1),
    * never a scan; signals and child-joins wake by enqueue, so they are NOT covered by this.
    */
@@ -1218,8 +1241,13 @@ interface Wakeup {
 interface SpawnRequest {
   runId: string;
   spec: RunSpec;
-  enqueue?: EnqueueOpts;
 }
+/**
+ * Children `ctx.invoke` spawns per checkpoint — a backend's atomic-write budget must fit this many
+ * spawns in one {@link Outbox}. Fixed in core, not per backend, because the chunk count is part of
+ * the replay fingerprint: every backend must chunk a fan-out identically.
+ */
+declare const FAN_OUT_CHUNK = 40;
 /** A durable deadline to set atomically with a Store write (sleep / retry backoff). */
 interface TimerRequest {
   runId: string;
@@ -1237,10 +1265,10 @@ interface TimerRequest {
  * signal only costs latency, never correctness), so the engine fires them post-commit.
  */
 interface Outbox {
-  /** Child runs to create + enqueue atomically (`ctx.invoke`). Insert-by-id is idempotent. */
+  /** Child runs to create + enqueue (immediately, at the spec's priority) atomically
+   *  (`ctx.invoke`). Insert-by-id is first-writer-wins: an existing run's row is left untouched
+   *  (re-enqueuing it is allowed — a terminal run's job is acked on claim). */
   spawn?: readonly SpawnRequest[];
-  /** Existing runs to (re-)enqueue atomically (continue self, wake a suspended parent). */
-  enqueue?: readonly EnqueueRequest[];
   /** Durable deadlines to set atomically (sleep, retry). */
   timers?: readonly TimerRequest[];
   /**
@@ -1278,7 +1306,7 @@ interface Outbox {
 /**
  * A cohesive backend: the four ports over one shared substrate. The outbox guarantee is a
  * property of a Backend — `store.checkpointStep(c, fx)` commits the step and `fx`'s
- * spawns/enqueues/timers against THIS backend's queue/timer atomically. The three
+ * spawns/timers against THIS backend's queue/timer atomically. The three
  * standalone `*Conformance` suites pin each port in isolation; `outboxConformance` pins
  * the atomic composition.
  */
@@ -1298,7 +1326,7 @@ interface StartResult {
 }
 /**
  * Durable checkpoint store — one of the four v2 ports. The core speaks only to this
- * interface; backends (in-memory, Postgres, DynamoDB) implement it with the best
+ * interface; each backend implements it with the best
  * primitive available. Every implementation must pass `storeConformance`.
  *
  * Design invariant: **one durable write per step** (`checkpointStep`). There is no
@@ -1314,10 +1342,9 @@ interface Store {
   startRun(spec: RunSpec): Promise<StartResult>;
   /**
    * Insert many runs, each created idempotently (per-spec idempotency key), results aligned 1:1
-   * with `specs` — a batch may mix created + already-existing runs. Memory and Postgres commit the
-   * whole batch in one transaction (all-or-none). DynamoDB commits in atomic chunks bounded by the
-   * `TransactWriteItems` 100-item cap, so a batch larger than the cap spans chunks and a crash
-   * between them can land it partially — the reconciler and idempotency keys make a re-submit safe.
+   * with `specs` — a batch may mix created + already-existing runs. All-or-none is NOT promised: a
+   * backend commits the batch in as few atomic writes as its substrate allows, so a failure can land
+   * part of it. Idempotency keys make re-submitting the whole batch safe.
    */
   startManyRuns(specs: readonly RunSpec[]): Promise<StartResult[]>;
   /** Load the run + its completed-step memo + pending signal inbox. `undefined` if gone. */
@@ -1337,7 +1364,7 @@ interface Store {
    * A child arriving at its parent's fan-out join: atomically decrement `parentRunId`'s join
    * countdown ({@link Outbox.joinTarget}) and return the new value, or `undefined` if the parent is
    * already gone (nothing to wake). The executor wakes the parent when this reaches zero (all
-   * children arrived); a missed wake is caught by the reconcile `lostParentWake` sweep, so this only
+   * children arrived); a missed wake is caught by the reconcile sweep (a resolved-join parent with no job), so this only
    * reduces parent wakes from O(children) to O(1) — it never gates correctness.
    */
   arriveAtJoin(parentRunId: string): Promise<number | undefined>;
@@ -1367,15 +1394,16 @@ interface Store {
    * a race the winner's value comes back, which may differ from what this caller passed in
    * (e.g. the winning `ctx.invoke`'s childId).
    *
-   * When `fx` is given, its spawns/enqueues/timers commit atomically with the checkpoint
+   * When `fx` is given, its spawns/timers commit atomically with the checkpoint
    * — and ONLY when the checkpoint is the first writer. On an idempotent hit the outbox is
    * skipped (the original write already committed the original outbox), so a replayed
    * `ctx.invoke` never double-spawns.
    */
   checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<CheckpointResult>;
   /**
-   * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on
-   * an external signal), or `retrying` (backing off before re-dispatch). `fx` commits the
+   * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on an external
+   * signal), `awaiting_child` (waiting on a fan-out join), `retrying` (backing off before re-dispatch)
+   * or `parked` (waiting for a redeploy). `fx` commits the
    * wake mechanism atomically with the status change — a sleep sets status + its timer in
    * one write, so a crash can't strand a run `sleeping` with no timer to wake it. A no-op
    * on a run that is already terminal.
@@ -1387,12 +1415,14 @@ interface Store {
   suspendRun(runId: string, status: SuspendStatus, fx?: Outbox): Promise<void>;
   /**
    * Take the run terminal. A no-op on a run that is already terminal: an outcome is final, so a late
-   * cancel cannot erase a finished run's output or error. `fx` commits atomically with
-   * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
+   * cancel cannot erase a finished run's output or error. Returns whether THIS call made the run
+   * terminal — `false` on the no-op, so a caller that lost the race skips its follow-ups (events, the
+   * parent-arrive). `fx` commits atomically with the status write (e.g. clearing a pending wake timer),
+   * and only when it returns `true`. The fan-out parent-wake is NOT part of
    * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
-   * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.
+   * enqueues it afterward, best-effort, backstopped by the reconcile sweep (a resolved-join parent with no job).
    */
-  markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<void>;
+  markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<boolean>;
   /** List runs newest-first, filtered and paged. The ops/dashboard read surface. */
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
   /**
@@ -1415,17 +1445,13 @@ interface Store {
   /** Count of runs per status — the health / overview snapshot. */
   runStats(): Promise<Record<RunStatus, number>>;
   /**
-   * Delete up to `limit` TERMINAL runs (done/failed/canceled) created before `before`, together with
-   * their steps, signals, and events — the retention sweep. Live runs are never touched. Returns how
-   * many runs were deleted. Deleting a parent whose (also-terminal) children outlive it leaves those
-   * children's `parentRunId` dangling, which is harmless — `childrenOf` simply stops finding the parent.
-   */
-  deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
-  /**
-   * The same sweep, narrowed: delete up to `limit` TERMINAL runs matching `filter` (age, flow name,
-   * flow version, terminal status), with their steps, signals, and events. Clearing the wreckage of a
-   * mass cancel without waiting out the retention window is what this is for. The terminal guard holds
-   * whatever the filter says, so live runs stay untouchable. Throws on a filter with no predicate.
+   * The retention sweep: delete up to `limit` TERMINAL runs matching `filter` (age, flow name, flow
+   * version, terminal status), with their steps, signals, and events. The terminal guard holds whatever
+   * the filter says, so live runs stay untouchable — and it holds at delete time, so a run retried
+   * mid-sweep survives. A child whose parent is still live is never deleted either: the parent re-reads
+   * every child when it joins. Returns how many runs were deleted. Throws on a filter with no predicate.
+   * A terminal parent's children may still be deleted; if the parent is later retried, its join
+   * reports each missing child as failed (`CHILD_GONE`).
    */
   deleteRuns(filter: PurgeFilter, limit: number): Promise<number>;
   /**
@@ -1454,6 +1480,10 @@ interface Store {
   listCrons(): Promise<readonly CronRow[]>;
   /** Remove a cron. Returns whether a row was there — a row outlives its deregistration in code. */
   removeCron(name: string): Promise<boolean>;
+  /** The earliest `nextRunAt` across every cron (overdue ones included), or `null` with none
+   *  registered — the cron half of the serverless wake horizon. One bounded read on a due-ordered
+   *  index, never a scan. */
+  nextCronAt(): Promise<Date | null>;
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;
   /** Count crons due at/before `now` (the due-cron contribution to the autoscaling backlog: a due
@@ -1476,6 +1506,7 @@ type EventLevel = "all" | "lifecycle" | "off";
 type EventType = (typeof EVENT_TYPES)[number];
 /** Every {@link EventType}, for a sink that reads events back and must check what it stored. */
 declare const EVENT_TYPES: readonly ["run.started", "run.completed", "run.failed", "run.suspended", "step.finished", "run.log"];
+/** Type guard for an event type read back from storage. */
 declare const isEventType: (s: string) => s is EventType;
 /** One durable audit-log entry — the dashboard timeline reads these. */
 interface FlowEvent {
@@ -1547,15 +1578,15 @@ type IdGen = () => string;
  *  contexts). Override by passing your own {@link IdGen}. */
 declare const newId: IdGen;
 //#endregion
-export { TerminalStatus as $, CRON_OVERLAPS as A, RunFilter as B, EnqueueOpts as C, QueueDepth as D, Queue as E, DriftPolicy as F, RunStatus as G, RunRow as H, FlowError as I, StepOutcome as J, STEP_STATUSES as K, Page as L, CronRow as M, CronSpec as N, distinctEnqueues as O, DeliveredSignal as P, TerminalOutcome as Q, PurgeFilter as R, ClaimOpts as S, Lease as T, RunSnapshot as U, RunPage as V, RunSpec as W, SuspendStatus as X, StepStatus as Y, TERMINAL_STATUSES as Z, SpawnRequest as _, EventSink as a, Timer as b, Metrics as c, Tracer as d, isEventType as f, Outbox as g, Backend as h, EventLevel as i, CronOverlap as j, queueDepthOf as k, ObserveOpts as l, Store as m, newId as n, EventType as o, StartResult as p, StepCheckpoint as q, EVENT_TYPES as r, FlowEvent as s, IdGen as t, Span as u, TimerRequest as v, EnqueueRequest as w, TimerDueOpts as x, Wakeup as y, RUN_STATUSES as z };
+export { StepStatus as $, distinctEnqueues as A, FlowError as B, ClaimOpts as C, Lease as D, EnqueueRequest as E, CronOverlap as F, RunPage as G, PurgeFilter as H, CronRow as I, RunSpec as J, RunRow as K, CronSpec as L, queueDepthOf as M, shardAdmits as N, Queue as O, CRON_OVERLAPS as P, StepOutcome as Q, DeliveredSignal as R, TimerDueOpts as S, EnqueueOpts as T, RUN_STATUSES as U, Page as V, RunFilter as W, STEP_STATUSES as X, RunStatus as Y, StepCheckpoint as Z, Outbox as _, EventSink as a, Wakeup as b, Metrics as c, Tracer as d, SuspendStatus as et, isEventType as f, FAN_OUT_CHUNK as g, Backend as h, EventLevel as i, enqueueFields as j, QueueDepth as k, ObserveOpts as l, Store as m, newId as n, TerminalOutcome as nt, EventType as o, StartResult as p, RunSnapshot as q, EVENT_TYPES as r, TerminalStatus as rt, FlowEvent as s, IdGen as t, TERMINAL_STATUSES as tt, Span as u, SpawnRequest as v, EnqueueFields as w, Timer as x, TimerRequest as y, DriftPolicy as z };
 ```
 
 ## index.d.mts
 
 ```ts
-import { $ as TerminalStatus, B as RunFilter, D as QueueDepth, F as DriftPolicy, G as RunStatus, H as RunRow, I as FlowError, J as StepOutcome, L as Page, P as DeliveredSignal, R as PurgeFilter, U as RunSnapshot, V as RunPage, Y as StepStatus, a as EventSink, c as Metrics, d as Tracer, h as Backend, i as EventLevel, l as ObserveOpts, n as newId, o as EventType, s as FlowEvent, t as IdGen, u as Span, z as RUN_STATUSES } from "./id-<hash>.mjs";
-import { i as isRunStatus } from "./status-<hash>.mjs";
-import { $ as defineContract, A as RetryPolicy, B as Flow, C as submit, D as cronTag, E as CronDef, F as runTick, G as InvokeOpts, H as FlowPolicy, I as AnyFlow, J as NoSignals, K as InvokeSpec, L as ChildResult, M as TickResult, N as TickStatus, O as registerCron, P as defaultRetry, Q as SignalSchemas, R as ChildResults, S as signalRun, T as tickOnce, U as FlowRegistry, V as FlowOutputs, W as InputSchema, X as SignalMap, Y as OutputSchema, Z as SignalSchema, _ as purge, a as RunLoopOpts, at as Ctx, b as retryRun, c as ResultOpts, ct as systemClock, d as SubmitOpts, et as defineFlow, f as SubmitSpec, g as prune, h as drainTimers, i as ResultWait, it as Clock, j as TickOpts, k as runDueCrons, l as RunHandle, m as TickOnceOpts, n as EngineOpts, nt as validateInput, o as createEngine, ot as StepArg, p as SweepResult, q as InvokeSpecFor, r as Liveness, rt as validateSignal, s as OnDuplicate, st as StepPolicy, t as Engine, tt as registry, u as RunResult, v as reconcile, w as submitMany, x as serverlessTick, y as result, z as Contract } from "./engine-<hash>.mjs";
+import { $ as StepStatus, B as FlowError, G as RunPage, H as PurgeFilter, K as RunRow, Q as StepOutcome, R as DeliveredSignal, U as RUN_STATUSES, V as Page, W as RunFilter, Y as RunStatus, a as EventSink, c as Metrics, d as Tracer, h as Backend, i as EventLevel, k as QueueDepth, l as ObserveOpts, n as newId, o as EventType, q as RunSnapshot, rt as TerminalStatus, s as FlowEvent, t as IdGen, u as Span, z as DriftPolicy } from "./id-<hash>.mjs";
+import { r as isRunStatus } from "./status-<hash>.mjs";
+import { $ as defineContract, A as RetryPolicy, B as Flow, C as submit, D as cronTag, E as CronDef, F as runTick, G as InvokeOpts, H as FlowPolicy, I as AnyFlow, J as NoSignals, K as InvokeSpec, L as ChildResult, M as TickResult, N as TickStatus, O as registerCron, P as defaultRetry, Q as SignalSchemas, R as ChildResults, S as signalRun, T as tickOnce, U as FlowRegistry, V as FlowOutputs, W as InputSchema, X as SignalMap, Y as OutputSchema, Z as SignalSchema, _ as purge, a as RunLoopOpts, at as StepArg, b as retryRun, c as ResultOpts, ct as systemClock, d as SubmitOpts, et as defineFlow, f as SubmitSpec, g as prune, h as drainTimers, i as ResultWait, it as Ctx, j as TickOpts, k as runDueCrons, l as RunHandle, m as TickOnceOpts, n as EngineOpts, nt as validateInput, o as createEngine, ot as StepPolicy, p as SweepResult, q as InvokeSpecFor, r as Liveness, rt as validateSignal, s as OnDuplicate, st as Clock, t as Engine, tt as registry, u as RunResult, v as reconcile, w as submitMany, x as serverlessTick, y as result, z as Contract } from "./engine-<hash>.mjs";
 //#region src/engine/signals.d.ts
 /**
  * Control-flow signals thrown by the context to unwind a flow invocation without it being
@@ -1581,7 +1612,9 @@ declare class AwaitSignalSignal {
   readonly kind: "await_signal";
   constructor(name: string, deadline?: Date | undefined);
 }
+/** Every control-flow signal the context throws. */
 type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
+/** Whether `cause` is a suspend rather than an error — rethrow it from any `catch` around `ctx` calls. */
 declare const isControlSignal: (cause: unknown) => cause is ControlSignal;
 /** An error carrying a stable machine-readable `code`, distinct from the class name. */
 declare abstract class CodedError extends Error {
@@ -1647,7 +1680,7 @@ export { type AnyFlow, AwaitChildSignal, AwaitSignalSignal, type Backend, type C
 ## status-<hash>.d.mts
 
 ```ts
-import { $ as TerminalStatus, G as RunStatus } from "./id-<hash>.mjs";
+import { Y as RunStatus, et as SuspendStatus, rt as TerminalStatus } from "./id-<hash>.mjs";
 //#region src/status.d.ts
 /** Terminal states that are not success — a run reaching one cancels its non-terminal children. */
 declare const NON_SUCCESS_TERMINAL_STATUSES: readonly RunStatus[];
@@ -1656,11 +1689,10 @@ declare const isTerminal: (status: RunStatus) => status is TerminalStatus;
 /** The non-terminal (still-live) states — DERIVED, so a new status can't drift out of it. */
 declare const ACTIVE_STATUSES: readonly RunStatus[];
 /**
- * States the reconciler re-drives when a run is off the queue with no timer: the actively
- * progressing ones. DERIVED = active minus the states that legitimately wait on an external
- * event (a signal or a child), which have no queue/timer of their own.
+ * Whether parking in `status` zeroes the run's attempt count: every forward-progress park does, so the
+ * poison-pill cap counts only no-progress re-claims; a `retrying` backoff keeps it.
  */
-declare const RECONCILABLE_STATUSES: readonly RunStatus[];
+declare const resetsAttempts: (status: SuspendStatus) => boolean;
 /** Type guard for an untrusted string (query params, external input). */
 declare const isRunStatus: (s: string) => s is RunStatus;
 /** A fresh all-zero per-status counter — completeness is enforced by `Record<RunStatus, …>`. */
@@ -1676,10 +1708,8 @@ declare const zeroRunStats: () => {
   failed: number;
   canceled: number;
 };
-/** Normalize a `RunFilter.status` (one, several, or none) to an array — or `undefined`. */
-declare const statusList: (status?: RunStatus | readonly RunStatus[]) => RunStatus[] | undefined;
 //#endregion
-export { isTerminal as a, isRunStatus as i, NON_SUCCESS_TERMINAL_STATUSES as n, statusList as o, RECONCILABLE_STATUSES as r, zeroRunStats as s, ACTIVE_STATUSES as t };
+export { resetsAttempts as a, isTerminal as i, NON_SUCCESS_TERMINAL_STATUSES as n, zeroRunStats as o, isRunStatus as r, ACTIVE_STATUSES as t };
 ```
 
 ## testing.d.mts
@@ -1695,13 +1725,14 @@ interface TestHarness {
   /** The current virtual instant. Only {@link TestHarness.advance} and
    *  {@link TestHarness.advanceToNextWake} move it. */
   now(): Date;
-  /** Run ticks until a tick claims nothing, without moving the clock. Returns how many runs executed. */
+  /** Fire due crons and run ticks until nothing is left to do, without moving the clock. Returns how
+   *  many runs executed. */
   drain(): Promise<number>;
   /** Move the clock forward by `ms`, then drain. Returns how many runs executed. */
   advance(ms: number): Promise<number>;
   /**
    * Drain, then jump to the next durable deadline — the earliest pending sleep, retry backoff or
-   * cron — and drain again. Draining first is what makes the deadline knowable: a freshly submitted
+   * cron fire — and drain again. Draining first is what makes the deadline knowable: a freshly submitted
    * run has no timer until it executes far enough to park. `false` when nothing is scheduled after
    * that, which means no amount of waiting would advance the engine. The clock never moves
    * backwards, so a deadline already in the past just drains.

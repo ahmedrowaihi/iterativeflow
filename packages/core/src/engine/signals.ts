@@ -25,8 +25,10 @@ export class AwaitSignalSignal {
   ) {}
 }
 
+/** Every control-flow signal the context throws. */
 export type ControlSignal = SleepSignal | AwaitChildSignal | AwaitSignalSignal;
 
+/** Whether `cause` is a suspend rather than an error — rethrow it from any `catch` around `ctx` calls. */
 export const isControlSignal = (cause: unknown): cause is ControlSignal =>
   cause instanceof SleepSignal ||
   cause instanceof AwaitChildSignal ||

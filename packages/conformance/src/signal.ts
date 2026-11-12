@@ -22,7 +22,7 @@ export const signalConformance = (
         { name: "approve", payload: { ok: true } },
       ]);
       const leases = await queue.claim({ limit: 10, leaseMs: 1000, now: at(0) });
-      expect(leases.map((l) => l.runId)).toEqual([runId]); // woken
+      expect(leases.map((l) => l.runId)).toEqual([runId]);
     });
 
     it("postSignal is idempotent on its key — a retried delivery lands once", async () => {
@@ -63,8 +63,8 @@ export const signalConformance = (
         { consumeSignals: [target!.id] },
       );
       const after = await store.loadRun(runId);
-      expect(after?.signals.map((s) => s.name)).toEqual(["b"]); // only "a" consumed
-      expect(after?.steps.get("wait")?.result).toBe("first"); // and the memo committed with it
+      expect(after?.signals.map((s) => s.name)).toEqual(["b"]);
+      expect(after?.steps.get("wait")?.result).toBe("first");
     });
 
     it("requireVersion commits while the job version is unchanged, refuses once a racing signal moves it", async () => {
@@ -86,7 +86,7 @@ export const signalConformance = (
         { requireVersion: lease!.version },
       );
       expect(blocked.committed).toBe(false);
-      expect((await store.loadRun(runId))?.steps.get("res2")).toBeUndefined(); // nothing written
+      expect((await store.loadRun(runId))?.steps.get("res2")).toBeUndefined();
     });
 
     it("distinct signals to a run preserve delivery order in the inbox", async () => {

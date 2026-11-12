@@ -34,35 +34,44 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * `BEGIN`), matching {@link libsqlDb}.
  */
 export const opSqliteDb = (db: OpSqliteDB): Sql => {
-  const query: Sql["query"] = async (text, params) =>
+  const execute: Sql["query"] = async (text, params) =>
     (await db.execute(text, mapParams(params))).rows;
-  const inFlight: Sql = { query, tx: (fn) => fn(inFlight) };
+  const inFlight: Sql = { query: execute, tx: (fn) => fn(inFlight) };
+  // One shared connection: an overlapping BEGIN throws, and a stray query would join the open
+  // transaction — so every top-level statement and tx waits its turn.
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = tail.then(fn);
+    tail = run.catch(() => undefined);
+    return run;
+  };
   return {
-    query,
-    async tx(fn) {
-      for (let attempt = 0; ; attempt++) {
+    query: (text, params) => serialized(() => execute(text, params)),
+    tx: (fn) =>
+      serialized(async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await db.execute("BEGIN IMMEDIATE");
+            break;
+          } catch (e) {
+            const busy = BUSY.test(e instanceof Error ? e.message : String(e));
+            if (!busy || attempt >= BUSY_RETRIES) throw e;
+            await sleep(Math.min(BUSY_BASE_MS * 2 ** attempt, BUSY_CAP_MS));
+          }
+        }
         try {
-          await db.execute("BEGIN IMMEDIATE");
-          break;
+          const out = await fn(inFlight);
+          await db.execute("COMMIT");
+          return out;
         } catch (e) {
-          const busy = BUSY.test(e instanceof Error ? e.message : String(e));
-          if (!busy || attempt >= BUSY_RETRIES) throw e;
-          await sleep(Math.min(BUSY_BASE_MS * 2 ** attempt, BUSY_CAP_MS));
+          try {
+            await db.execute("ROLLBACK");
+          } catch {
+            // the transaction already failed; the rollback is best-effort
+          }
+          throw e;
         }
-      }
-      try {
-        const out = await fn(inFlight);
-        await db.execute("COMMIT");
-        return out;
-      } catch (e) {
-        try {
-          await db.execute("ROLLBACK");
-        } catch {
-          // the transaction already failed; the rollback is best-effort
-        }
-        throw e;
-      }
-    },
+      }),
   };
 };
 

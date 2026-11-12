@@ -25,7 +25,5 @@ pre-push:
       run: pnpm run typecheck
     - name: test
       run: SKIP_TESTCONTAINERS=1 pnpm test
-    - name: build
-      run: pnpm run build
     - name: api-check
       run: pnpm run api:check

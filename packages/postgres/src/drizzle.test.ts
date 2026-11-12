@@ -15,18 +15,6 @@ const skip = process.env.SKIP_TESTCONTAINERS === "1";
 const DDL_SCHEMA = "wf_ddl";
 const DRZ_SCHEMA = "wf_drz";
 
-const NAMED_INDEXES = [
-  "run_parent",
-  "run_idem",
-  "run_status",
-  "job_claimable",
-  "timer_due",
-  "signal_inbox",
-  "signal_idem",
-  "event_run",
-  "cron_due",
-];
-
 describe.skipIf(skip)("drizzle schema mirrors ddl()", () => {
   let container: StartedPostgreSqlContainer;
   let pool: Pool;
@@ -91,16 +79,20 @@ describe.skipIf(skip)("drizzle schema mirrors ddl()", () => {
     return rows;
   };
 
-  /** The explicitly-named secondary indexes, schema-qualifier stripped, def normalized by Postgres. */
+  /** Secondary indexes (constraint-backed ones excluded: their names differ), schema-qualifier
+   *  stripped, def normalized by Postgres. */
   const indexes = async (schema: string) => {
     const { rows } = await pool.query<{ indexname: string; indexdef: string }>(
-      "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1",
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE schemaname = $1
+         AND indexname NOT IN (SELECT conname FROM pg_constraint WHERE connamespace = $1::regnamespace)
+       ORDER BY indexname`,
       [schema],
     );
-    return rows
-      .filter((r) => NAMED_INDEXES.includes(r.indexname))
-      .map((r) => ({ indexname: r.indexname, def: r.indexdef.replaceAll(`${schema}.`, "") }))
-      .sort((a, b) => a.indexname.localeCompare(b.indexname));
+    return rows.map((r) => ({
+      indexname: r.indexname,
+      def: r.indexdef.replaceAll(`${schema}.`, ""),
+    }));
   };
 
   it("has the same columns, types, nullability, identity, and defaults", async () => {
@@ -112,10 +104,9 @@ describe.skipIf(skip)("drizzle schema mirrors ddl()", () => {
   });
 
   it("has the same named indexes, including partial predicates", async () => {
-    const drz = await indexes(DRZ_SCHEMA);
     const dl = await indexes(DDL_SCHEMA);
-    expect(drz.map((i) => i.indexname)).toEqual(NAMED_INDEXES.slice().sort());
-    expect(drz).toEqual(dl);
+    expect(dl.length).toBeGreaterThan(0);
+    expect(await indexes(DRZ_SCHEMA)).toEqual(dl);
   });
 
   const hasPendingWork = async (schema: string): Promise<boolean> => {

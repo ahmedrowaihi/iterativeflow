@@ -1,6 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
-  BatchGetCommand,
   BatchWriteCommand,
   type BatchWriteCommandInput,
   DeleteCommand,
@@ -17,27 +16,30 @@ import {
   type CronRow,
   type DeliveredSignal,
   type IdGen,
+  type Outbox,
   type RunSpec,
-  type RunStatus,
   type StartResult,
   type StepOutcome,
   type OrphanView,
-  type Outbox,
   type PurgeFilter,
-  type RunFilter,
+  type RunSelection,
   type Store,
   type SuspendStatus,
+  type TerminalOutcome,
   TERMINAL_STATUSES,
-  ACTIVE_STATUSES,
+  cancelSelection,
   isOrphaned,
-  purgeMatcher,
-  runSetStatuses,
-  statusList,
+  listSelection,
+  purgeSelection,
+  runMatcher,
+  resetsAttempts,
+  retrySelection,
+  shardAdmits,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
 import { countQuery } from "#count";
-import { storedPriorities } from "#run-names";
+import { batchGetRuns, storedPriorities } from "#run-names";
 import {
   type CronItem,
   type DocItem,
@@ -46,7 +48,7 @@ import {
   enc,
   mapRun,
   mapStep,
-  nextSeq,
+  num,
   parseCron,
   parseJob,
   parseRun,
@@ -64,6 +66,7 @@ import {
   conditionFailedAt,
   encodeSignalId,
   enqueueParams,
+  nextSeq,
   outboxParts,
   spawnTx,
 } from "#statements";
@@ -73,7 +76,18 @@ type WriteRequests = NonNullable<BatchWriteCommandInput["RequestItems"]>[string]
 const TERMINAL_VALUES: Record<string, string> = Object.fromEntries(
   TERMINAL_STATUSES.map((s, i) => [`:t${i}`, s]),
 );
-const NOT_TERMINAL = `NOT (#status IN (${Object.keys(TERMINAL_VALUES).join(", ")}))`;
+const IS_TERMINAL = `#status IN (${Object.keys(TERMINAL_VALUES).join(", ")})`;
+const NOT_TERMINAL = `NOT (${IS_TERMINAL})`;
+
+// TransactWriteItems positions of checkpointStep's gate entries; a cancellation reason is read by index.
+const STEP_SLOT = 0;
+const RUN_GATE = 1;
+const VERSION_GATE = 2;
+
+const selectable = (r: RunItem) => ({
+  ...r,
+  createdAt: r.createdAt === undefined ? undefined : new Date(r.createdAt),
+});
 
 const mapCronItem = (c: CronItem): CronRow => ({
   name: c.cronName,
@@ -134,22 +148,13 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     return out;
   };
 
-  const matchingRuns = async (
-    filter: RunFilter,
-    allowed: readonly RunStatus[],
-    op: string,
-    limit: number,
-  ): Promise<RunItem[]> => {
-    const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
-    if (statuses.size === 0) return [];
-    return (await scanRuns())
-      .filter(
-        (r) =>
-          statuses.has(r.status) &&
-          (filter.name === undefined || r.name === filter.name) &&
-          (filter.version === undefined || r.version === filter.version) &&
-          (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
-      )
+  const selectRuns = async (sel: RunSelection, limit: number): Promise<RunItem[]> => {
+    if (sel.statuses.length === 0) return [];
+    const runs = await scanRuns();
+    const statuses = new Map(runs.map((r) => [r.id, r.status]));
+    const matches = runMatcher(sel, (runId) => statuses.get(runId));
+    return runs
+      .filter((r) => matches(selectable(r)))
       .sort((a, b) => a.seq - b.seq)
       .slice(0, limit);
   };
@@ -204,35 +209,51 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     }
   };
 
-  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
-    const matches = purgeMatcher(filter);
-    const runs = (await scanRuns())
-      .filter((r) =>
-        matches({
-          name: r.name,
-          version: r.version,
-          status: r.status,
-          createdAt: r.createdAt ? new Date(r.createdAt) : undefined,
-        }),
-      )
-      .sort((a, b) => a.seq - b.seq)
-      .slice(0, limit);
-    if (runs.length === 0) return 0;
-    // A DeleteRequest for a missing key is a no-op, so JOB#/TIMER# can be pushed unconditionally.
-    const partitions = await Promise.all(
-      runs.map((r) =>
-        queryAll({
+  // The status condition re-checks the selection at delete time: the Scan is eventually consistent,
+  // and a run retried failed→pending since then must survive. The idem marker goes in the same
+  // transaction — left behind, a re-submit with the same key would dedup onto the purged run.
+  const deleteRunGuarded = async (r: RunItem, spareIfParentLive: boolean): Promise<boolean> => {
+    const items: TxItem[] = [
+      {
+        Delete: {
           TableName: table,
-          KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": key.runPk(r.id) },
-        }),
-      ),
-    );
-    const keys: { pk: string; sk: string }[] = [];
-    runs.forEach((r, i) => {
-      for (const it of partitions[i]) keys.push({ pk: it.pk, sk: it.sk });
-      keys.push(key.job(r.id), key.timer(r.id));
-    });
+          Key: key.run(r.id),
+          ConditionExpression: "#status = :s",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: { ":s": r.status },
+        },
+      },
+      { Delete: { TableName: table, Key: key.job(r.id) } },
+      { Delete: { TableName: table, Key: key.timer(r.id) } },
+    ];
+    if (r.idempotencyKey) {
+      items.push({
+        Delete: { TableName: table, Key: key.idem(r.name, r.version, r.idempotencyKey) },
+      });
+    }
+    const parentGate = items.length;
+    if (spareIfParentLive && r.parentRunId !== undefined) {
+      items.push({
+        ConditionCheck: {
+          TableName: table,
+          Key: key.run(r.parentRunId),
+          ConditionExpression: `attribute_not_exists(pk) OR ${IS_TERMINAL}`,
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: TERMINAL_VALUES,
+        },
+      });
+    }
+    try {
+      await doc.send(new TransactWriteCommand({ TransactItems: items }));
+      return true;
+    } catch (e) {
+      const reasons = cancellationReasons(e);
+      if (conditionFailedAt(reasons, 0) || conditionFailedAt(reasons, parentGate)) return false;
+      throw e;
+    }
+  };
+
+  const batchDelete = async (keys: readonly { pk: string; sk: string }[]): Promise<void> => {
     // BatchWriteItem caps at 25/call and may return UnprocessedItems under throttle — drain them.
     let pending: WriteRequests = keys.map((Key) => ({ DeleteRequest: { Key } }));
     while (pending.length > 0) {
@@ -242,12 +263,40 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const left = res.UnprocessedItems?.[table];
       if (left?.length) pending.push(...left);
     }
-    return runs.length;
   };
 
-  // A transaction can't read, so the priority an enqueue inherits from its run is fetched first.
-  const outbox = async (fx?: Outbox) =>
-    outboxParts(table, fx, await storedPriorities(doc, table, fx?.enqueue ?? []));
+  const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
+    const sel = purgeSelection(filter);
+    const spare = sel.spareChildrenOfLiveParents === true;
+    const runs = await selectRuns(sel, limit);
+    // Siblings delete one at a time: concurrent transactions that ConditionCheck the same parent
+    // item cancel each other with TransactionConflict.
+    const bySiblings = new Map<string, RunItem[]>();
+    for (const r of runs) {
+      const k = r.parentRunId ?? r.id;
+      bySiblings.set(k, [...(bySiblings.get(k) ?? []), r]);
+    }
+    const won = new Set<string>();
+    await Promise.all(
+      [...bySiblings.values()].map(async (siblings) => {
+        for (const r of siblings) if (await deleteRunGuarded(r, spare)) won.add(r.id);
+      }),
+    );
+    const deleted = runs.filter((r) => won.has(r.id));
+    const partitions = await Promise.all(
+      deleted.map((r) =>
+        queryAll({
+          TableName: table,
+          KeyConditionExpression: "pk = :pk",
+          ExpressionAttributeValues: { ":pk": key.runPk(r.id) },
+          ProjectionExpression: "pk, sk",
+          ConsistentRead: true,
+        }),
+      ),
+    );
+    await batchDelete(partitions.flat().map((it) => ({ pk: str(it, "pk"), sk: str(it, "sk") })));
+    return deleted.length;
+  };
 
   const retryOne = async (
     runId: string,
@@ -285,6 +334,42 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
   const runPriority = async (runId: string): Promise<number | undefined> =>
     (await storedPriorities(doc, table, [{ runId }])).get(runId);
 
+  const markTerminal = async (runId: string, outcome: TerminalOutcome, fx?: Outbox) => {
+    const set = ["#status = :status"];
+    const remove: string[] = [];
+    const output = outcome.status === "done" ? enc(outcome.output) : undefined;
+    const error = outcome.status === "done" ? undefined : enc(outcome.error);
+    if (output === undefined) remove.push("#output");
+    else set.push("#output = :output");
+    if (error === undefined) remove.push("#error");
+    else set.push("#error = :error");
+    const values = {
+      ":status": outcome.status,
+      ...TERMINAL_VALUES,
+      ...(output !== undefined && { ":output": output }),
+      ...(error !== undefined && { ":error": error }),
+    };
+    const gate: TxItem = {
+      Update: {
+        TableName: table,
+        Key: key.run(runId),
+        UpdateExpression: `SET ${set.join(", ")}${remove.length ? ` REMOVE ${remove.join(", ")}` : ""}`,
+        ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
+        ExpressionAttributeNames: { "#status": "status", "#output": "output", "#error": "error" },
+        ExpressionAttributeValues: values,
+      },
+    };
+    const { nonSpawn, spawns } = outboxParts(table, fx);
+    const inline = spawns.flatMap((s) => spawnTx(table, s));
+    try {
+      await doc.send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
+      return true;
+    } catch (e) {
+      if (conditionFailedAt(cancellationReasons(e), 0)) return false; // already terminal — outbox skipped
+      throw e;
+    }
+  };
+
   const store: Store = {
     startRun: startOne,
 
@@ -295,7 +380,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       const seen = new Map<string, number>();
       for (const spec of specs) {
         const dedup = spec.idempotencyKey
-          ? JSON.stringify([spec.name, spec.version, spec.idempotencyKey])
+          ? key.idem(spec.name, spec.version, spec.idempotencyKey).pk
           : undefined;
         const prior = dedup === undefined ? undefined : seen.get(dedup);
         if (prior !== undefined) {
@@ -342,16 +427,13 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async loadRun(runId) {
-      const res = await doc.send(
-        // Consistent: the replay read — a stale memo page would re-execute a committed step.
-        new QueryCommand({
-          TableName: table,
-          KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": key.runPk(runId) },
-          ConsistentRead: true,
-        }),
-      );
-      const items = res.Items ?? [];
+      // Consistent: the replay read — a stale memo page would re-execute a committed step.
+      const items = await queryAll({
+        TableName: table,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": key.runPk(runId) },
+        ConsistentRead: true,
+      });
       const runItem = items.find((i) => i.type === "run");
       if (!runItem) return undefined;
       const steps = new Map<string, StepOutcome>();
@@ -375,21 +457,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async loadRunRows(runIds) {
-      if (runIds.length === 0) return [];
-      const byId = new Map<string, RunItem>();
-      // BatchGetItem caps at 100 keys/call and may return UnprocessedKeys under throttle — chunk and drain.
-      for (let i = 0; i < runIds.length; i += 100) {
-        let keys: DocItem[] = runIds.slice(i, i + 100).map((rid) => key.run(rid));
-        while (keys.length > 0) {
-          const res = await doc.send(
-            new BatchGetCommand({
-              RequestItems: { [table]: { Keys: keys, ConsistentRead: true } },
-            }),
-          );
-          for (const item of (res.Responses?.[table] ?? []).map(parseRun)) byId.set(item.id, item);
-          keys = res.UnprocessedKeys?.[table]?.Keys ?? [];
-        }
-      }
+      const items = (await batchGetRuns(doc, table, runIds)).map(parseRun);
+      const byId = new Map(items.map((r) => [r.id, r]));
       return runIds.map((rid) => {
         const item = byId.get(rid);
         return item ? mapRun(item) : undefined;
@@ -403,7 +472,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         Put: {
           TableName: table,
           Item: {
-            ...key.signal(runId, seq, sigId),
+            ...key.signal(runId, Date.now(), seq, sigId),
             type: "signal",
             runId,
             name,
@@ -454,13 +523,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ReturnValues: "UPDATED_NEW",
           }),
         );
-        // `Attributes` is present because of `ReturnValues: "UPDATED_NEW"`; fall back to a read
-        // rather than assert, so a shape change fails diagnosably instead of with a raw TypeError.
-        const attempts = res.Attributes?.attempts;
-        if (attempts !== undefined) return attempts;
-        const fresh = await getRun(runId);
-        if (!fresh) throw new Error(`markRunning: run ${runId} not found`);
-        return fresh.attempts;
+        return num(res.Attributes, "attempts");
       } catch (e) {
         if (!(e instanceof ConditionalCheckFailedException)) throw e;
         const cur = await getRun(runId);
@@ -481,10 +544,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         attempts: c.attempts,
         call: c.call,
       };
-      const { nonSpawn, spawns } = await outbox(fx);
-      const inline = spawns.flatMap((s) => spawnTx(table, s));
-      // ConditionCheck on the job version, riding the TransactWriteItems at index 2 (the catch below
-      // matches that index). The job item is key-addressable, so this is atomic — no residual window.
+      const { nonSpawn, spawns } = outboxParts(table, fx);
+      // The job item is key-addressable, so the version ConditionCheck is atomic — no residual window.
       const versionGate: TxItem[] =
         fx?.requireVersion !== undefined
           ? [
@@ -498,17 +559,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
               },
             ]
           : [];
-      // Step + effects commit in ONE TransactWriteItems. Core bounds the spawn batch (ctx.invoke
-      // chunks fan-out), so a single checkpoint's items always fit the cap — assert it loudly if not.
-      if (2 + versionGate.length + nonSpawn.length + inline.length > MAX_TX_ITEMS) {
-        throw new Error(
-          `checkpointStep: ${spawns.length} spawns + effects exceed the ${MAX_TX_ITEMS}-item transaction budget`,
-        );
-      }
-
-      // The run gate proves the run exists (index 1 → run-not-found on ConditionalCheckFailed). When a
-      // join is armed it doubles as the countdown SET — one op on the run item, since TransactWriteItems
-      // forbids a second op on the same item.
+      // The run gate proves the run exists. When a join is armed it doubles as the countdown SET —
+      // one op on the run item, since TransactWriteItems forbids a second op on the same item.
       const runGate: TxItem =
         fx?.joinTarget !== undefined
           ? {
@@ -538,24 +590,48 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         runGate,
         ...versionGate,
       ];
-
-      try {
-        await doc.send(
-          new TransactWriteCommand({ TransactItems: [...gate, ...nonSpawn, ...inline] }),
+      // Step + effects commit in ONE TransactWriteItems. Core bounds the spawn batch (ctx.invoke
+      // chunks fan-out), so a single checkpoint's items always fit the cap — assert it loudly if not.
+      if (gate.length + nonSpawn.length + 2 * spawns.length > MAX_TX_ITEMS) {
+        throw new Error(
+          `checkpointStep: ${spawns.length} spawns + effects exceed the ${MAX_TX_ITEMS}-item transaction budget`,
         );
-      } catch (e) {
-        const reasons = cancellationReasons(e);
-        if (!reasons) throw e;
-        // The run-exists check failed but the step slot was free ⇒ unknown run.
-        if (conditionFailedAt(reasons, 1) && !conditionFailedAt(reasons, 0)) {
-          throw new Error(`checkpointStep: run ${c.runId} not found`, { cause: e });
+      }
+      const firstSpawn = gate.length + nonSpawn.length;
+      const isSpawnPut = (i: number) => i >= firstSpawn && (i - firstSpawn) % 2 === 0;
+
+      let pending = spawns;
+      for (;;) {
+        try {
+          await doc.send(
+            new TransactWriteCommand({
+              TransactItems: [...gate, ...nonSpawn, ...pending.flatMap((s) => spawnTx(table, s))],
+            }),
+          );
+          break;
+        } catch (e) {
+          const reasons = cancellationReasons(e);
+          if (!reasons) throw e;
+          // Step already present ⇒ idempotent replay: skip the outbox, return the stored outcome.
+          if (conditionFailedAt(reasons, STEP_SLOT)) break;
+          if (conditionFailedAt(reasons, RUN_GATE)) {
+            throw new Error(`checkpointStep: run ${c.runId} not found`, { cause: e });
+          }
+          if (versionGate.length > 0 && conditionFailedAt(reasons, VERSION_GATE)) {
+            return { status: c.status, attempts: c.attempts, committed: false };
+          }
+          // Spawn of an already-existing run id is first-writer-wins: drop it (and its job write)
+          // and commit the rest. Any other cancellation is a real failure.
+          const onlyExistingChildren = reasons.every(
+            (r, i) =>
+              !r.Code ||
+              r.Code === "None" ||
+              (isSpawnPut(i) && r.Code === "ConditionalCheckFailed"),
+          );
+          const fresh = pending.filter((_, i) => !conditionFailedAt(reasons, firstSpawn + 2 * i));
+          if (!onlyExistingChildren || fresh.length === pending.length) throw e;
+          pending = fresh;
         }
-        // Version moved (index 2) with the step slot free — refuse; a present step (index 0) wins first.
-        if (conditionFailedAt(reasons, 2) && !conditionFailedAt(reasons, 0)) {
-          return { status: c.status, attempts: c.attempts, committed: false };
-        }
-        // Step already present ⇒ idempotent replay: skip the outbox, return the stored outcome.
-        if (!conditionFailedAt(reasons, 0)) throw e;
       }
       const stored = await getStep(c.runId, c.cursorKey);
       if (!stored) throw new Error(`checkpointStep: step ${c.runId}/${c.cursorKey} vanished`);
@@ -563,8 +639,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async suspendRun(runId, status: SuspendStatus, fx) {
-      const { nonSpawn, spawns } = await outbox(fx);
-      const reset = status !== "retrying"; // forward progress resets the poison-pill cap
+      const { nonSpawn, spawns } = outboxParts(table, fx);
+      const reset = resetsAttempts(status);
       const gate: TxItem = {
         Update: {
           TableName: table,
@@ -586,40 +662,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
       }
     },
 
-    async markTerminal(runId, outcome, fx) {
-      const set = ["#status = :status"];
-      const remove: string[] = [];
-      const output = outcome.status === "done" ? enc(outcome.output) : undefined;
-      const error = outcome.status === "done" ? undefined : enc(outcome.error);
-      if (output === undefined) remove.push("#output");
-      else set.push("#output = :output");
-      if (error === undefined) remove.push("#error");
-      else set.push("#error = :error");
-      const values = {
-        ":status": outcome.status,
-        ...TERMINAL_VALUES,
-        ...(output !== undefined && { ":output": output }),
-        ...(error !== undefined && { ":error": error }),
-      };
-      const gate: TxItem = {
-        Update: {
-          TableName: table,
-          Key: key.run(runId),
-          UpdateExpression: `SET ${set.join(", ")}${remove.length ? ` REMOVE ${remove.join(", ")}` : ""}`,
-          ConditionExpression: `attribute_exists(pk) AND ${NOT_TERMINAL}`,
-          ExpressionAttributeNames: { "#status": "status", "#output": "output", "#error": "error" },
-          ExpressionAttributeValues: values,
-        },
-      };
-      const { nonSpawn, spawns } = await outbox(fx);
-      const inline = spawns.flatMap((s) => spawnTx(table, s));
-      try {
-        await doc.send(new TransactWriteCommand({ TransactItems: [gate, ...nonSpawn, ...inline] }));
-      } catch (e) {
-        if (conditionFailedAt(cancellationReasons(e), 0)) return; // already terminal — outbox skipped
-        throw e;
-      }
-    },
+    markTerminal,
 
     async arriveAtJoin(parentRunId) {
       // ADD…RETURN_VALUES: TransactWriteItems can't return the post-decrement value the wake decision
@@ -635,7 +678,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ReturnValues: "ALL_NEW",
           }),
         );
-        return res.Attributes?.joinRemaining ?? 0;
+        return num(res.Attributes, "joinRemaining");
       } catch (e) {
         if (e instanceof ConditionalCheckFailedException) return undefined; // parent gone
         throw e;
@@ -643,13 +686,8 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async listRuns(filter, page) {
-      const statuses = statusList(filter.status);
-      const keep = (r: RunItem): boolean =>
-        (!statuses || statuses.includes(r.status)) &&
-        (!filter.name || r.name === filter.name) &&
-        (filter.version === undefined || r.version === filter.version) &&
-        (!filter.tag || (r.tags?.includes(filter.tag) ?? false));
-      // gsi2 RUN partition, descending seq. With no filter this reads one page; a selective filter
+      const matches = runMatcher(listSelection(filter));
+      // gsi2 RUN partition, newest createdAt first. With no filter this reads one page; a selective filter
       // may walk a few index pages, but never the whole table.
       // The cursor is the last row's gsi2sk, so paging resumes at `gsi2sk < :cur` regardless of how
       // that key is encoded — it stays an opaque token the caller never inspects.
@@ -671,7 +709,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         );
         for (const item of res.Items ?? []) {
           const r = parseRun(item);
-          if (keep(r)) {
+          if (matches(selectable(r))) {
             rows.push(r);
             lastSortKey = str(item, "gsi2sk");
           }
@@ -684,15 +722,16 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
     },
 
     async cancelRuns(filter, limit) {
-      const victims = await matchingRuns(filter, ACTIVE_STATUSES, "cancelRuns", limit);
+      const victims = await selectRuns(cancelSelection(filter), limit);
+      let n = 0;
       for (const r of victims) {
-        await store.markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] });
+        if (await markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] })) n += 1;
       }
-      return victims.length;
+      return n;
     },
 
     async retryRuns(filter, limit) {
-      const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
+      const victims = await selectRuns(retrySelection(filter), limit);
       let n = 0;
       for (const r of victims) if ((await retryOne(r.id, r.priority)).retried) n += 1;
       return n;
@@ -750,8 +789,6 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
 
     deleteRuns,
 
-    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
-
     async retryRun(runId) {
       return retryOne(runId, await runPriority(runId));
     },
@@ -781,13 +818,27 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
             ":flowName": spec.flowName,
             ":flowVersion": spec.flowVersion,
             ":input": enc(spec.input) ?? null,
-            ":overlap": spec.overlap ?? "allow",
+            ":overlap": spec.overlap,
             ":nextRunAt": nextRunAt,
             ":gpk": CRON_DUE_GSI_PK,
             ":gsk": pad(nextRunAt),
           },
         }),
       );
+    },
+
+    async nextCronAt() {
+      const res = await doc.send(
+        new QueryCommand({
+          TableName: table,
+          IndexName: "gsi1",
+          KeyConditionExpression: "gsi1pk = :cd",
+          ExpressionAttributeValues: { ":cd": CRON_DUE_GSI_PK },
+          Limit: 1,
+        }),
+      );
+      const [item] = res.Items ?? [];
+      return item ? new Date(parseCron(item).nextRunAt) : null;
     },
 
     async dueCrons(now, limit) {
@@ -833,8 +884,6 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
           ExpressionAttributeValues: values,
         });
       }
-      const wanted = new Set(names);
-      if (wanted.size === 0) return 0;
       const items = await queryAll({
         TableName: table,
         IndexName: "gsi1",
@@ -842,7 +891,7 @@ export const createDynamoStore = (doc: Doc, table: string, id: IdGen): Store => 
         ExpressionAttributeValues: values,
         ProjectionExpression: "flowName",
       });
-      return items.filter((c) => wanted.has(str(c, "flowName"))).length;
+      return items.filter((c) => shardAdmits(names, str(c, "flowName"))).length;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {

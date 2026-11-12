@@ -1,10 +1,12 @@
 import type { PurgeFilter, Store } from "@iterativeflow/core/backend";
 import { assert, describe, expect, it } from "vitest";
+import { T0, at } from "#clock";
+
+const MISSING_RUN = "00000000-0000-0000-0000-000000000000";
 
 /**
- * The Store contract as executable invariants. EVERY backend (in-memory, Postgres,
- * DynamoDB) is run against this exact suite — a backend is not "done" until green here.
- * The guarantee is a test, not a comment.
+ * The Store contract as executable invariants. Every backend runs this exact suite — a backend
+ * is not "done" until green here.
  */
 export const storeConformance = (label: string, makeStore: () => Store | Promise<Store>): void => {
   describe(`Store conformance — ${label}`, () => {
@@ -40,8 +42,8 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       const s = await makeStore();
       const first = await s.startRun({ name: "f", version: 1, input: {}, idempotencyKey: "dup" });
       const results = await s.startManyRuns([
-        { name: "f", version: 1, input: {}, idempotencyKey: "dup" }, // hits the existing run
-        { name: "f", version: 1, input: {}, idempotencyKey: "new" }, // fresh
+        { name: "f", version: 1, input: {}, idempotencyKey: "dup" },
+        { name: "f", version: 1, input: {}, idempotencyKey: "new" },
       ]);
       expect(results[0]).toMatchObject({ runId: first.runId, created: false });
       expect(results[1].created).toBe(true);
@@ -52,11 +54,11 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       const s = await makeStore();
       const results = await s.startManyRuns([
         { name: "f", version: 1, input: {}, idempotencyKey: "same" },
-        { name: "f", version: 1, input: {}, idempotencyKey: "same" }, // duplicate in the same batch
+        { name: "f", version: 1, input: {}, idempotencyKey: "same" },
       ]);
       expect(results).toHaveLength(2);
-      expect(results[0].runId).toBe(results[1].runId); // collapsed to one run
-      expect([results[0].created, results[1].created].filter(Boolean)).toHaveLength(1); // created once
+      expect(results[0].runId).toBe(results[1].runId);
+      expect([results[0].created, results[1].created].filter(Boolean)).toHaveLength(1);
     });
 
     it("startRun is idempotent on the idempotency key — no duplicate run", async () => {
@@ -77,7 +79,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
 
     it("loadRun returns undefined for an unknown run", async () => {
       const s = await makeStore();
-      expect(await s.loadRun("00000000-0000-0000-0000-000000000000")).toBeUndefined();
+      expect(await s.loadRun(MISSING_RUN)).toBeUndefined();
     });
 
     it("loadRunRow returns just the run row (no step/signal maps), undefined if gone", async () => {
@@ -88,15 +90,14 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(row).toMatchObject({ id: runId, status: "pending" });
       expect(row).not.toHaveProperty("steps");
       expect(row).not.toHaveProperty("signals");
-      expect(await s.loadRunRow("00000000-0000-0000-0000-000000000000")).toBeUndefined();
+      expect(await s.loadRunRow(MISSING_RUN)).toBeUndefined();
     });
 
     it("loadRunRows returns rows aligned to the input ids, undefined where gone", async () => {
       const s = await makeStore();
       const a = await s.startRun({ name: "f", version: 1, input: { n: 1 } });
       const b = await s.startRun({ name: "f", version: 1, input: { n: 2 } });
-      const missing = "00000000-0000-0000-0000-000000000000";
-      const rows = await s.loadRunRows([a.runId, missing, b.runId]);
+      const rows = await s.loadRunRows([a.runId, MISSING_RUN, b.runId]);
       expect(rows).toHaveLength(3);
       expect(rows[0]?.id).toBe(a.runId);
       expect(rows[1]).toBeUndefined();
@@ -113,7 +114,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       );
       expect(await s.arriveAtJoin(runId)).toBe(1);
       expect(await s.arriveAtJoin(runId)).toBe(0);
-      expect(await s.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeUndefined();
+      expect(await s.arriveAtJoin(MISSING_RUN)).toBeUndefined();
     });
 
     it("checkpointStep persists a completed step into the memo", async () => {
@@ -127,19 +128,21 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
     it("a step memo round-trips through JSON — a Date comes back as a string on every backend", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
-      const at = new Date("2030-01-01T00:00:00.000Z");
-      await s.checkpointStep({ runId, cursorKey: "a", status: "ok", result: { at }, attempts: 1 });
-      expect((await s.loadRun(runId))?.steps.get("a")?.result).toEqual({
-        at: "2030-01-01T00:00:00.000Z",
+      await s.checkpointStep({
+        runId,
+        cursorKey: "a",
+        status: "ok",
+        result: { at: T0 },
+        attempts: 1,
       });
+      expect((await s.loadRun(runId))?.steps.get("a")?.result).toEqual({ at: T0.toISOString() });
     });
 
     it("a run's output round-trips through JSON — a Date comes back as a string on every backend", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "f", version: 1, input: {} });
-      const at = new Date("2030-01-01T00:00:00.000Z");
-      await s.markTerminal(runId, { status: "done", output: { at } });
-      expect((await s.loadRunRow(runId))?.output).toEqual({ at: "2030-01-01T00:00:00.000Z" });
+      await s.markTerminal(runId, { status: "done", output: { at: T0 } });
+      expect((await s.loadRunRow(runId))?.output).toEqual({ at: T0.toISOString() });
     });
 
     it("checkpointStep round-trips the call that wrote it (drift-guard evidence)", async () => {
@@ -174,7 +177,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         attempts: 2,
       });
       expect(first.result).toBe("first");
-      expect(second.result).toBe("first"); // returns the stored first outcome, not the retry's
+      expect(second.result).toBe("first");
       expect((await s.loadRun(runId))?.steps.get("a")?.result).toBe("first");
     });
 
@@ -219,16 +222,16 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
     it("markTerminal never overrides a canceled run", async () => {
       const s = await makeStore();
       const { runId } = await s.startRun({ name: "g", version: 1, input: {} });
-      await s.markTerminal(runId, { status: "canceled" });
-      await s.markTerminal(runId, { status: "done", output: "late" });
+      expect(await s.markTerminal(runId, { status: "canceled" })).toBe(true);
+      expect(await s.markTerminal(runId, { status: "done", output: "late" })).toBe(false);
       expect((await s.loadRun(runId))?.run.status).toBe("canceled");
     });
 
-    it("deleteRunsOlderThan prunes terminal runs (with steps + signals) before the cutoff, spares live ones", async () => {
+    it("deleteRuns by age prunes terminal runs (with steps + signals) before the cutoff, spares live ones", async () => {
       const s = await makeStore();
       const old = new Date("2020-01-01T00:00:00.000Z");
       const doomed = await s.startRun({ name: "f", version: 1, input: {}, createdAt: old });
-      // a step + a signal so the cascade delete is exercised (on Postgres the run FK would block if not)
+      // a step + a signal so the delete must cascade to them
       await s.checkpointStep({
         runId: doomed.runId,
         cursorKey: "a",
@@ -243,12 +246,12 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       // createdAt round-trips onto the row (retention age + dashboard age both read it)
       expect((await s.loadRunRow(live.runId))?.createdAt?.getTime()).toBe(old.getTime());
       // cutoff after `old` → the terminal run goes; the pending run is spared by its status
-      expect(await s.deleteRunsOlderThan(new Date("2020-06-01T00:00:00Z"), 100)).toBe(1);
+      expect(await s.deleteRuns({ before: new Date("2020-06-01T00:00:00Z") }, 100)).toBe(1);
       expect(await s.loadRun(doomed.runId)).toBeUndefined();
       expect((await s.loadRun(live.runId))?.run.status).toBe("pending");
     });
 
-    it("deleteRunsOlderThan honours the cutoff and the per-sweep limit", async () => {
+    it("deleteRuns by age honours the cutoff and the per-sweep limit", async () => {
       const s = await makeStore();
       const old = new Date("2020-01-01T00:00:00.000Z");
       const a = await s.startRun({ name: "f", version: 1, input: {}, createdAt: old });
@@ -256,12 +259,39 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       await s.markTerminal(a.runId, { status: "done", output: 1 });
       await s.markTerminal(b.runId, { status: "failed", error: { code: "X", message: "x" } });
       const after = new Date("2020-06-01T00:00:00Z");
-      // a cutoff before `old` spares everything
-      expect(await s.deleteRunsOlderThan(new Date("2019-01-01T00:00:00Z"), 100)).toBe(0);
+      expect(await s.deleteRuns({ before: new Date("2019-01-01T00:00:00Z") }, 100)).toBe(0);
       // the limit caps one sweep, so a backlog drains over repeated calls
-      expect(await s.deleteRunsOlderThan(after, 1)).toBe(1);
-      expect(await s.deleteRunsOlderThan(after, 1)).toBe(1);
-      expect(await s.deleteRunsOlderThan(after, 1)).toBe(0);
+      expect(await s.deleteRuns({ before: after }, 1)).toBe(1);
+      expect(await s.deleteRuns({ before: after }, 1)).toBe(1);
+      expect(await s.deleteRuns({ before: after }, 1)).toBe(0);
+    });
+
+    it("deleteRuns spares a finished child while its parent is still live", async () => {
+      const s = await makeStore();
+      const parent = await s.startRun({ name: "p", version: 1, input: {}, createdAt: T0 });
+      const child = await s.startRun({
+        name: "c",
+        version: 1,
+        input: {},
+        parentRunId: parent.runId,
+        createdAt: T0,
+      });
+      await s.markTerminal(child.runId, { status: "done", output: 1 });
+      expect(await s.deleteRuns({ before: at(1) }, 10)).toBe(0);
+      expect(await s.loadRunRow(child.runId)).toMatchObject({ status: "done" });
+      await s.markTerminal(parent.runId, { status: "done", output: 2 });
+      expect(await s.deleteRuns({ before: at(1) }, 10)).toBe(2);
+    });
+
+    it("a purged run's idempotency key starts a fresh run", async () => {
+      const s = await makeStore();
+      const spec = { name: "f", version: 1, input: {}, idempotencyKey: "k", createdAt: T0 };
+      const first = await s.startRun(spec);
+      await s.markTerminal(first.runId, { status: "done", output: 1 });
+      expect(await s.deleteRuns({ before: at(1) }, 10)).toBe(1);
+      const again = await s.startRun(spec);
+      expect(again.created).toBe(true);
+      expect(again.runId).not.toBe(first.runId);
     });
 
     it("deleteRuns narrows by name/version/status, refuses live runs and an empty filter", async () => {
@@ -351,12 +381,11 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       const s = await makeStore();
       const a = await s.startRun({ name: "alpha", version: 1, input: {}, tags: ["t1"] });
       const b = await s.startRun({ name: "beta", version: 1, input: {}, tags: ["t2"] });
-      await s.startRun({ name: "alpha", version: 1, input: {}, tags: ["t1"] });
+      const c = await s.startRun({ name: "alpha", version: 1, input: {}, tags: ["t1"] });
       await s.markTerminal(b.runId, { status: "done", output: 1 });
 
       const all = await s.listRuns({}, { limit: 10 });
-      expect(all.runs).toHaveLength(3);
-      expect(all.runs[0].id).not.toBe(a.runId); // newest first — `a` was inserted first
+      expect(all.runs.map((r) => r.id)).toEqual([c.runId, b.runId, a.runId]);
 
       const byName = await s.listRuns({ name: "alpha" }, { limit: 10 });
       expect(byName.runs.map((r) => r.name)).toEqual(["alpha", "alpha"]);
@@ -368,16 +397,21 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect(byTag.runs.map((r) => r.id)).toEqual([b.runId]);
     });
 
-    it("listRuns paginates with a cursor", async () => {
+    it("listRuns pages through every run newest-first until the cursor runs out", async () => {
       const s = await makeStore();
       for (let i = 0; i < 5; i++) await s.startRun({ name: "f", version: 1, input: { i } });
-      const first = await s.listRuns({}, { limit: 2 });
-      expect(first.runs).toHaveLength(2);
-      expect(first.cursor).toBeDefined();
-      const second = await s.listRuns({}, { limit: 2, cursor: first.cursor });
-      expect(second.runs).toHaveLength(2);
-      const ids = new Set([...first.runs, ...second.runs].map((r) => r.id));
-      expect(ids.size).toBe(4); // no overlap between pages
+      const all = (await s.listRuns({}, { limit: 10 })).runs.map((r) => r.id);
+      const paged: string[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const res = await s.listRuns({}, { limit: 2, cursor });
+        paged.push(...res.runs.map((r) => r.id));
+        cursor = res.cursor;
+        if (cursor === undefined) break;
+      }
+      expect(cursor).toBeUndefined();
+      expect(paged).toEqual(all);
+      expect(all).toHaveLength(5);
     });
 
     it("childrenOf returns the runs spawned under a parent", async () => {
@@ -401,9 +435,9 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       const snap = await s.loadRun(runId);
       expect(snap?.run.status).toBe("pending");
       expect(snap?.run.error).toBeUndefined();
-      expect(snap?.steps.get("a")?.result).toBe(7); // memo preserved
+      expect(snap?.steps.get("a")?.result).toBe(7);
 
-      const again = await s.retryRun(runId); // not failed anymore → no-op
+      const again = await s.retryRun(runId);
       expect(again.retried).toBe(false);
     });
 
@@ -437,7 +471,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
         status: "failed",
         error: { code: "X", message: "boom" },
       });
-      expect((await s.retryRun(failed)).retried).toBe(true); // still retryable
+      expect((await s.retryRun(failed)).retried).toBe(true);
     });
 
     it("cancelRuns cancels the live matched set and never a terminal run", async () => {
@@ -454,7 +488,7 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect((await s.loadRunRow(live2))?.status).toBe("canceled");
       expect((await s.loadRunRow(other))?.status).toBe("pending");
       expect((await s.loadRunRow(done))?.status).toBe("done");
-      expect(await s.cancelRuns({ name: "f" }, 100)).toBe(0); // idempotent — nothing live left
+      expect(await s.cancelRuns({ name: "f" }, 100)).toBe(0);
       await expect(s.cancelRuns({}, 100)).rejects.toThrow();
     });
 
@@ -501,6 +535,28 @@ export const storeConformance = (label: string, makeStore: () => Store | Promise
       expect((await s.loadRunRow(live))?.status).toBe("pending");
       expect(await s.retryRuns({ name: "f" }, 100)).toBe(0);
       await expect(s.retryRuns({}, 100)).rejects.toThrow();
+    });
+
+    it("cancelRuns and retryRuns honour the per-sweep limit, so a backlog drains over repeated calls", async () => {
+      const s = await makeStore();
+      const mk = async (name: string) => (await s.startRun({ name, version: 1, input: {} })).runId;
+      const statuses = async (ids: string[]) =>
+        (await s.loadRunRows(ids)).map((r) => r?.status).sort();
+
+      const live = [await mk("f"), await mk("f")];
+      expect(await s.cancelRuns({ name: "f" }, 1)).toBe(1);
+      expect(await statuses(live)).toEqual(["canceled", "pending"]);
+      expect(await s.cancelRuns({ name: "f" }, 1)).toBe(1);
+      expect(await s.cancelRuns({ name: "f" }, 1)).toBe(0);
+
+      const failed = [await mk("g"), await mk("g")];
+      for (const id of failed) {
+        await s.markTerminal(id, { status: "failed", error: { code: "X", message: "x" } });
+      }
+      expect(await s.retryRuns({ name: "g" }, 1)).toBe(1);
+      expect(await statuses(failed)).toEqual(["failed", "pending"]);
+      expect(await s.retryRuns({ name: "g" }, 1)).toBe(1);
+      expect(await s.retryRuns({ name: "g" }, 1)).toBe(0);
     });
 
     it("listRuns filters by version, not just name", async () => {

@@ -58,6 +58,12 @@ export interface SignalDoc {
   ord: ObjectId;
 }
 
+/** @internal */
+export interface TimerDoc {
+  _id: string;
+  fire_at: number;
+}
+
 export interface CronDoc {
   _id: string;
   schedule: string;

@@ -17,8 +17,8 @@ export type Names = ReturnType<typeof names>;
  * once before use. `ord` is a per-document ObjectId giving a total insertion order (Mongo has no
  * auto-increment); the idempotency and signal-dedup indexes are partial
  * (`partialFilterExpression`) so unkeyed docs never
- * collide. `steps` use a composite string `_id` (`runId:cursorKey`) so a duplicate insert is a clean
- * first-writer-wins conflict.
+ * collide. `steps` use a composite string `_id` (`runId:cursorKey`) so a checkpoint upserts on its
+ * key and the first writer wins.
  */
 export const ensureIndexes = async (db: Db, prefix = ""): Promise<void> => {
   const n = names(prefix);

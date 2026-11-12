@@ -9,7 +9,7 @@ import {
 import { int, intOrNull, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
-import { enqueueManyStmt, enqueueStmt } from "#statements";
+import { enqueueManyStmt, enqueueStmt, inList } from "#statements";
 
 /** @internal */
 export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
@@ -30,7 +30,7 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       const expiresAt = new Date(at + leaseMs);
       return sql.tx(async (tx) => {
         const namePredicate = names
-          ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")}))`
+          ? ` AND (r.name IS NULL OR r.name IN ${inList(names.length)})`
           : "";
         const params = names ? [at, at, ...names, limit] : [at, at, limit];
         const due = await tx.query(
@@ -86,7 +86,7 @@ export const createMysqlQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       const nowMs = now.getTime();
       // a run-less job is unownable, so it passes every name filter (see Queue.claim)
       const namePredicate = names
-        ? ` WHERE r.name IS NULL OR r.name IN (${names.map(() => "?").join(",")})`
+        ? ` WHERE r.name IS NULL OR r.name IN ${inList(names.length)}`
         : "";
       const [row] = await sql.query(
         `SELECT SUM(claimable) AS claimable, SUM(leased) AS leased,

@@ -15,15 +15,25 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       flowName: "report",
       flowVersion: 1,
       input: { kind: "daily" },
+      overlap: "allow" as const,
     };
 
     it("upsertCron registers a cron that dueCrons returns once due", async () => {
       const s = await makeStore();
       await s.upsertCron({ ...spec, nextRunAt: at(1000) });
-      expect(await s.dueCrons(at(999), 10)).toEqual([]); // not due yet
+      expect(await s.dueCrons(at(999), 10)).toEqual([]);
       const due = await s.dueCrons(at(1000), 10);
       expect(due.map((c) => c.name)).toEqual(["nightly"]);
       expect(due[0].input).toEqual({ kind: "daily" });
+    });
+
+    it("dueCrons honours its limit on a backlog of due crons", async () => {
+      const s = await makeStore();
+      for (const name of ["a", "b", "c"])
+        await s.upsertCron({ ...spec, name, nextRunAt: at(1000) });
+      const due = await s.dueCrons(at(1000), 2);
+      expect(due).toHaveLength(2);
+      expect(["a", "b", "c"]).toEqual(expect.arrayContaining(due.map((c) => c.name)));
     });
 
     it("re-registering keeps the existing nextRunAt (no schedule-timing reset)", async () => {
@@ -31,8 +41,8 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       await s.upsertCron({ ...spec, nextRunAt: at(5000) });
       await s.upsertCron({ ...spec, input: { kind: "changed" }, nextRunAt: at(999999) });
       const due = await s.dueCrons(at(5000), 10);
-      expect(due.map((c) => c.name)).toEqual(["nightly"]); // still due at the original time
-      expect(due[0].input).toEqual({ kind: "changed" }); // but payload updated
+      expect(due.map((c) => c.name)).toEqual(["nightly"]);
+      expect(due[0].input).toEqual({ kind: "changed" });
     });
 
     it("a CHANGED schedule takes its new nextRunAt (the old one would outlive the deploy)", async () => {
@@ -45,6 +55,16 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       expect(due[0].schedule).toBe("*/5 * * * *");
     });
 
+    it("nextCronAt is the earliest nextRunAt, overdue included, and null with no crons", async () => {
+      const s = await makeStore();
+      expect(await s.nextCronAt()).toBeNull();
+      await s.upsertCron({ ...spec, name: "later", nextRunAt: at(5_000) });
+      await s.upsertCron({ ...spec, name: "overdue", nextRunAt: at(-5_000) });
+      expect((await s.nextCronAt())?.getTime()).toBe(at(-5_000).getTime());
+      await s.removeCron("overdue");
+      expect((await s.nextCronAt())?.getTime()).toBe(at(5_000).getTime());
+    });
+
     it("listCrons returns every registered cron; removeCron stops one firing", async () => {
       const s = await makeStore();
       await s.upsertCron({ ...spec, nextRunAt: at(1000) });
@@ -52,7 +72,7 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
 
       expect((await s.listCrons()).map((c) => c.name).sort()).toEqual(["nightly", "weekly"]);
       expect(await s.removeCron("weekly")).toBe(true);
-      expect(await s.removeCron("weekly")).toBe(false); // already gone
+      expect(await s.removeCron("weekly")).toBe(false);
       expect((await s.listCrons()).map((c) => c.name)).toEqual(["nightly"]);
       expect((await s.dueCrons(at(2000), 10)).map((c) => c.name)).toEqual(["nightly"]);
     });
@@ -63,8 +83,8 @@ export const cronConformance = (label: string, makeStore: () => Store | Promise<
       const first = await s.advanceCron("nightly", at(1000), at(2000), at(1000));
       const second = await s.advanceCron("nightly", at(1000), at(2000), at(1000)); // stale expected
       expect(first).toBe(true);
-      expect(second).toBe(false); // lost the race — won't double-fire
-      expect(await s.dueCrons(at(1500), 10)).toEqual([]); // advanced past 1500
+      expect(second).toBe(false);
+      expect(await s.dueCrons(at(1500), 10)).toEqual([]);
     });
   });
 };

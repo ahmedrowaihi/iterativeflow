@@ -1,18 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
-import {
-  claimFilterConformance,
-  cronConformance,
-  engineConformance,
-  outboxConformance,
-  queueConformance,
-  reconcileConformance,
-  signalConformance,
-  storeConformance,
-  timerConformance,
-  wakeupConformance,
-} from "@iterativeflow/conformance";
+import { backendConformance } from "@iterativeflow/conformance";
 import type { Backend } from "@iterativeflow/core/backend";
-import { afterEach, describe } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { applySchema } from "#schema";
 import { type OpSqliteDB, createOpSqliteBackend, opSqliteDb } from "#op-sqlite";
 
@@ -48,14 +37,23 @@ describe("op-sqlite adapter (SQLite over node:sqlite)", () => {
     return createOpSqliteBackend(shim);
   };
 
-  storeConformance("op-sqlite", async () => (await makeBackend()).store);
-  queueConformance("op-sqlite", async () => (await makeBackend()).queue);
-  claimFilterConformance("op-sqlite", () => makeBackend());
-  timerConformance("op-sqlite", async () => (await makeBackend()).timer);
-  wakeupConformance("op-sqlite", async () => (await makeBackend()).wakeup);
-  outboxConformance("op-sqlite", () => makeBackend());
-  signalConformance("op-sqlite", () => makeBackend());
-  reconcileConformance("op-sqlite", () => makeBackend());
-  cronConformance("op-sqlite", async () => (await makeBackend()).store);
-  engineConformance("op-sqlite", () => makeBackend());
+  backendConformance("op-sqlite", () => makeBackend(), { concurrentWriters: false });
+
+  it("serializes overlapping transactions and queries on the one connection", async () => {
+    const db = new DatabaseSync(":memory:");
+    dbs.push(db);
+    const sql = opSqliteDb(nodeSqliteOpDb(db));
+    await sql.query("CREATE TABLE t (v TEXT)");
+    const failed = sql.tx(async (tx) => {
+      await tx.query("INSERT INTO t VALUES ('a')");
+      await new Promise((r) => setTimeout(r, 10));
+      throw new Error("roll back a");
+    });
+    const seen = sql.query("SELECT count(*) AS n FROM t");
+    const committed = sql.tx((tx) => tx.query("INSERT INTO t VALUES ('b')"));
+    await expect(failed).rejects.toThrow("roll back a");
+    expect(await seen).toEqual([{ n: 0 }]);
+    await committed;
+    expect(await sql.query("SELECT v FROM t")).toEqual([{ v: "b" }]);
+  });
 });

@@ -65,6 +65,7 @@ export const mysqlPool = (pool: Pool, opts: MysqlPoolOpts = {}): Sql => {
     ...bind(pool),
     async tx(fn) {
       const c = await pool.getConnection();
+      let broken = false;
       try {
         if (setIsolation) await c.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
         await c.beginTransaction();
@@ -72,10 +73,15 @@ export const mysqlPool = (pool: Pool, opts: MysqlPoolOpts = {}): Sql => {
         await c.commit();
         return out;
       } catch (e) {
-        await c.rollback().catch(() => undefined);
+        await c.rollback().catch(() => {
+          broken = true;
+        });
         throw e;
       } finally {
-        c.release();
+        // A connection whose ROLLBACK failed may still hold the open transaction; destroy it so
+        // the pool never hands it to the next caller.
+        if (broken) c.destroy();
+        else c.release();
       }
     },
   };

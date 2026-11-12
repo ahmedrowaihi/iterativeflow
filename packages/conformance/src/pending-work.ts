@@ -1,5 +1,6 @@
 import type { Backend } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
+import { T0, at } from "#clock";
 
 /**
  * Pins the autoscaling-backlog reads — `Queue.depth(now, names)`, `Timer.dueCount(now, names)`, and
@@ -16,9 +17,9 @@ export const pendingWorkConformance = (
   makeBackend: () => Backend | Promise<Backend>,
 ): void => {
   describe(`pending-work conformance (${label})`, () => {
-    const now = new Date("2030-01-01T00:00:00Z");
-    const past = new Date(now.getTime() - 60_000);
-    const future = new Date(now.getTime() + 3_600_000);
+    const now = T0;
+    const past = at(-60_000);
+    const future = at(3_600_000);
 
     const seed = async (): Promise<Backend> => {
       const be = await makeBackend();
@@ -47,6 +48,7 @@ export const pendingWorkConformance = (
         flowName: "a",
         flowVersion: 1,
         input: {},
+        overlap: "allow",
         nextRunAt: past,
       });
       return be;
@@ -74,6 +76,7 @@ export const pendingWorkConformance = (
       expect(await be.store.dueCronCount(now)).toBe(1);
       expect(await be.store.dueCronCount(now, ["a"])).toBe(1);
       expect(await be.store.dueCronCount(now, ["b"])).toBe(0);
+      expect(await be.store.dueCronCount(now, [])).toBe(0);
     });
   });
 };

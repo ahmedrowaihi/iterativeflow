@@ -1,10 +1,11 @@
 import { type IdGen, newId } from "#id";
 import type { Backend, Outbox } from "#ports/outbox";
 import type { Lease } from "#ports/queue";
-import { isTerminal } from "#status";
+import { type Clock, systemClock } from "#clock";
+import { NON_SUCCESS_TERMINAL_STATUSES, isTerminal } from "#status";
 import type { DriftPolicy, FlowError, SuspendStatus, TerminalOutcome } from "#types";
-import { cancelDescendants, cancelRun } from "#engine/cancel";
-import { type Clock, type SuspendHolder, makeCtx, systemClock } from "#engine/context";
+import { arriveAtParent, cancelDescendants, cancelRun } from "#engine/cancel";
+import { type SuspendHolder, makeCtx } from "#engine/context";
 import { type FlowRegistry, flowKey } from "#engine/flow";
 import { type ObserveOpts, makeObserver } from "#engine/observe";
 import {
@@ -77,15 +78,15 @@ export interface TickResult {
   cursorKey?: string;
 }
 
-export type { DriftPolicy } from "#types";
-
+/** The per-run half of a worker cycle's options — what {@link runTick} reads. */
 export interface TickOpts {
   now?: Clock;
   retry?: RetryPolicy;
   id?: IdGen;
   observe?: ObserveOpts;
   driftPolicy?: DriftPolicy;
-  leaseMs?: number;
+  /** The lease length the run was claimed with — what renewal extends it by. */
+  leaseMs: number;
 }
 
 // Flatten an Error's `.cause` chain to a string: a wrapper (e.g. DrizzleQueryError) carries the
@@ -132,12 +133,12 @@ const backoff = (attempt: number, p: RetryPolicy, now: Date): Date =>
 const leaseForStart = async (
   queue: Backend["queue"],
   lease: Lease,
-  leaseMs: number | undefined,
+  leaseMs: number,
   at: Date,
 ): Promise<Lease | undefined> => {
   const remaining = lease.expiresAt.getTime() - at.getTime();
   if (remaining <= 0) return undefined;
-  if (leaseMs === undefined || !needsRenewal(lease, leaseMs, at.getTime())) return lease;
+  if (!needsRenewal(lease, leaseMs, at.getTime())) return lease;
   return queue.heartbeat(lease, { leaseMs, now: at }).catch(() => undefined);
 };
 
@@ -150,7 +151,7 @@ export const runTick = async (
   backend: Backend,
   flows: FlowRegistry,
   lease: Lease,
-  opts: TickOpts = {},
+  opts: TickOpts,
 ): Promise<TickResult> => {
   const now = opts.now ?? systemClock;
   const retry = opts.retry ?? defaultRetry;
@@ -183,49 +184,42 @@ export const runTick = async (
   // first-writer-wins memo + reconcile, so a failed renewal just lets the step's at-least-once
   // contract stand. `held` is the current lease, used to ack when the tick ends.
   let held = started;
-  const leaseMs = opts.leaseMs;
-  const keepalive =
-    leaseMs === undefined
-      ? undefined
-      : {
-          everyMs: Math.min(
-            Math.max(MIN_KEEPALIVE_MS, Math.floor(leaseMs * LEASE_KEEPALIVE_FRACTION)),
-            Math.floor(leaseMs * LEASE_RENEW_BELOW),
-          ),
-          renew: async (): Promise<void> => {
-            if (!needsRenewal(held, leaseMs, now().getTime())) return;
-            held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
-          },
-        };
+  const { leaseMs } = opts;
+  const keepalive = {
+    everyMs: Math.min(
+      Math.max(MIN_KEEPALIVE_MS, Math.floor(leaseMs * LEASE_KEEPALIVE_FRACTION)),
+      Math.floor(leaseMs * LEASE_RENEW_BELOW),
+    ),
+    renew: async (): Promise<void> => {
+      if (!needsRenewal(held, leaseMs, now().getTime())) return;
+      held = await queue.heartbeat(held, { leaseMs, now: now() }).catch(() => held);
+    },
+  };
 
   const finish = async (
     outcome: Exclude<TerminalOutcome, { status: "canceled" }>,
   ): Promise<TickResult> => {
-    const { status } = outcome;
-    await store.markTerminal(run.id, outcome);
-    // cancelDescendants is idempotent and no-ops when childrenOf is empty, so a childless failure
-    // costs one empty query on the rare failure path — cheaper than scanning every tick's memo.
-    if (status === "failed") await cancelDescendants(backend, run.id);
-    if (outcome.status === "failed") {
-      await obs.event("run.failed", run.id, now(), { error: outcome.error });
+    // Lost to a cancel that landed while the body ran: the run is already settled as canceled, and
+    // the cancel did its own parent-arrive and cascade.
+    if (!(await store.markTerminal(run.id, outcome, { cancelTimers: [run.id] }))) {
+      await queue.ack(held, { now: now() });
+      return res("canceled");
+    }
+    const error = outcome.status === "failed" ? outcome.error : undefined;
+    if (error) {
+      await cancelDescendants(backend, run.id);
+      await obs.event("run.failed", run.id, now(), { error });
     } else {
       await obs.event("run.completed", run.id, now());
     }
-    obs.metrics.runSettled?.(run.id, status, flowLabel, {
+    obs.metrics.runSettled?.(run.id, outcome.status, flowLabel, {
       durationMs: run.createdAt ? now().getTime() - run.createdAt.getTime() : undefined,
-      errorCode: outcome.status === "failed" ? outcome.error.code : undefined,
+      errorCode: error?.code,
     });
-    if (run.parentRunId) {
-      const remaining = await store.arriveAtJoin(run.parentRunId);
-      if (status !== "done" || (remaining !== undefined && remaining <= 0)) {
-        await queue.enqueue(run.parentRunId);
-      }
-    }
-    // Wake any result(run.id) waiter now the run is terminal — the local push fast path (a
-    // NOTIFY-backed wakeup also nudges other processes; poll backstops either way).
+    if (run.parentRunId) await arriveAtParent(backend, run.parentRunId, outcome.status);
     await wakeup.signal(run.id);
     await queue.ack(held, { now: now() });
-    return res(status, outcome.status === "failed" ? { error: outcome.error } : undefined);
+    return res(outcome.status, error && { error });
   };
 
   const suspend = async (
@@ -265,7 +259,7 @@ export const runTick = async (
   // this pull check finishes the job on the child's next dispatch.
   if (run.parentRunId) {
     const parent = await store.loadRunRow(run.parentRunId);
-    if (parent?.status === "failed" || parent?.status === "canceled") {
+    if (parent && NON_SUCCESS_TERMINAL_STATUSES.includes(parent.status)) {
       await cancelRun(backend, run.id);
       await queue.ack(held, { now: now() });
       return res("canceled");
@@ -273,6 +267,11 @@ export const runTick = async (
   }
 
   const attempt = await store.markRunning(run.id);
+  // An unchanged count is markRunning's "terminal" answer: a cancel landed after the snapshot.
+  if (attempt <= run.attempts) {
+    await queue.ack(held, { now: now() });
+    return res("already_terminal");
+  }
   // Dead-letter cap: markRunning bumps attempts on EVERY claim, so a step that crashes the
   // worker (uncatchable — the catch below never runs) would otherwise re-claim forever. Once
   // attempts pass the cap, fail terminally without executing, bounding the poison pill.
@@ -331,8 +330,7 @@ export const runTick = async (
       if ((flow.policy?.drift ?? opts.driftPolicy ?? "park") === "park") {
         return parkForRedeploy("flow_drift", { cursorKey: e.cursorKey });
       }
-      const err = toFlowError(e);
-      return finish({ status: "failed", error: err });
+      return finish({ status: "failed", error: toFlowError(e) });
     }
 
     if (attempt < retry.maxAttempts && !(e instanceof StepFailedError)) {
@@ -344,7 +342,6 @@ export const runTick = async (
       );
     }
 
-    const error = toFlowError(e);
-    return finish({ status: "failed", error });
+    return finish({ status: "failed", error: toFlowError(e) });
   }
 };

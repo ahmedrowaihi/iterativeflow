@@ -7,11 +7,13 @@ import type {
   PurgeFilter,
   RunFilter,
   RunPage,
+  RunRow,
   RunSnapshot,
   RunStatus,
+  DriftPolicy,
 } from "#types";
-import { type Clock, systemClock } from "#engine/context";
-import { type DriftPolicy, type RetryPolicy, type TickResult } from "#engine/executor";
+import { type Clock, systemClock } from "#clock";
+import type { RetryPolicy, TickResult } from "#engine/executor";
 import {
   type AnyFlow,
   type Contract,
@@ -33,6 +35,7 @@ import {
   type SweepResult,
   DEFAULT_RECONCILE_LIMIT,
   cancelRun,
+  nextWakeAt,
   prune,
   purge,
   reconcile,
@@ -143,6 +146,9 @@ export interface EngineOpts {
   pollTimeoutMs?: number;
 }
 
+// How many runs one bulk cancel/retry/prune/purge call touches when the caller doesn't say.
+const SWEEP_LIMIT = 1_000;
+
 const byteSize = <T>(value: T): number =>
   value === undefined ? 0 : new TextEncoder().encode(JSON.stringify(value)).length;
 
@@ -203,6 +209,8 @@ export interface Engine<N extends string = string> {
   /** The run + its step memo + signal inbox. `undefined` if the run is gone. */
   status(runId: string): Promise<RunSnapshot | undefined>;
   listRuns(filter: RunFilter<N>, page: Page): Promise<RunPage>;
+  /** The direct children of a run (spawned via `ctx.invoke`). */
+  children(runId: string): Promise<readonly RunRow[]>;
   /** Count of runs per status — the overview/health snapshot. */
   health(): Promise<Record<RunStatus, number>>;
   /**
@@ -283,6 +291,7 @@ export interface Engine<N extends string = string> {
   isPaused(): boolean;
 }
 
+/** Build an {@link Engine} over `backend`, running `flows`. */
 export const createEngine = <const F extends readonly AnyFlow[]>(
   backend: Backend,
   flows: F,
@@ -346,12 +355,19 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
     },
     cancel: (runId) => cancelRun(backend, runId),
     retry: (runId) => retryRun(backend, runId),
-    cancelMany: (filter, limit = 1000) => backend.store.cancelRuns(filter, limit),
-    retryMany: (filter, limit = 1000) => backend.store.retryRuns(filter, limit),
+    cancelMany: (filter, limit = SWEEP_LIMIT) => backend.store.cancelRuns(filter, limit),
+    retryMany: (filter, limit = SWEEP_LIMIT) => backend.store.retryRuns(filter, limit),
     result: engineResult,
 
     status: (runId) => backend.store.loadRun(runId),
-    listRuns: (filter, page) => backend.store.listRuns(filter, page),
+    listRuns: (filter, page) => {
+      // SQLite and MySQL read a negative LIMIT as "no limit", which would page the whole run table.
+      if (!Number.isInteger(page.limit) || page.limit < 1) {
+        throw new Error(`listRuns: page.limit must be a positive integer, got ${page.limit}`);
+      }
+      return backend.store.listRuns(filter, page);
+    },
+    children: (runId) => backend.store.childrenOf(runId),
     health: () => backend.store.runStats(),
 
     check: async () => {
@@ -365,7 +381,7 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       }
     },
 
-    nextWakeAt: () => backend.timer.nextDueAt(clock()),
+    nextWakeAt: () => nextWakeAt(backend, clock()),
     pendingWork: async (names) => {
       const at = clock();
       const [depth, dueTimers, dueCrons] = await Promise.all([
@@ -383,15 +399,18 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       return { queue, runs };
     },
 
-    registerCron: (def) => registerCron(backend, def, clock),
+    registerCron: async (def) => {
+      guard("registerCron", def.input);
+      return registerCron(backend, def, clock);
+    },
     listCrons: () => backend.store.listCrons(),
     removeCron: (name) => backend.store.removeCron(name),
 
     tick: () => tickOnce(backend, reg, tickOpts),
     reconcile: () => reconcile(backend, { limit: tickOpts.reconcileLimit }),
-    prune: (olderThanMs, limit = 1000) =>
+    prune: (olderThanMs, limit = SWEEP_LIMIT) =>
       prune(backend, { before: new Date(clock().getTime() - olderThanMs), limit }),
-    purge: (filter, limit = 1000) => purge(backend, { filter, limit }),
+    purge: (filter, limit = SWEEP_LIMIT) => purge(backend, { filter, limit }),
     runCrons: () => runDueCrons(backend, clock),
     serverlessTick: () => serverlessTick(backend, reg, tickOpts),
 
@@ -410,16 +429,10 @@ export const createEngine = <const F extends readonly AnyFlow[]>(
       const maxIdleMs = Math.max(tickMs, loop?.maxIdleTickMs ?? tickMs * 8);
       const maintenanceMs = loop?.maintenanceMs ?? 5_000;
       const batchMax = tickOpts.batchMax;
-      // Dispatch push comes off the backend's queue by default (e.g. a pg listener); an explicit
-      // override is still honored. Absent both, the loop polls.
       const waitForWork = loop?.waitForWork ?? backend.queue.waitForWork?.bind(backend.queue);
       const stop = new AbortController();
       const { signal } = stop;
       const onTickError = (cause: unknown): void => reportError(opts.observe?.metrics, cause);
-      // Self-tuning claim loop across the whole duty cycle: a FULL batch means more work is almost
-      // certainly waiting, so re-claim immediately (saturated → max throughput); a PARTIAL batch
-      // waits the floor `tickMs`; an EMPTY batch backs off geometrically toward `maxIdleMs` (idle →
-      // stop hammering the DB). A push notify or the current timeout interrupts the wait.
       const tickLoop = (async () => {
         let idleMs = tickMs;
         while (!signal.aborted) {

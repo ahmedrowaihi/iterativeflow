@@ -25,9 +25,10 @@ export const key = {
   run: (id: string) => ({ pk: `RUN#${id}`, sk: "#RUN" }),
   runPk: (id: string) => `RUN#${id}`,
   step: (runId: string, cursorKey: string) => ({ pk: `RUN#${runId}`, sk: `STEP#${cursorKey}` }),
-  signal: (runId: string, seq: number, sigId: string) => ({
+  // Delivery instant leads (seq rewinds every cold start, so it can't order across processes).
+  signal: (runId: string, deliveredAt: number, seq: number, sigId: string) => ({
     pk: `RUN#${runId}`,
-    sk: `SIG#${pad(seq)}#${sigId}`,
+    sk: `SIG#${pad(deliveredAt)}#${pad(seq)}#${sigId}`,
   }),
   sigIdem: (runId: string, idemKey: string) => ({ pk: `RUN#${runId}`, sk: `SIGIDEM#${idemKey}` }),
   job: (runId: string) => ({ pk: `JOB#${runId}`, sk: "#JOB" }),
@@ -103,13 +104,15 @@ export const tableSpec = (table = DEFAULT_TABLE): CreateTableCommandInput => ({
 });
 
 /**
- * The exact IAM actions the backend needs on the workflow table + its `gsi1`. `TransactWriteItems`
- * and `ConditionCheckItem` are the important extras — a CDK `grantReadWriteData` omits them, and
- * without them every atomic outbox write fails. Grant these on `arn:…:table/<name>` and
- * `arn:…:table/<name>/index/*`.
+ * The exact IAM actions the backend needs on the workflow table + its `gsi1`/`gsi2` indexes.
+ * `TransactWriteItems` and `ConditionCheckItem` are the important extras — a CDK `grantReadWriteData`
+ * omits them, and without them every atomic outbox write fails. Grant these on
+ * `arn:…:table/<name>` and `arn:…:table/<name>/index/*`.
  */
 export const REQUIRED_IAM_ACTIONS: readonly string[] = [
   "dynamodb:GetItem",
+  "dynamodb:BatchGetItem",
+  "dynamodb:BatchWriteItem",
   "dynamodb:PutItem",
   "dynamodb:UpdateItem",
   "dynamodb:DeleteItem",

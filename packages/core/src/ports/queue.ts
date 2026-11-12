@@ -6,8 +6,25 @@ export interface EnqueueOpts {
   priority?: number;
 }
 
-/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany} and of an {@link Outbox}'s
- *  atomic enqueues. */
+/** An enqueue's stored schedule. */
+export interface EnqueueFields {
+  runAtMs: number;
+  priority: number;
+}
+
+/**
+ * The stored schedule of an enqueue: `runAtMs` 0 (the epoch) when `runAt` is omitted, so an
+ * immediate job sorts before every scheduled one; `priority` falls back to the run's own, then 0.
+ */
+export const enqueueFields = (
+  opts: EnqueueOpts | undefined,
+  runPriority: number | undefined,
+): EnqueueFields => ({
+  runAtMs: opts?.runAt?.getTime() ?? 0,
+  priority: opts?.priority ?? runPriority ?? 0,
+});
+
+/** An existing run to (re-)enqueue: the unit of {@link Queue.enqueueMany}. */
 export interface EnqueueRequest {
   runId: string;
   opts?: EnqueueOpts;
@@ -33,9 +50,19 @@ export interface ClaimOpts {
    *  names it registered so it never blind-claims a run for a `name` it can't execute (which would
    *  park `unknown_flow` and churn the queue). Matches on `name` only: a registered name at an
    *  unregistered *version* still leases, then parks for redeploy — the intended handoff, not a shard miss.
-   *  Omitted ⇒ no filter (claim any run — a monolith); a set filters, and an empty set leases nothing. */
+   *  Omitted ⇒ no filter (claim any run — a monolith); a set filters, and an empty set leases nothing.
+   *  A job whose run is gone passes every non-empty filter: it is unownable, and the worker that
+   *  leases it acks it, which is what drains it. The same rule scopes `depth`, `Timer.dueCount` and
+   *  `Store.dueCronCount`. */
   names?: readonly string[];
 }
+
+/** {@link ClaimOpts.names} as a predicate over a job's run name (`undefined` = the run is gone). */
+export const shardAdmits = (
+  names: readonly string[] | undefined,
+  runName: string | undefined,
+): boolean =>
+  names === undefined || (names.length > 0 && (runName === undefined || names.includes(runName)));
 
 /** A liveness snapshot of the dispatch queue — a rising backlog or age means workers can't keep up. */
 export interface QueueDepth {
@@ -48,9 +75,9 @@ export interface QueueDepth {
 }
 
 /**
- * Compute a {@link QueueDepth} from an in-memory job set — the shared body of the memory + DynamoDB
- * `Queue.depth`, so the claimable/leased/oldest-age definition lives once. Postgres derives the same
- * numbers in SQL and doesn't use this.
+ * Compute a {@link QueueDepth} from an in-memory job set — the shared body of every scanning
+ * backend's `Queue.depth`, so the claimable/leased/oldest-age definition lives once. The SQL
+ * backends derive the same numbers in one aggregate query.
  */
 export const queueDepthOf = (
   jobs: readonly { runAt: number; leaseExpires?: number }[],

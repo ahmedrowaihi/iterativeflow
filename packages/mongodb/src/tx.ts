@@ -1,6 +1,6 @@
 import type { Backend } from "@iterativeflow/core/backend";
 import type { ClientSession, MongoClient } from "mongodb";
-import { type MongoBackendOpts, createMongoBackend } from "#backend";
+import { type MongoBackendOpts, createSessionBackend } from "#backend";
 
 /**
  * Run `fn` inside one MongoDB transaction, handing it a {@link Backend} bound to that transaction
@@ -10,8 +10,10 @@ import { type MongoBackendOpts, createMongoBackend } from "#backend";
  * so a failed request never leaves an orphan run or a dangling job. Requires a replica set (MongoDB
  * transactions do).
  *
- * Only the write path joins the transaction: reads via the bound backend (e.g. `store.loadRun`) do
- * NOT observe the transaction's own uncommitted writes — unlike a SQL read-your-own-write.
+ * Run starts, enqueues, timer schedule/cancel and the Store's transactional writes (signals, status
+ * changes, checkpoints, bulk cancel/retry) join the transaction. Reads via the bound backend (e.g.
+ * `store.loadRun`) do NOT observe the transaction's own uncommitted writes — unlike a SQL
+ * read-your-own-write.
  *
  * @example
  * await inTx(client, async (backend, session) => {
@@ -27,7 +29,7 @@ export const inTx = async <T>(
   const session = client.startSession();
   try {
     // Built once outside withTransaction — its callback re-runs on transient retries; the session is stable.
-    const backend = createMongoBackend(client, opts, session);
+    const backend = createSessionBackend(client, session, opts);
     return await session.withTransaction(() => fn(backend, session));
   } finally {
     await session.endSession();

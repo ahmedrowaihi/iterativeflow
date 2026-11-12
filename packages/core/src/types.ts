@@ -188,7 +188,7 @@ export interface CronSpec {
   flowName: string;
   flowVersion: number;
   input?: unknown;
-  overlap?: CronOverlap;
+  overlap: CronOverlap;
   nextRunAt: Date;
 }
 

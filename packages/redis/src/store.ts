@@ -5,7 +5,6 @@ import {
   type RunFilter,
   type RunRow,
   type RunSpec,
-  type RunStatus,
   type StartResult,
   type StepCheckpoint,
   type StepOutcome,
@@ -15,13 +14,19 @@ import {
   type OrphanView,
   type Page,
   type PurgeFilter,
+  type RunSelection,
   TERMINAL_STATUSES,
-  ACTIVE_STATUSES,
+  type RunStatus,
+  cancelSelection,
+  enqueueFields,
   isOrphaned,
   isRunStatus,
-  purgeMatcher,
-  runSetStatuses,
-  statusList,
+  listSelection,
+  purgeSelection,
+  runMatcher,
+  resetsAttempts,
+  retrySelection,
+  shardAdmits,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
@@ -33,6 +38,7 @@ import {
   decodeSignal,
   decodeStep,
   encodeCron,
+  encodeSignal,
   encodeStep,
   idemIdentity,
   runFields,
@@ -48,27 +54,31 @@ local function iflow_terminal(s)
   return ${IS_TERMINAL}
 end`;
 
-const OUTBOX_LIB = `${ENQUEUE_FN}
+// Insert-if-absent: a replayed spawn re-issues the same child id, and the first write wins.
+const INSERT_RUN_FN = `
+local function iflow_insert_run(s, idxKey, seqKey, idemKey)
+  if redis.call('EXISTS', s.runKey) == 1 then return end
+  local seq = redis.call('INCR', seqKey)
+  redis.call('HSET', s.runKey, unpack(s.fields))
+  redis.call('HSET', s.runKey, '${RUN.seq}', seq)
+  redis.call('ZADD', idxKey, seq, s.runId)
+  if s.childrenKey then redis.call('SADD', s.childrenKey, s.runId) end
+  if s.idemField then redis.call('HSET', idemKey, s.idemField, s.runId) end
+end`;
 
-local function iflow_apply(fx, qKey, idxKey, tmrKey, seqKey, idemKey, inboxKey)
+// KEYS[1..6] are the `outboxScriptKeys` prefix; an outbox script's own keys start at KEYS[7].
+const OUTBOX_LIB = `${ENQUEUE_FN}${INSERT_RUN_FN}
+
+local function iflow_apply(fx)
+  local inboxKey, qKey, idxKey, tmrKey, seqKey, idemKey = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6]
   if fx.spawn then
     for _, s in ipairs(fx.spawn) do
-      local seq = redis.call('INCR', seqKey)
-      redis.call('HSET', s.runKey, unpack(s.fields))
-      redis.call('HSET', s.runKey, '${RUN.seq}', seq)
-      redis.call('ZADD', idxKey, seq, s.childId)
-      if s.childrenKey then redis.call('SADD', s.childrenKey, s.childId) end
-      if s.idemField then redis.call('HSET', idemKey, s.idemField, s.childId) end
-      iflow_enqueue(qKey, s.childId, s.jobKey, s.runKey, s.runAtMs, s.priority)
+      iflow_insert_run(s, idxKey, seqKey, idemKey)
+      iflow_enqueue(qKey, s.runId, s.jobKey, s.runKey, s.runAtMs, s.priority)
     end
   end
   if fx.joinTarget then
     redis.call('HSET', fx.joinTarget.runKey, '${RUN.joinRemaining}', fx.joinTarget.count)
-  end
-  if fx.enqueue then
-    for _, e in ipairs(fx.enqueue) do
-      iflow_enqueue(qKey, e.runId, e.jobKey, e.runKey, e.runAtMs, e.priority)
-    end
   end
   if fx.timers then
     for _, t in ipairs(fx.timers) do
@@ -93,21 +103,16 @@ local function iflow_apply(fx, qKey, idxKey, tmrKey, seqKey, idemKey, inboxKey)
   end
 end`;
 
-const START_LUA = `
-local idemField, fieldsJson, runId, childrenKey = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
-if idemField ~= '' then
-  local existing = redis.call('HGET', KEYS[4], idemField)
+const START_LUA = `${INSERT_RUN_FN}
+local s = cjson.decode(ARGV[1])
+if s.idemField then
+  local existing = redis.call('HGET', KEYS[3], s.idemField)
   if existing then return {'hit', existing} end
 end
-local seq = redis.call('INCR', KEYS[3])
-redis.call('HSET', KEYS[1], unpack(cjson.decode(fieldsJson)))
-redis.call('HSET', KEYS[1], '${RUN.seq}', seq)
-redis.call('ZADD', KEYS[2], seq, runId)
-if idemField ~= '' then redis.call('HSET', KEYS[4], idemField, runId) end
-if childrenKey ~= '' then redis.call('SADD', childrenKey, runId) end
+iflow_insert_run(s, KEYS[1], KEYS[2], KEYS[3])
 return {'new'}`;
 
-const POST_SIGNAL_LUA = `${OUTBOX_LIB}
+const POST_SIGNAL_LUA = `${ENQUEUE_FN}
 if ARGV[1] ~= '' then
   if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then return 0 end
 end
@@ -127,53 +132,71 @@ if redis.call('EXISTS', KEYS[1]) == 0 then return end
 return redis.call('HINCRBY', KEYS[1], '${RUN.joinRemaining}', -1)`;
 
 const CHECKPOINT_LUA = `${OUTBOX_LIB}
-if redis.call('EXISTS', KEYS[1]) == 0 then return {'noRun'} end
-if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then
-  return {'hit', redis.call('HGET', KEYS[2], ARGV[1])}
+local runKey, stepsKey, jobKey = KEYS[7], KEYS[8], KEYS[9]
+if redis.call('EXISTS', runKey) == 0 then return {'noRun'} end
+if redis.call('HEXISTS', stepsKey, ARGV[1]) == 1 then
+  return {'hit', redis.call('HGET', stepsKey, ARGV[1])}
 end
 if ARGV[4] ~= '' then
-  if tonumber(redis.call('HGET', KEYS[9], '${JOB.version}')) ~= tonumber(ARGV[4]) then
+  if tonumber(redis.call('HGET', jobKey, '${JOB.version}')) ~= tonumber(ARGV[4]) then
     return {'skip'}
   end
 end
-redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
-if ARGV[3] ~= '' then
-  iflow_apply(cjson.decode(ARGV[3]), KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[3])
-end
+redis.call('HSET', stepsKey, ARGV[1], ARGV[2])
+if ARGV[3] ~= '' then iflow_apply(cjson.decode(ARGV[3])) end
 return {'ok'}`;
 
 const SUSPEND_LUA = `${TERMINAL_FN}${OUTBOX_LIB}
-local s = redis.call('HGET', KEYS[1], '${RUN.status}')
+local runKey = KEYS[7]
+local s = redis.call('HGET', runKey, '${RUN.status}')
 if s == false then return 'noRun' end
 if iflow_terminal(s) then return 'ok' end
-redis.call('HSET', KEYS[1], '${RUN.status}', ARGV[1])
-if ARGV[2] == '1' then redis.call('HSET', KEYS[1], '${RUN.attempts}', 0) end
-if ARGV[3] ~= '' then
-  iflow_apply(cjson.decode(ARGV[3]), KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[2])
-end
+redis.call('HSET', runKey, '${RUN.status}', ARGV[1])
+if ARGV[2] == '1' then redis.call('HSET', runKey, '${RUN.attempts}', 0) end
+if ARGV[3] ~= '' then iflow_apply(cjson.decode(ARGV[3])) end
 return 'ok'`;
 
 const MARK_TERMINAL_LUA = `${TERMINAL_FN}${OUTBOX_LIB}
-local s = redis.call('HGET', KEYS[1], '${RUN.status}')
+local runKey = KEYS[7]
+local s = redis.call('HGET', runKey, '${RUN.status}')
 if s == false then return 'noRun' end
-if iflow_terminal(s) then return 'ok' end
-redis.call('HSET', KEYS[1], '${RUN.status}', ARGV[1])
-if ARGV[2] == '1' then redis.call('HSET', KEYS[1], '${RUN.output}', ARGV[3])
-else redis.call('HDEL', KEYS[1], '${RUN.output}') end
-if ARGV[4] == '1' then redis.call('HSET', KEYS[1], '${RUN.error}', ARGV[5])
-else redis.call('HDEL', KEYS[1], '${RUN.error}') end
-if ARGV[6] ~= '' then
-  iflow_apply(cjson.decode(ARGV[6]), KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[2])
-end
+if iflow_terminal(s) then return 'terminal' end
+redis.call('HSET', runKey, '${RUN.status}', ARGV[1])
+if ARGV[2] == '1' then redis.call('HSET', runKey, '${RUN.output}', ARGV[3])
+else redis.call('HDEL', runKey, '${RUN.output}') end
+if ARGV[4] == '1' then redis.call('HSET', runKey, '${RUN.error}', ARGV[5])
+else redis.call('HDEL', runKey, '${RUN.error}') end
+if ARGV[6] ~= '' then iflow_apply(cjson.decode(ARGV[6])) end
 return 'ok'`;
 
-const RETRY_LUA = `${OUTBOX_LIB}
-local s = redis.call('HGET', KEYS[1], '${RUN.status}')
-if s == false then return -1 end
-if s ~= 'failed' then return 0 end
+const RETRY_LUA = `${ENQUEUE_FN}
+if redis.call('HGET', KEYS[1], '${RUN.status}') ~= 'failed' then return 0 end
 redis.call('HSET', KEYS[1], '${RUN.status}', 'pending', '${RUN.attempts}', '0')
 redis.call('HDEL', KEYS[1], '${RUN.error}')
 iflow_enqueue(KEYS[3], ARGV[1], KEYS[2], KEYS[1], ARGV[2], ARGV[3])
+return 1`;
+
+// KEYS[1..4] = runIndex, timers, queue, idem; KEYS[5] the run hash, then its other per-run keys,
+// then — when ARGV[3] is '1' — the parent's run hash, which must not be live.
+// ARGV = runId, idem field ('' when unkeyed), parent guard flag, then the statuses the purge admits.
+const DELETE_RUN_LUA = `${TERMINAL_FN}
+local s = redis.call('HGET', KEYS[5], '${RUN.status}')
+local admitted = false
+for i = 4, #ARGV do
+  if ARGV[i] == s then admitted = true end
+end
+if not admitted then return 0 end
+local last = #KEYS
+if ARGV[3] == '1' then
+  local p = redis.call('HGET', KEYS[last], '${RUN.status}')
+  if p ~= false and not iflow_terminal(p) then return 0 end
+  last = last - 1
+end
+for i = 5, last do redis.call('DEL', KEYS[i]) end
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+redis.call('ZREM', KEYS[3], ARGV[1])
+if ARGV[2] ~= '' then redis.call('HDEL', KEYS[4], ARGV[2]) end
 return 1`;
 
 const UPSERT_CRON_LUA = `
@@ -209,68 +232,61 @@ return 1`;
 export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): Store => {
   const evalLua = luaRunner(client);
 
-  // Redis has no secondary index over runs, so a set operation scans the run index once and filters
-  // in memory — same shape as deleteRuns here.
-  const matchingRuns = async (
-    filter: RunFilter,
-    allowed: readonly RunStatus[],
-    op: string,
-    limit: number,
-  ): Promise<RunRow[]> => {
-    const statuses = new Set<string>(runSetStatuses(filter, allowed, op));
-    if (statuses.size === 0) return [];
+  // Redis has no secondary index over runs, so a set operation scans the run index (oldest first)
+  // and filters in memory.
+  const scanRuns = async (sel: RunSelection, limit: number): Promise<RunRow[]> => {
+    if (sel.statuses.length === 0) return [];
+    const hashes = await allRunHashes();
+    const statuses = new Map<string, RunStatus>();
+    for (const h of hashes) {
+      const status = h[RUN.status];
+      if (h[RUN.id] && status !== undefined && isRunStatus(status)) statuses.set(h[RUN.id], status);
+    }
+    const matches = runMatcher(sel, (runId) => statuses.get(runId));
     const out: RunRow[] = [];
-    for (const hash of await allRunHashes()) {
+    for (const hash of hashes) {
       if (out.length >= limit) break;
       const row = toRunRow(hash);
-      if (
-        row &&
-        statuses.has(row.status) &&
-        (filter.name === undefined || row.name === filter.name) &&
-        (filter.version === undefined || row.version === filter.version) &&
-        (filter.tag === undefined || (row.tags ?? []).includes(filter.tag))
-      ) {
-        out.push(row);
-      }
+      if (row && matches(row)) out.push(row);
     }
     return out;
   };
+
+  const insertSpec = (spec: RunSpec, runId: string) => ({
+    runId,
+    runKey: keys.run(runId),
+    fields: runFields(spec, runId),
+    childrenKey: spec.parentRunId !== undefined ? keys.children(spec.parentRunId) : undefined,
+    idemField:
+      spec.idempotencyKey !== undefined
+        ? idemIdentity(spec.name, spec.version, spec.idempotencyKey)
+        : undefined,
+  });
+
+  const outboxScriptKeys = (runId: string, ...own: string[]): string[] => [
+    keys.inbox(runId),
+    keys.queue,
+    keys.runIndex,
+    keys.timers,
+    keys.seq,
+    keys.idem,
+    ...own,
+  ];
 
   // Prebuild every dynamic key + child hash in JS, so the Lua only applies what it's handed — keeping
   // the atomic domain single-node (per-run keys are hash-tagged but the shared keys are not).
   const serializeOutbox = (fx?: Outbox): string => {
     if (!fx) return "";
-    // runAt default 0 (epoch = immediately claimable) — must match Queue.enqueue and the memory oracle.
-    const enq = (runId: string, opts?: { runAt?: Date; priority?: number }) => ({
-      runId,
-      jobKey: keys.job(runId),
-      runKey: keys.run(runId),
-      runAtMs: opts?.runAt ? opts.runAt.getTime() : 0,
-      priority: opts?.priority,
-    });
     return JSON.stringify({
-      spawn: fx.spawn?.map((s) => {
-        const e = enq(s.runId, s.enqueue);
-        return {
-          runKey: keys.run(s.runId),
-          childId: s.runId,
-          fields: runFields(s.spec, s.runId),
-          childrenKey:
-            s.spec.parentRunId !== undefined ? keys.children(s.spec.parentRunId) : undefined,
-          idemField:
-            s.spec.idempotencyKey !== undefined
-              ? idemIdentity(s.spec.name, s.spec.version, s.spec.idempotencyKey)
-              : undefined,
-          jobKey: e.jobKey,
-          runAtMs: e.runAtMs,
-          priority: e.priority,
-        };
-      }),
+      spawn: fx.spawn?.map((s) => ({
+        ...insertSpec(s.spec, s.runId),
+        jobKey: keys.job(s.runId),
+        ...enqueueFields(undefined, s.spec.priority),
+      })),
       joinTarget: fx.joinTarget && {
         runKey: keys.run(fx.joinTarget.runId),
         count: fx.joinTarget.count,
       },
-      enqueue: fx.enqueue?.map((x) => enq(x.runId, x.opts)),
       timers: fx.timers?.map((t) => ({ runId: t.runId, fireAtMs: t.fireAt.getTime() })),
       cancelTimers: fx.cancelTimers,
       consumeSignals: fx.consumeSignals,
@@ -291,16 +307,11 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
 
   const startOne = async (spec: RunSpec): Promise<StartResult> => {
     const runId = id();
-    const idemField =
-      spec.idempotencyKey !== undefined
-        ? idemIdentity(spec.name, spec.version, spec.idempotencyKey)
-        : "";
-    const childrenKey = spec.parentRunId !== undefined ? keys.children(spec.parentRunId) : "";
     const [verdict, existingId] = replyList(
       await evalLua(
         START_LUA,
-        [keys.run(runId), keys.runIndex, keys.seq, keys.idem],
-        [idemField, JSON.stringify(runFields(spec, runId)), runId, childrenKey],
+        [keys.runIndex, keys.seq, keys.idem],
+        [JSON.stringify(insertSpec(spec, runId))],
       ),
     );
     if (verdict === "new") return { runId, created: true, status: "pending" };
@@ -313,32 +324,51 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
   };
 
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
-    const matches = purgeMatcher(filter);
-    const victims: RunRow[] = [];
-    for (const hash of await allRunHashes()) {
-      if (victims.length >= limit) break;
-      const row = toRunRow(hash);
-      if (row && matches(row)) victims.push(row);
-    }
-    if (victims.length === 0) return 0;
-    const del = client.pipeline();
-    for (const r of victims) {
-      del.del(
-        keys.run(r.id),
-        keys.steps(r.id),
-        keys.inbox(r.id),
-        keys.job(r.id),
-        keys.children(r.id),
-        keys.sigIdem(r.id),
-      );
-      del.zrem(keys.runIndex, r.id);
-      del.zrem(keys.timers, r.id);
-      if (r.idempotencyKey !== undefined) {
-        del.hdel(keys.idem, idemIdentity(r.name, r.version, r.idempotencyKey));
-      }
-    }
-    await del.exec();
-    return victims.length;
+    const sel = purgeSelection(filter);
+    const victims = await scanRuns(sel, limit);
+    const guardsParent = (r: RunRow): r is RunRow & { parentRunId: string } =>
+      sel.spareChildrenOfLiveParents === true && r.parentRunId !== undefined;
+    const deleted = await Promise.all(
+      victims.map(async (r) =>
+        replyNumber(
+          await evalLua(
+            DELETE_RUN_LUA,
+            [
+              keys.runIndex,
+              keys.timers,
+              keys.queue,
+              keys.idem,
+              ...keys.perRun(r.id),
+              ...(guardsParent(r) ? [keys.run(r.parentRunId)] : []),
+            ],
+            [
+              r.id,
+              r.idempotencyKey === undefined
+                ? ""
+                : idemIdentity(r.name, r.version, r.idempotencyKey),
+              guardsParent(r) ? "1" : "0",
+              ...sel.statuses,
+            ],
+          ),
+        ),
+      ),
+    );
+    return deleted.filter((n) => n === 1).length;
+  };
+
+  const markTerminal = async (runId: string, outcome: TerminalOutcome, fx?: Outbox) => {
+    const output = outcome.status === "done" ? outcome.output : undefined;
+    const error = outcome.status === "done" ? undefined : outcome.error;
+    const res = await evalLua(MARK_TERMINAL_LUA, outboxScriptKeys(runId, keys.run(runId)), [
+      outcome.status,
+      output !== undefined ? "1" : "0",
+      output !== undefined ? JSON.stringify(output) : "",
+      error !== undefined ? "1" : "0",
+      error !== undefined ? JSON.stringify(error) : "",
+      serializeOutbox(fx),
+    ]);
+    if (replyText(res) === "noRun") throw new Error(`markTerminal: run ${runId} not found`);
+    return replyText(res) === "ok";
   };
 
   const store: Store = {
@@ -373,7 +403,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         await evalLua(
           POST_SIGNAL_LUA,
           [keys.sigIdem(runId), keys.inbox(runId), keys.job(runId), keys.queue, keys.run(runId)],
-          [opts?.idempotencyKey ?? "", JSON.stringify({ id: id(), name, payload }), runId, 0, ""],
+          [opts?.idempotencyKey ?? "", encodeSignal({ id: id(), name, payload }), runId, 0, ""],
         ),
       );
       return { delivered: delivered === 1 };
@@ -396,17 +426,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
       const encoded = encodeStep(outcome);
       const res = await evalLua(
         CHECKPOINT_LUA,
-        [
-          keys.run(c.runId),
-          keys.steps(c.runId),
-          keys.inbox(c.runId),
-          keys.queue,
-          keys.runIndex,
-          keys.timers,
-          keys.seq,
-          keys.idem,
-          keys.job(c.runId),
-        ],
+        outboxScriptKeys(c.runId, keys.run(c.runId), keys.steps(c.runId), keys.job(c.runId)),
         [
           c.cursorKey,
           encoded,
@@ -423,55 +443,21 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     },
 
     async suspendRun(runId, status: SuspendStatus, fx?: Outbox) {
-      const res = await evalLua(
-        SUSPEND_LUA,
-        [
-          keys.run(runId),
-          keys.inbox(runId),
-          keys.queue,
-          keys.runIndex,
-          keys.timers,
-          keys.seq,
-          keys.idem,
-        ],
-        [status, status !== "retrying" ? "1" : "0", serializeOutbox(fx)],
-      );
+      const res = await evalLua(SUSPEND_LUA, outboxScriptKeys(runId, keys.run(runId)), [
+        status,
+        resetsAttempts(status) ? "1" : "0",
+        serializeOutbox(fx),
+      ]);
       if (replyText(res) === "noRun") throw new Error(`suspendRun: run ${runId} not found`);
     },
 
-    async markTerminal(runId, outcome: TerminalOutcome, fx?: Outbox) {
-      const output = outcome.status === "done" ? outcome.output : undefined;
-      const error = outcome.status === "done" ? undefined : outcome.error;
-      const res = await evalLua(
-        MARK_TERMINAL_LUA,
-        [
-          keys.run(runId),
-          keys.inbox(runId),
-          keys.queue,
-          keys.runIndex,
-          keys.timers,
-          keys.seq,
-          keys.idem,
-        ],
-        [
-          outcome.status,
-          output !== undefined ? "1" : "0",
-          output !== undefined ? JSON.stringify(output) : "",
-          error !== undefined ? "1" : "0",
-          error !== undefined ? JSON.stringify(error) : "",
-          serializeOutbox(fx),
-        ],
-      );
-      if (replyText(res) === "noRun") throw new Error(`markTerminal: run ${runId} not found`);
-    },
+    markTerminal,
 
     async listRuns(filter: RunFilter, page: Page) {
-      const statuses = statusList(filter.status);
+      const matches = runMatcher(listSelection(filter));
       // Scan the index in bounded windows so an interactive page isn't O(total runs); a filtered
       // page has no secondary index, so widen the window to offset the misses.
-      const filtered = Boolean(
-        statuses || filter.name || filter.version !== undefined || filter.tag,
-      );
+      const filtered = Object.values(filter).some((v) => v !== undefined);
       const window = filtered ? Math.max(page.limit * 4, 64) : page.limit;
       let max = page.cursor ? `(${page.cursor}` : "+inf";
       const rows: RunRow[] = [];
@@ -492,11 +478,7 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         const fetched = await loadRunRows(ids);
         for (let i = 0; i < ids.length && rows.length < page.limit; i++) {
           const row = fetched[i];
-          if (!row) continue;
-          if (statuses && !statuses.includes(row.status)) continue;
-          if (filter.name && row.name !== filter.name) continue;
-          if (filter.version !== undefined && row.version !== filter.version) continue;
-          if (filter.tag && !(row.tags?.includes(filter.tag) ?? false)) continue;
+          if (!row || !matches(row)) continue;
           rows.push(row);
           cursor = String(scores[i]);
         }
@@ -507,15 +489,16 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     },
 
     async cancelRuns(filter, limit) {
-      const victims = await matchingRuns(filter, ACTIVE_STATUSES, "cancelRuns", limit);
+      const victims = await scanRuns(cancelSelection(filter), limit);
+      let n = 0;
       for (const r of victims) {
-        await store.markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] });
+        if (await markTerminal(r.id, { status: "canceled" }, { cancelTimers: [r.id] })) n += 1;
       }
-      return victims.length;
+      return n;
     },
 
     async retryRuns(filter, limit) {
-      const victims = await matchingRuns(filter, ["failed"], "retryRuns", limit);
+      const victims = await scanRuns(retrySelection(filter), limit);
       let n = 0;
       for (const r of victims) if ((await store.retryRun(r.id)).retried) n += 1;
       return n;
@@ -573,13 +556,10 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
 
     deleteRuns,
 
-    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
-
     async retryRun(runId) {
       const res = replyNumber(
         await evalLua(RETRY_LUA, [keys.run(runId), keys.job(runId), keys.queue], [runId, 0, ""]),
       );
-      if (res === -1) throw new Error(`retryRun: run ${runId} not found`);
       return { retried: res === 1 };
     },
 
@@ -589,6 +569,11 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
         [keys.crons, keys.cronsDue],
         [spec.name, encodeCron(cronRowFromSpec(spec, spec.nextRunAt)), spec.nextRunAt.getTime()],
       );
+    },
+
+    async nextCronAt() {
+      const [, score] = await client.zrange(keys.cronsDue, 0, 0, "WITHSCORES");
+      return score === undefined ? null : new Date(Number(score));
     },
 
     async dueCrons(now, limit) {
@@ -619,12 +604,12 @@ export const createRedisStore = (client: RedisClient, keys: Keys, id: IdGen): St
     },
 
     async dueCronCount(now, names) {
-      const wanted = names && new Set(names);
-      if (!wanted) return client.zcount(keys.cronsDue, "-inf", now.getTime());
+      if (!names) return client.zcount(keys.cronsDue, "-inf", now.getTime());
       const due = await client.zrangebyscore(keys.cronsDue, "-inf", now.getTime());
       if (due.length === 0) return 0;
       const raws = await client.hmget(keys.crons, ...due);
-      return raws.filter((raw) => raw && wanted.has(decodeCron(raw).flowName)).length;
+      return raws.filter((raw) => raw !== null && shardAdmits(names, decodeCron(raw).flowName))
+        .length;
     },
 
     async advanceCron(name, expectedNextRunAt, nextRunAt, lastRunAt) {

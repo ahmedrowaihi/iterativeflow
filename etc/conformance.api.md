@@ -7,11 +7,23 @@
 ```ts
 import { Backend } from "@iterativeflow/core";
 import { Backend as Backend$1, Queue, Store, Timer, Wakeup } from "@iterativeflow/core/backend";
+//#region src/all.d.ts
+/** What a backend is, as far as which suites apply to it. */
+interface BackendTraits {
+  /** Whether separate workers can write concurrently — a fleet over one database. A single-writer
+   *  substrate (in-process memory, one SQLite file, a Durable Object) skips the concurrent-claim suite. */
+  concurrentWriters: boolean;
+}
+/**
+ * Register every conformance suite against `makeBackend`, which returns a fresh {@link Backend} per
+ * case. This is what "a correct backend" means; a backend that passes it needs no suite list of its own.
+ */
+declare const backendConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>, traits: BackendTraits) => void;
+//#endregion
 //#region src/store.d.ts
 /**
- * The Store contract as executable invariants. EVERY backend (in-memory, Postgres,
- * DynamoDB) is run against this exact suite — a backend is not "done" until green here.
- * The guarantee is a test, not a comment.
+ * The Store contract as executable invariants. Every backend runs this exact suite — a backend
+ * is not "done" until green here.
  */
 declare const storeConformance: (label: string, makeStore: () => Store | Promise<Store>) => void;
 //#endregion
@@ -43,9 +55,8 @@ declare const wakeupConformance: (label: string, makeWakeup: () => Wakeup | Prom
 /**
  * The transactional-outbox seam as executable invariants: a durable Store write and the
  * side-effects it carries commit together, and — critically — the outbox fires exactly
- * ONCE even when the write is replayed. Every backend (memory, Postgres, DynamoDB) must
- * satisfy this; it is the property that makes crash recovery correct rather than just
- * plausible.
+ * ONCE even when the write is replayed. Every backend must satisfy this; it is the property
+ * that makes crash recovery correct rather than just plausible.
  */
 declare const outboxConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
@@ -61,7 +72,7 @@ declare const signalConformance: (label: string, makeBackend: () => Backend$1 | 
 /**
  * `orphanedRuns` as executable invariants — what the reconciler re-drives. A run is an orphan
  * only when it truly can't make progress on its own: non-terminal but off the queue with no
- * pending timer, OR an `awaiting_signal` parent whose child already finished (lost wake). A
+ * pending timer, OR an `awaiting_child` parent whose child already finished (lost wake). A
  * run that is queued, timing, terminal, or legitimately waiting on an external signal is NOT.
  */
 declare const reconcileConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
@@ -94,15 +105,22 @@ declare const claimFilterConformance: (label: string, makeBackend: () => Backend
  * A horizontally-sharded worker pool where each pod claims only the flow names it registered.
  * Proves that two pods claiming ONE backend concurrently are SAFE — no run is ever leased by both,
  * and no pod ever leases a run outside its shard — and LIVE: together they drain both shards. Server
- * backends only; single-writer backends (sqlite / memory / durable-objects) can't issue concurrent
- * transactions, so their name-shard claim is covered sequentially by {@link claimFilterConformance}.
+ * backends only; single-writer backends can't issue concurrent transactions, so their name-shard
+ * claim is covered sequentially by {@link claimFilterConformance}.
  *
- * Per-round throughput is backend-specific: Postgres locks only the name-matched rows, so both shards
- * drain in one round; MySQL's `FOR UPDATE OF j SKIP LOCKED` locks the eligible `job` head before the
- * `run`-side name filter applies, so the first claimer transiently blocks the other's shard, which
- * fills on the next round. Both are safe — the loop asserts safety every round and liveness overall.
+ * Under contention a claim may come back short (rows a concurrent claim holds are skipped, not
+ * waited on) — that may cost a round, never safety. So the suite checks safety on every round and
+ * liveness within a bounded number of rounds.
  */
 declare const shardedClaimConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
+//#endregion
+//#region src/concurrency.d.ts
+/**
+ * Races that only a backend with concurrent writers can lose: parallel checkpoints on one cursor
+ * agree on a single winner, and parallel claims never lease one run twice. A claim may come back
+ * short under contention, so the claim race drains over bounded rounds.
+ */
+declare const concurrencyConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
 //#region src/pending-work.d.ts
 /**
@@ -117,5 +135,5 @@ declare const shardedClaimConformance: (label: string, makeBackend: () => Backen
  */
 declare const pendingWorkConformance: (label: string, makeBackend: () => Backend$1 | Promise<Backend$1>) => void;
 //#endregion
-export { claimFilterConformance, cronConformance, engineConformance, outboxConformance, pendingWorkConformance, queueConformance, reconcileConformance, shardedClaimConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
+export { type BackendTraits, backendConformance, claimFilterConformance, concurrencyConformance, cronConformance, engineConformance, outboxConformance, pendingWorkConformance, queueConformance, reconcileConformance, shardedClaimConformance, signalConformance, storeConformance, timerConformance, wakeupConformance };
 ```

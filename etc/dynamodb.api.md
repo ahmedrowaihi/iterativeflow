@@ -35,10 +35,10 @@ declare const DEFAULT_TABLE = "iterativeflow";
  */
 declare const tableSpec: (table?: string) => CreateTableCommandInput;
 /**
- * The exact IAM actions the backend needs on the workflow table + its `gsi1`. `TransactWriteItems`
- * and `ConditionCheckItem` are the important extras — a CDK `grantReadWriteData` omits them, and
- * without them every atomic outbox write fails. Grant these on `arn:…:table/<name>` and
- * `arn:…:table/<name>/index/*`.
+ * The exact IAM actions the backend needs on the workflow table + its `gsi1`/`gsi2` indexes.
+ * `TransactWriteItems` and `ConditionCheckItem` are the important extras — a CDK `grantReadWriteData`
+ * omits them, and without them every atomic outbox write fails. Grant these on
+ * `arn:…:table/<name>` and `arn:…:table/<name>/index/*`.
  */
 declare const REQUIRED_IAM_ACTIONS: readonly string[];
 /**

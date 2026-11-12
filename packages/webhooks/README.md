@@ -12,7 +12,7 @@ on Node, Workers, and the edge.
 ```ts
 import { webhookSignalBridge, github } from "@iterativeflow/webhooks";
 
-const bridge = webhookSignalBridge(backend, {
+const bridge = webhookSignalBridge(engine, {
   verify: github(process.env.GITHUB_WEBHOOK_SECRET!),
   // Map a verified event to the parked run(s) it concerns. `correlate` owns the app's
   // "PR 42 → runId" lookup — the bridge can't know it.

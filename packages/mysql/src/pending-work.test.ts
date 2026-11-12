@@ -3,7 +3,7 @@ import type { StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createMysqlBackend } from "#backend";
 import { int } from "#codec";
-import { applySchema } from "#schema";
+import { applySchema, tables } from "#schema";
 import { mysqlPool } from "#sql";
 import { startMysql, stopMysql } from "#test-container";
 
@@ -20,9 +20,7 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
   afterAll(() => stopMysql({ container, pool }));
 
   beforeEach(async () => {
-    for (const table of ["run", "step", "job", "timer", "signal", "cron"]) {
-      await pool.query(`TRUNCATE TABLE \`${table}\``);
-    }
+    for (const table of Object.values(tables(""))) await pool.query(`TRUNCATE TABLE ${table}`);
   });
 
   const pendingAt = async (asOf: number, names?: readonly string[]): Promise<number> => {
@@ -57,6 +55,7 @@ describe.skipIf(skip)("mysql pending_work() — autoscaling backlog", () => {
       flowName: "a",
       flowVersion: 1,
       input: {},
+      overlap: "allow",
       nextRunAt: past,
     });
     const futureJob = await start("a");

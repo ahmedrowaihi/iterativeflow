@@ -1,5 +1,5 @@
 import { type Engine, type FlowEvent, isRunStatus } from "@iterativeflow/core";
-import { UI } from "#ui";
+import { renderUI } from "#ui";
 
 /** Dashboard configuration. `events` supplies the durable timeline (e.g. postgres `listEvents`). */
 export interface DashboardOpts {
@@ -18,8 +18,7 @@ const json = <T>(body: T, status = 200): Response =>
 const html = (body: string): Response =>
   new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 
-// A negative or non-numeric `limit` must not reach the store: SQLite reads a negative LIMIT as
-// "no limit", which would page the entire run table — inputs and outputs included — into one response.
+// Clamp rather than reject: a hostile or malformed `?limit` gets the default page, not a 500.
 const pageLimit = (raw: string | null): number => {
   const n = Number(raw ?? 50);
   return Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 50;
@@ -37,15 +36,16 @@ export const createDashboard = (
   engine: Engine,
   opts: DashboardOpts = {},
 ): ((req: Request) => Promise<Response>) => {
-  const base = opts.basePath ?? "";
+  const base = (opts.basePath ?? "").replace(/\/+$/, "");
+  const page = renderUI(base);
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
-    const path = url.pathname.startsWith(base)
-      ? url.pathname.slice(base.length) || "/"
-      : url.pathname;
+    const inside = url.pathname === base || url.pathname.startsWith(`${base}/`);
+    if (!inside) return json({ error: "not found" }, 404);
+    const path = url.pathname.slice(base.length) || "/";
 
-    if (req.method === "GET" && path === "/") return html(UI);
+    if (req.method === "GET" && path === "/") return html(page);
 
     if (req.method === "GET" && path === "/api/health") {
       return json(await engine.health());
@@ -63,11 +63,12 @@ export const createDashboard = (
         tag: url.searchParams.get("tag") ?? undefined,
         name: url.searchParams.get("name") ?? undefined,
       };
-      const page = {
-        limit: pageLimit(url.searchParams.get("limit")),
-        cursor: url.searchParams.get("cursor") ?? undefined,
-      };
-      return json(await engine.listRuns(filter, page));
+      return json(
+        await engine.listRuns(filter, {
+          limit: pageLimit(url.searchParams.get("limit")),
+          cursor: url.searchParams.get("cursor") ?? undefined,
+        }),
+      );
     }
 
     const detail = path.match(/^\/api\/runs\/([^/]+)$/);
@@ -79,7 +80,7 @@ export const createDashboard = (
         run: snap.run,
         steps: [...snap.steps].map(([cursorKey, outcome]) => ({ cursorKey, ...outcome })),
         signals: snap.signals,
-        children: (await engine.backend.store.childrenOf(id)).map((c) => ({
+        children: (await engine.children(id)).map((c) => ({
           id: c.id,
           name: c.name,
           version: c.version,

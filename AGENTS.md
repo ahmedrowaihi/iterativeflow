@@ -23,8 +23,8 @@ Near-zero inline comments. The public boundary carries words; internal code spea
 Each backend under `packages/*` implements the four ports (Store/Queue/Timer/Wakeup) + the
 transactional outbox against its own primitive, independently — only the `@iterativeflow/conformance`
 suites are shared. Duplicated port _logic_ that must stay identical (e.g. the orphan predicate) is
-consolidated in `core` (`orphanedRunsSql`, `isOrphaned`); small per-backend row/codec boilerplate is
-allowed to stay local. Every backend must pass all nine conformance suites.
+consolidated in `core` (`orphanedRunsSql`/`isOrphaned`, `runSelectionSql`/`runMatcher`, `shardAdmits`); small per-backend row/codec boilerplate is
+allowed to stay local. Every backend runs `backendConformance` — the whole suite, in one call.
 
 ## Verify
 

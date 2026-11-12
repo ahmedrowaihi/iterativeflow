@@ -19,7 +19,8 @@ const engine = createEngine(createMongoBackend(client), [/* your flows */]);
 
 ## Notes
 
-- **`mongodb` is a peer dependency.** Requires a replica set for transactions.
+- **`mongodb` is a peer dependency.** Requires a replica set for transactions, on MongoDB 5.0+ (a
+  sharded `claim` uses a `$lookup` with both `localField` and `pipeline`).
 - **Wakeup is in-process** (like the SQL/Redis backends).
 - Runs are documents keyed by `_id = runId`; steps/signals/jobs/timers/crons are their own
   collections. Cross-collection writers (the outbox) use a session transaction; single-document ops

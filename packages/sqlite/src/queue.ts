@@ -8,7 +8,7 @@ import {
 } from "@iterativeflow/core/backend";
 import { int, optInt, text } from "#codec";
 import type { Tables } from "#schema";
-import { enqueueManyStmt, enqueueStmt } from "#statements";
+import { enqueueManyStmt, enqueueStmt, inList } from "#statements";
 import type { Sql } from "#sql";
 
 /** @internal */
@@ -27,9 +27,7 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
     async claim({ limit, leaseMs, names, now }: ClaimOpts) {
       const at = ms(now);
       if (names && names.length === 0) return [];
-      const nameFilter = names
-        ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")}))`
-        : "";
+      const nameFilter = names ? ` AND (r.name IS NULL OR r.name IN ${inList(names.length)})` : "";
       return sql.tx(async (tx) => {
         const due = await tx.query(
           `SELECT j.run_id FROM ${t.job} j LEFT JOIN ${t.run} r ON r.id = j.run_id
@@ -39,11 +37,10 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
         );
         if (!due.length) return [];
         const ids = due.map((r) => text(r, "run_id"));
-        const holes = ids.map(() => "?").join(", ");
         const rows = await tx.query(
           `UPDATE ${t.job}
              SET lease_token = ? || ':' || run_id, lease_expires = ?
-           WHERE run_id IN (${holes})
+           WHERE run_id IN ${inList(ids.length)}
            RETURNING run_id, lease_token, lease_expires, version`,
           [id(), at + leaseMs, ...ids],
         );
@@ -86,9 +83,7 @@ export const createSqliteQueue = (sql: Sql, t: Tables, id: IdGen): Queue => {
       if (names && names.length === 0) return queueDepthOf([], now.getTime());
       const nowMs = now.getTime();
       // a run-less job is unownable, so it passes every name filter (see Queue.claim)
-      const where = names
-        ? ` WHERE r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")})`
-        : "";
+      const where = names ? ` WHERE r.name IS NULL OR r.name IN ${inList(names.length)}` : "";
       const rows = await sql.query(
         `SELECT SUM(claimable) AS claimable, SUM(leased) AS leased,
                 MIN(CASE WHEN claimable = 1 THEN run_at END) AS oldest

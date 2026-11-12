@@ -10,6 +10,7 @@ import {
   type Outbox,
   type OrphanView,
   type RunRow,
+  type RunStatus,
   type RunSpec,
   type StartResult,
   type StepCheckpoint,
@@ -19,14 +20,18 @@ import {
   type TimerDueOpts,
   createLocalWakeup,
   distinctEnqueues,
-  ACTIVE_STATUSES,
+  enqueueFields,
   isOrphaned,
   isTerminal,
+  listSelection,
   newId,
-  purgeMatcher,
-  runSetStatuses,
+  purgeSelection,
   queueDepthOf,
-  statusList,
+  runMatcher,
+  cancelSelection,
+  retrySelection,
+  resetsAttempts,
+  shardAdmits,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 
@@ -97,8 +102,7 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     const prior = jobs.get(runId);
     jobs.set(runId, {
       runId,
-      runAtMs: opts?.runAt ? opts.runAt.getTime() : 0,
-      priority: opts?.priority ?? priorities.get(runId) ?? 0,
+      ...enqueueFields(opts, priorities.get(runId)),
       version: (prior?.version ?? 0) + 1,
       leaseToken: prior?.leaseToken,
       leaseExpiresMs: prior?.leaseExpiresMs,
@@ -113,9 +117,8 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     if (!fx) return;
     for (const s of fx.spawn ?? []) {
       insertRunCore(s.spec, s.runId);
-      enqueueCore(s.runId, s.enqueue);
+      enqueueCore(s.runId);
     }
-    for (const e of fx.enqueue ?? []) enqueueCore(e.runId, e.opts);
     for (const t of fx.timers ?? []) scheduleCore(t.runId, t.fireAt);
     for (const runId of fx.cancelTimers ?? []) deadlines.delete(runId);
     for (const sigId of fx.consumeSignals ?? []) {
@@ -142,12 +145,29 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     return { runId, created: true, status: "pending" };
   };
 
-  // A row whose run is gone is unownable, so it passes every name filter — the worker that leases it
-  // acks it (runTick's gone-path), which is what drains it. An empty `names` is handled by the callers.
-  const nameAllows = (wanted: Set<string> | undefined, runId: string): boolean => {
-    if (!wanted) return true;
-    const run = runs.get(runId);
-    return !run || wanted.has(run.name);
+  const statusOf = (runId: string): RunStatus | undefined => runs.get(runId)?.status;
+
+  const admits = (names: readonly string[] | undefined, runId: string): boolean =>
+    shardAdmits(names, runs.get(runId)?.name);
+
+  const markTerminalCore = (runId: string, outcome: TerminalOutcome, fx?: Outbox): boolean => {
+    const row = runs.get(runId);
+    if (!row) throw new Error(`markTerminal: run ${runId} not found`);
+    if (isTerminal(row.status)) return false;
+    row.status = outcome.status;
+    row.output = outcome.status === "done" ? durable(outcome.output) : undefined;
+    row.error = outcome.status === "done" ? undefined : outcome.error;
+    commitOutbox(fx);
+    return true;
+  };
+
+  const retryCore = (row: RunRow): boolean => {
+    if (row.status !== "failed") return false;
+    row.status = "pending";
+    row.error = undefined;
+    row.attempts = 0;
+    enqueueCore(row.id);
+    return true;
   };
 
   const store: Backend["store"] = {
@@ -237,31 +257,18 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       if (!row) throw new Error(`suspendRun: run ${runId} not found`);
       if (isTerminal(row.status)) return; // already terminal — nothing to park
       row.status = status;
-      if (status !== "retrying") row.attempts = 0;
+      if (resetsAttempts(status)) row.attempts = 0;
       commitOutbox(fx);
     },
 
     async markTerminal(runId, outcome: TerminalOutcome, fx?: Outbox) {
-      const row = runs.get(runId);
-      if (!row) throw new Error(`markTerminal: run ${runId} not found`);
-      if (isTerminal(row.status)) return;
-      row.status = outcome.status;
-      row.output = outcome.status === "done" ? durable(outcome.output) : undefined;
-      row.error = outcome.status === "done" ? undefined : outcome.error;
-      commitOutbox(fx);
+      return markTerminalCore(runId, outcome, fx);
     },
 
     async listRuns(filter, page) {
-      const statuses = statusList(filter.status);
       const matched = [...runs.values()]
-        .filter(
-          (r) =>
-            (!statuses || statuses.includes(r.status)) &&
-            (!filter.name || r.name === filter.name) &&
-            (filter.version === undefined || r.version === filter.version) &&
-            (!filter.tag || (r.tags?.includes(filter.tag) ?? false)),
-        )
-        .sort((a, b) => (runSeq.get(b.id) ?? 0) - (runSeq.get(a.id) ?? 0)); // newest first
+        .filter(runMatcher(listSelection(filter), statusOf))
+        .sort((a, b) => (runSeq.get(b.id) ?? 0) - (runSeq.get(a.id) ?? 0));
       const before = page.cursor ? Number(page.cursor) : Number.POSITIVE_INFINITY;
       const rows = matched.filter((r) => (runSeq.get(r.id) ?? 0) < before).slice(0, page.limit);
       const last = rows[rows.length - 1];
@@ -270,40 +277,19 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async cancelRuns(filter, limit) {
-      const allowed = new Set<string>(runSetStatuses(filter, ACTIVE_STATUSES, "cancelRuns"));
       const victims = [...runs.values()]
-        .filter(
-          (r) =>
-            allowed.has(r.status) &&
-            (filter.name === undefined || r.name === filter.name) &&
-            (filter.version === undefined || r.version === filter.version) &&
-            (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
-        )
+        .filter(runMatcher(cancelSelection(filter), statusOf))
         .slice(0, limit);
-      for (const r of victims) {
-        r.status = "canceled";
-        deadlines.delete(r.id);
-      }
+      for (const r of victims)
+        markTerminalCore(r.id, { status: "canceled" }, { cancelTimers: [r.id] });
       return victims.length;
     },
 
     async retryRuns(filter, limit) {
-      const allowed = new Set<string>(runSetStatuses(filter, ["failed"], "retryRuns"));
       const victims = [...runs.values()]
-        .filter(
-          (r) =>
-            allowed.has(r.status) &&
-            (filter.name === undefined || r.name === filter.name) &&
-            (filter.version === undefined || r.version === filter.version) &&
-            (filter.tag === undefined || (r.tags ?? []).includes(filter.tag)),
-        )
+        .filter(runMatcher(retrySelection(filter), statusOf))
         .slice(0, limit);
-      for (const r of victims) {
-        r.status = "pending";
-        r.error = undefined;
-        r.attempts = 0;
-        enqueueCore(r.id);
-      }
+      for (const r of victims) retryCore(r);
       return victims.length;
     },
 
@@ -328,16 +314,15 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       };
       return [...runs.values()]
         .filter((r) => isOrphaned(r, view))
-        .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
+        .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0))
         .slice(0, limit)
         .map((r) => r.id);
     },
 
     async deleteRuns(filter, limit) {
-      const matches = purgeMatcher(filter);
       const victims = [...runs.values()]
-        .filter(matches)
-        .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0)) // oldest first
+        .filter(runMatcher(purgeSelection(filter), statusOf))
+        .sort((a, b) => (runSeq.get(a.id) ?? 0) - (runSeq.get(b.id) ?? 0))
         .slice(0, limit)
         .map((r) => r.id);
       const gone = new Set(victims);
@@ -357,17 +342,9 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
       return victims.length;
     },
 
-    deleteRunsOlderThan: (before, limit) => store.deleteRuns({ before }, limit),
-
     async retryRun(runId) {
       const row = runs.get(runId);
-      if (!row) throw new Error(`retryRun: run ${runId} not found`);
-      if (row.status !== "failed") return { retried: false };
-      row.status = "pending";
-      row.error = undefined;
-      row.attempts = 0;
-      enqueueCore(runId);
-      return { retried: true };
+      return { retried: row !== undefined && retryCore(row) };
     },
 
     async upsertCron(spec) {
@@ -378,11 +355,17 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
         flowName: spec.flowName,
         flowVersion: spec.flowVersion,
         input: durable(spec.input),
-        overlap: spec.overlap ?? "allow",
+        overlap: spec.overlap,
         nextRunAt:
           existing && existing.schedule === spec.schedule ? existing.nextRunAt : spec.nextRunAt,
         lastRunAt: existing?.lastRunAt,
       });
+    },
+
+    async nextCronAt() {
+      let min: Date | null = null;
+      for (const c of crons.values()) if (!min || c.nextRunAt < min) min = c.nextRunAt;
+      return min && new Date(min);
     },
 
     async dueCrons(now, limit) {
@@ -404,10 +387,9 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async dueCronCount(now, names) {
-      const wanted = names && new Set(names);
       let n = 0;
       for (const c of crons.values()) {
-        if (c.nextRunAt.getTime() <= now.getTime() && (!wanted || wanted.has(c.flowName))) n += 1;
+        if (c.nextRunAt.getTime() <= now.getTime() && shardAdmits(names, c.flowName)) n += 1;
       }
       return n;
     },
@@ -431,14 +413,12 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
-      if (names?.length === 0) return [];
       const t = ms(now);
-      const wanted = names && new Set(names);
       const due = [...jobs.values()].filter(
         (j) =>
           j.runAtMs <= t &&
           (j.leaseExpiresMs === undefined || j.leaseExpiresMs <= t) &&
-          nameAllows(wanted, j.runId),
+          admits(names, j.runId),
       );
       due.sort((a, b) => a.priority - b.priority || a.runAtMs - b.runAtMs);
       const leases: Lease[] = [];
@@ -492,10 +472,8 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async depth(now, names) {
-      if (names?.length === 0) return queueDepthOf([], ms(now));
-      const wanted = names && new Set(names);
       const jobsForDepth = [...jobs.values()]
-        .filter((j) => nameAllows(wanted, j.runId))
+        .filter((j) => admits(names, j.runId))
         .map((j) => ({ runAt: j.runAtMs, leaseExpires: j.leaseExpiresMs }));
       return queueDepthOf(jobsForDepth, ms(now));
     },
@@ -531,12 +509,10 @@ export const createMemoryBackend = ({ id: idGen }: { id?: IdGen } = {}): Backend
     },
 
     async dueCount(now, names) {
-      if (names?.length === 0) return 0;
       const t = ms(now);
-      const wanted = names && new Set(names);
       let n = 0;
       for (const [runId, fireAtMs] of deadlines) {
-        if (fireAtMs <= t && nameAllows(wanted, runId)) n += 1;
+        if (fireAtMs <= t && admits(names, runId)) n += 1;
       }
       return n;
     },

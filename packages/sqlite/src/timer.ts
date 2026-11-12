@@ -2,16 +2,13 @@ import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
 import { int, optInt, text } from "#codec";
 import type { Tables } from "#schema";
 import type { Sql } from "#sql";
+import { inList, scheduleStmt } from "#statements";
 
 /** @internal */
 export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
   return {
     async schedule(runId, fireAt) {
-      await sql.query(
-        `INSERT INTO ${t.timer} (run_id, fire_at) VALUES (?, ?)
-         ON CONFLICT(run_id) DO UPDATE SET fire_at = excluded.fire_at`,
-        [runId, fireAt.getTime()],
-      );
+      await scheduleStmt(sql, t, runId, fireAt);
     },
 
     async dueBatch({ now, limit }: TimerDueOpts) {
@@ -23,17 +20,14 @@ export const createSqliteTimer = (sql: Sql, t: Tables): Timer => {
         );
         if (!due.length) return [];
         const ids = due.map((r) => text(r, "run_id"));
-        const holes = ids.map(() => "?").join(", ");
-        await tx.query(`DELETE FROM ${t.timer} WHERE run_id IN (${holes})`, ids);
+        await tx.query(`DELETE FROM ${t.timer} WHERE run_id IN ${inList(ids.length)}`, ids);
         return ids;
       });
     },
 
     async dueCount(now, names) {
       if (names && names.length === 0) return 0;
-      const filter = names
-        ? ` AND (r.name IS NULL OR r.name IN (${names.map(() => "?").join(", ")}))`
-        : "";
+      const filter = names ? ` AND (r.name IS NULL OR r.name IN ${inList(names.length)})` : "";
       const rows = await sql.query(
         `SELECT count(*) AS n FROM ${t.timer} tm LEFT JOIN ${t.run} r ON r.id = tm.run_id
          WHERE tm.fire_at <= ?${filter}`,

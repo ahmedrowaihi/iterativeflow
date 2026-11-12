@@ -24,8 +24,7 @@ const cell = (row: SqlRow, column: string): SqlValue => {
   return value;
 };
 
-/** @internal */
-export const textOrNull = (row: SqlRow, column: string): string | null => {
+const textOrNull = (row: SqlRow, column: string): string | null => {
   const value = cell(row, column);
   return value === null ? null : String(value);
 };
@@ -45,7 +44,11 @@ export const intOrNull = (row: SqlRow, column: string): number | null => {
 };
 
 /** @internal */
-export const int = (row: SqlRow, column: string): number => Number(text(row, column));
+export const int = (row: SqlRow, column: string): number => {
+  const n = Number(text(row, column));
+  if (!Number.isFinite(n)) throw new Error(`mysql: column "${column}" is not a number`);
+  return n;
+};
 
 const oneOf = <T extends string>(allowed: readonly T[], row: SqlRow, column: string): T =>
   decodeOneOf(allowed, text(row, column), `mysql: column "${column}"`);

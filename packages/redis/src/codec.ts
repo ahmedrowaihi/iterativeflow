@@ -15,7 +15,11 @@ import {
 } from "@iterativeflow/core/backend";
 import { RUN } from "#keys";
 
-const num = (v: string | undefined, d = 0): number => (v === undefined ? d : Number(v));
+const num = (h: Record<string, string>, field: string): number => {
+  const v = h[field];
+  if (v === undefined) throw new Error(`redis: run hash is missing ${field}`);
+  return Number(v);
+};
 
 const runStatus = (v: string | undefined): RunStatus =>
   decodeOneOf(RUN_STATUSES, String(v), "redis: run status");
@@ -60,18 +64,18 @@ export const toRunRow = (h: Record<string, string>): RunRow | undefined => {
   return {
     id: h[RUN.id],
     name: h[RUN.name],
-    version: num(h[RUN.version]),
+    version: num(h, RUN.version),
     status: runStatus(h[RUN.status]),
     input: JSON.parse(h[RUN.input] ?? "null") ?? undefined,
-    attempts: num(h[RUN.attempts]),
+    attempts: num(h, RUN.attempts),
     output: output === undefined ? undefined : JSON.parse(output),
     error: error === undefined ? undefined : decodeFlowError(JSON.parse(error), "redis: run error"),
     idempotencyKey: h[RUN.idempotencyKey],
     tags: tags === undefined ? undefined : decodeTags(JSON.parse(tags), "redis: run tags"),
     parentRunId: h[RUN.parentRunId],
     parentCursorKey: h[RUN.parentCursorKey],
-    depth: num(h[RUN.depth]),
-    createdAt: h[RUN.createdAt] ? new Date(num(h[RUN.createdAt])) : undefined,
+    depth: num(h, RUN.depth),
+    createdAt: new Date(num(h, RUN.createdAt)),
   };
 };
 
@@ -116,6 +120,6 @@ export const cronRowFromSpec = (spec: CronSpec, nextRunAt: Date): CronRow => ({
   flowName: spec.flowName,
   flowVersion: spec.flowVersion,
   input: spec.input,
-  overlap: spec.overlap ?? "allow",
+  overlap: spec.overlap,
   nextRunAt,
 });

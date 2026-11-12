@@ -1,6 +1,6 @@
 import { type EventSink, type FlowEvent, isEventType } from "@iterativeflow/core/backend";
 import { date, j, json, text } from "#codec";
-import { tables } from "#schema";
+import { DEFAULT_SCHEMA, tables } from "#schema";
 import type { Sql } from "#sql";
 
 /**
@@ -8,7 +8,7 @@ import type { Sql } from "#sql";
  * `observe.sink` with a `level` to record. Writes are single-row inserts off the critical
  * path of the state machine (a failed event write must never fail a run — callers wrap as needed).
  */
-export const createPgEventSink = (sql: Sql, schema = "workflow"): EventSink => {
+export const createPgEventSink = (sql: Sql, schema = DEFAULT_SCHEMA): EventSink => {
   const t = tables(schema);
   return {
     async record(e: FlowEvent) {
@@ -24,7 +24,7 @@ export const createPgEventSink = (sql: Sql, schema = "workflow"): EventSink => {
 export const listEvents = async (
   sql: Sql,
   runId: string,
-  schema = "workflow",
+  schema = DEFAULT_SCHEMA,
 ): Promise<FlowEvent[]> => {
   const t = tables(schema);
   const rows = await sql.query(

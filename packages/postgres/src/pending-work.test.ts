@@ -3,7 +3,7 @@ import { drainTimers, runDueCrons } from "@iterativeflow/core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPgBackend } from "#backend";
-import { applySchema } from "#schema";
+import { applySchema, tables } from "#schema";
 import { pgPool } from "#sql";
 
 const skip = process.env.SKIP_TESTCONTAINERS === "1";
@@ -26,8 +26,7 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE "workflow".run, "workflow".job, "workflow".timer, "workflow".cron,' +
-        ' "workflow".step, "workflow".signal, "workflow".event RESTART IDENTITY CASCADE',
+      `TRUNCATE ${Object.values(tables("workflow")).join(", ")} RESTART IDENTITY CASCADE`,
     );
   });
 
@@ -69,6 +68,7 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
       flowName: "a",
       flowVersion: 1,
       input: {},
+      overlap: "allow",
       nextRunAt: past,
     });
     const claimableB = await start(be, "b");
@@ -98,6 +98,7 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
       flowName: "q",
       flowVersion: 1,
       input: {},
+      overlap: "allow",
       nextRunAt: past,
     });
 
@@ -132,6 +133,7 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
       flowName: "a",
       flowVersion: 1,
       input: {},
+      overlap: "allow",
       nextRunAt: past,
     });
     const claimableB = await start(be, "b");
@@ -155,36 +157,6 @@ describe.skipIf(skip)("workflow.pending_work() — autoscaling backlog", () => {
     const v2 = await start(be, "tc", 2);
     await be.queue.enqueue(v2);
     expect(await pending(["tc"])).toBe(2);
-  });
-
-  // Shares this file's container; the pg-only risks are the empty list (invalid SQL) and a
-  // repeated runId (ON CONFLICT cannot hit one row twice per statement).
-  it("enqueueMany: empty is a no-op, duplicates collapse to one upsert, a lease survives", async () => {
-    const be = createPgBackend(pgPool(pool));
-    await be.queue.enqueueMany([]);
-
-    const leased = await start(be, "em");
-    await be.queue.enqueue(leased);
-    const [lease] = await be.queue.claim({ limit: 1, leaseMs: 600_000 });
-    const other = await start(be, "em");
-
-    await be.queue.enqueueMany([
-      { runId: leased },
-      { runId: other, opts: { priority: 9 } },
-      { runId: other, opts: { priority: 3 } },
-    ]);
-
-    const { rows } = await pool.query<{
-      run_id: string;
-      version: string;
-      priority: number;
-      lease_token: string | null;
-    }>('SELECT run_id, version, priority, lease_token FROM "workflow".job ORDER BY run_id');
-    const byId = new Map(rows.map((r) => [r.run_id, r]));
-    expect(Number(byId.get(other)?.version)).toBe(1);
-    expect(byId.get(other)?.priority).toBe(3);
-    expect(Number(byId.get(leased)?.version)).toBe(lease.version + 1);
-    expect(byId.get(leased)?.lease_token).toBe(lease.token);
   });
 
   it("upgrades a database from an older release in place, keeping its runs", async () => {

@@ -1,28 +1,18 @@
 import { createEngine, defineFlow } from "@iterativeflow/core";
+import { createTestHarness } from "@iterativeflow/core/testing";
 import { createDashboard } from "#index";
 import { createMemoryBackend } from "@iterativeflow/memory";
 import { describe, expect, it } from "vitest";
 
-const TERMINAL = new Set(["done", "failed", "canceled"]);
+const double = defineFlow<{ x: number }, number>({
+  name: "double",
+  version: 1,
+  run: async (ctx, input) => ctx.step("d", () => input.x * 2),
+});
 
 const buildEngine = () => {
-  const flow = defineFlow<{ x: number }, number>({
-    name: "double",
-    version: 1,
-    run: async (ctx, input) => ctx.step("d", () => input.x * 2),
-  });
-  const engine = createEngine(createMemoryBackend(), [flow], {
-    now: () => new Date("2030-01-01T00:00:00Z"),
-  });
-  return { engine, flow };
-};
-
-const drive = async (engine: ReturnType<typeof buildEngine>["engine"], id: string) => {
-  for (let i = 0; i < 5; i++) {
-    const s = await engine.status(id);
-    if (s && TERMINAL.has(s.run.status)) return;
-    await engine.tick();
-  }
+  const harness = createTestHarness(createMemoryBackend(), [double]);
+  return { engine: harness.engine, flow: double, harness };
 };
 
 describe("dashboard fetch handler", () => {
@@ -35,10 +25,10 @@ describe("dashboard fetch handler", () => {
   });
 
   it("lists runs and returns health over the JSON API", async () => {
-    const { engine, flow } = buildEngine();
+    const { engine, flow, harness } = buildEngine();
     const handler = createDashboard(engine);
     const id = await engine.submit(flow, { x: 21 });
-    await drive(engine, id);
+    await harness.settle(id);
 
     const runs = await (await handler(new Request("http://x/api/runs"))).json();
     expect(runs).toMatchObject({ runs: expect.arrayContaining([expect.objectContaining({ id })]) });
@@ -49,7 +39,7 @@ describe("dashboard fetch handler", () => {
     const detail = await (await handler(new Request(`http://x/api/runs/${id}`))).json();
     expect(detail).toMatchObject({
       run: { output: 42 },
-      steps: expect.arrayContaining([expect.objectContaining({ cursorKey: "s0" })]),
+      steps: [expect.objectContaining({ status: "ok", result: 42 })],
     });
   });
 
@@ -72,7 +62,7 @@ describe("dashboard fetch handler", () => {
     const id = await engine.submit(parent, { x: 1 });
     await engine.tick();
     await engine.tick();
-    const [kid] = await engine.backend.store.childrenOf(id);
+    const [kid] = await engine.children(id);
 
     const detail = await (await handler(new Request(`http://x/api/runs/${id}`))).json();
     expect(detail).toMatchObject({
@@ -90,6 +80,16 @@ describe("dashboard fetch handler", () => {
     const res = await handler(new Request(`http://x/api/runs/${id}/cancel`, { method: "POST" }));
     expect(await res.json()).toEqual({ ok: true });
     expect((await engine.status(id))?.run.status).toBe("canceled");
+  });
+
+  it("serves the UI and API under a basePath, with the page calling the mounted API", async () => {
+    const { engine } = buildEngine();
+    const handler = createDashboard(engine, { basePath: "/admin/flows" });
+    const page = await (await handler(new Request("http://x/admin/flows"))).text();
+    expect(page).toContain('"/admin/flows"+"/api"');
+    expect((await handler(new Request("http://x/admin/flows/api/health"))).status).toBe(200);
+    expect((await handler(new Request("http://x/admin/flowsX/api/health"))).status).toBe(404);
+    expect((await handler(new Request("http://x/api/health"))).status).toBe(404);
   });
 
   it("404s an unknown run", async () => {

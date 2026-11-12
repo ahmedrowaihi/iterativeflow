@@ -1,4 +1,4 @@
-import type { EnqueueOpts, EnqueueRequest, Queue } from "#ports/queue";
+import type { Queue } from "#ports/queue";
 import type { Store } from "#ports/store";
 import type { Timer } from "#ports/timer";
 import type { Wakeup } from "#ports/wakeup";
@@ -13,8 +13,14 @@ import type { RunSpec } from "#types";
 export interface SpawnRequest {
   runId: string;
   spec: RunSpec;
-  enqueue?: EnqueueOpts;
 }
+
+/**
+ * Children `ctx.invoke` spawns per checkpoint — a backend's atomic-write budget must fit this many
+ * spawns in one {@link Outbox}. Fixed in core, not per backend, because the chunk count is part of
+ * the replay fingerprint: every backend must chunk a fan-out identically.
+ */
+export const FAN_OUT_CHUNK = 40;
 
 /** A durable deadline to set atomically with a Store write (sleep / retry backoff). */
 export interface TimerRequest {
@@ -34,10 +40,10 @@ export interface TimerRequest {
  * signal only costs latency, never correctness), so the engine fires them post-commit.
  */
 export interface Outbox {
-  /** Child runs to create + enqueue atomically (`ctx.invoke`). Insert-by-id is idempotent. */
+  /** Child runs to create + enqueue (immediately, at the spec's priority) atomically
+   *  (`ctx.invoke`). Insert-by-id is first-writer-wins: an existing run's row is left untouched
+   *  (re-enqueuing it is allowed — a terminal run's job is acked on claim). */
   spawn?: readonly SpawnRequest[];
-  /** Existing runs to (re-)enqueue atomically (continue self, wake a suspended parent). */
-  enqueue?: readonly EnqueueRequest[];
   /** Durable deadlines to set atomically (sleep, retry). */
   timers?: readonly TimerRequest[];
   /**
@@ -73,7 +79,7 @@ export interface Outbox {
 /**
  * A cohesive backend: the four ports over one shared substrate. The outbox guarantee is a
  * property of a Backend — `store.checkpointStep(c, fx)` commits the step and `fx`'s
- * spawns/enqueues/timers against THIS backend's queue/timer atomically. The three
+ * spawns/timers against THIS backend's queue/timer atomically. The three
  * standalone `*Conformance` suites pin each port in isolation; `outboxConformance` pins
  * the atomic composition.
  */

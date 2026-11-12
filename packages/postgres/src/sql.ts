@@ -37,16 +37,21 @@ export const pgPool = (pool: Pool): Sql => ({
   query: (text, params) => pool.query(text, params?.slice()).then((r) => r.rows),
   async tx(fn) {
     const c = await pool.connect();
+    let broken = false;
     try {
       await c.query("BEGIN");
       const out = await fn(onClient(c));
       await c.query("COMMIT");
       return out;
     } catch (e) {
-      await c.query("ROLLBACK").catch(() => undefined);
+      await c.query("ROLLBACK").catch(() => {
+        broken = true;
+      });
       throw e;
     } finally {
-      c.release();
+      // A connection whose ROLLBACK failed may still hold the aborted transaction; a truthy
+      // release destroys it instead of handing it to the next caller.
+      c.release(broken);
     }
   },
 });

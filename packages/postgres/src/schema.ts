@@ -1,5 +1,12 @@
-import { assertSqlIdentifier } from "@iterativeflow/core/backend";
+import {
+  TERMINAL_STATUSES,
+  assertSqlIdentifier,
+  sqlStatusTuple,
+} from "@iterativeflow/core/backend";
 import type { Sql } from "#sql";
+
+/** @internal */
+export const DEFAULT_SCHEMA = "workflow";
 
 /** @internal */
 export const tables = (schema: string) => {
@@ -49,8 +56,8 @@ $$;
  * `(run_id, cursor_key)` is the first-writer-wins guard); `job` is the lease-CAS queue;
  * `timer` is the durable-deadline set. Ids are opaque `text` supplied by the runtime's
  * `IdGen` — the schema never assumes a UUID shape or a DB-side default, so callers are free
- * to use ULIDs/KSUIDs/etc. The `run` FK on `step` has NO cascade: runs are never deleted, so
- * the reference exists only to reject a step whose run doesn't exist.
+ * to use ULIDs/KSUIDs/etc. The `run` FKs on `step` and `signal` have NO cascade: they reject a
+ * write for a run that doesn't exist, and `deleteRuns` removes the dependants before the run.
  */
 export const ddl = (schema: string): string => {
   const t = tables(schema);
@@ -91,7 +98,7 @@ CREATE INDEX IF NOT EXISTS run_status ON ${t.run} (status);
 -- KEY, not only in the partial predicate: the predicate decides membership, it does not let the
 -- planner seek one terminal status. Partial keeps live runs out, so the hot path never pays for it.
 CREATE INDEX IF NOT EXISTS run_purge ON ${t.run} (name, status, created_at)
-  WHERE status IN ('done','failed','canceled');
+  WHERE status IN ${sqlStatusTuple(TERMINAL_STATUSES)};
 
 CREATE TABLE IF NOT EXISTS ${t.step} (
   run_id      text NOT NULL REFERENCES ${t.run}(id),
@@ -160,6 +167,6 @@ ${pendingWorkDdl(schema)}`;
 };
 
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */
-export const applySchema = async (sql: Sql, schema = "workflow"): Promise<void> => {
+export const applySchema = async (sql: Sql, schema = DEFAULT_SCHEMA): Promise<void> => {
   await sql.query(ddl(schema));
 };

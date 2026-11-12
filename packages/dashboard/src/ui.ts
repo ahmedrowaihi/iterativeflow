@@ -1,5 +1,7 @@
+import { RUN_STATUSES } from "@iterativeflow/core";
+
 /** @internal */
-export const UI = `<!doctype html>
+export const renderUI = (base: string): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -25,9 +27,8 @@ export const UI = `<!doctype html>
   tr.run { cursor:pointer; }
   tr.run:hover td { background:var(--card); }
   code { font:12px ui-monospace,monospace; color:var(--mut); }
-  .s { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); }
-  .s.done{color:#1a8f4a} .s.failed{color:#d33} .s.canceled{color:#996} .s.running,.s.pending{color:var(--accent)}
-  .s.sleeping,.s.awaiting_signal,.s.awaiting_child,.s.retrying,.s.parked{color:#c80}
+  .s { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:#c80; }
+  .s.done,.s.ok{color:#1a8f4a} .s.failed{color:#d33} .s.canceled{color:#996} .s.running,.s.pending{color:var(--accent)}
   #drawer { position:fixed; top:0; right:0; height:100%; width:min(560px,92vw); background:var(--bg); border-left:1px solid var(--line); transform:translateX(100%); transition:transform .15s; overflow:auto; padding:20px; }
   #drawer.open { transform:none; box-shadow:-8px 0 30px rgba(0,0,0,.15); }
   #drawer h2 { font-size:14px; margin:0 0 4px; }
@@ -49,9 +50,7 @@ export const UI = `<!doctype html>
   <label>Status
     <select id="status">
       <option value="">all</option>
-      <option>pending</option><option>running</option><option>sleeping</option>
-      <option>awaiting_signal</option><option>awaiting_child</option><option>retrying</option><option>parked</option>
-      <option>done</option><option>failed</option><option>canceled</option>
+      ${RUN_STATUSES.map((s) => `<option>${s}</option>`).join("")}
     </select>
   </label>
   <button id="refresh">Refresh</button>
@@ -60,7 +59,7 @@ export const UI = `<!doctype html>
 <tbody id="rows"></tbody></table></main>
 <div id="drawer"></div>
 <script>
-const api = (p,o) => fetch("api"+p,o).then(r=>r.json());
+const api = (p,o) => fetch(${JSON.stringify(base)}+"/api"+p,o).then(r=>r.json());
 const esc = s => String(s).replace(/[&<>"'\`]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;","\`":"&#96;"}[c]));
 const badge = s => '<span class="s '+s+'">'+s+'</span>';
 

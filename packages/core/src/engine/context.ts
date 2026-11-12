@@ -1,5 +1,7 @@
+import type { Clock } from "#clock";
 import type { IdGen } from "#id";
-import type { Backend } from "#ports/outbox";
+import { type Backend, FAN_OUT_CHUNK } from "#ports/outbox";
+import { NON_SUCCESS_TERMINAL_STATUSES } from "#status";
 import type { DeliveredSignal, RunRow, RunSnapshot, RunSpec } from "#types";
 import {
   type AnyFlow,
@@ -165,21 +167,9 @@ export interface Ctx<S extends SignalMap = SignalMap> {
   log<D>(message: string, data?: D): void;
 }
 
-/** The clock the executor threads in — injectable for deterministic tests. */
-export type Clock = () => Date;
-
-/** Wall-clock default. Passed where a deployment doesn't inject its own {@link Clock}. */
-export const systemClock: Clock = () => new Date();
-
 // Guards against an unbounded runaway fan-out (children per invoke) and recursion (invoke nesting).
 const MAX_FAN_OUT = 10_000;
 const MAX_DEPTH = 32;
-
-// Children spawned per atomic checkpoint. A fixed core constant (NOT a per-backend value) so the
-// chunk count and memo fingerprints are identical on every backend — a backend's transaction budget
-// must not leak into the durable replay fingerprint. Kept small enough for the tightest backend's
-// atomic-write budget; each backend guards its own limit at checkpoint time.
-const FAN_OUT_CHUNK = 40;
 
 /** Anything carrying a value this run already wrote to its durable log, or a child run's output. */
 interface Logged {
@@ -224,12 +214,12 @@ const withTimeout = async <T>(
 
 const withLeaseHeld = async <T>(
   work: () => Promise<T>,
-  keepalive?: LeaseKeepalive,
+  keepalive: LeaseKeepalive,
   timeoutMs?: number,
 ): Promise<T> => {
   // No declared timeout means no honest ceiling: renewing anyway would turn a hung step into a
   // permanent stall, so leave it reclaimable.
-  if (!keepalive || !timeoutMs) return await work();
+  if (!timeoutMs) return await work();
   const timer = setInterval(() => void keepalive.renew(), keepalive.everyMs);
   try {
     return await work();
@@ -292,7 +282,7 @@ export interface CtxDeps {
   maxFanOut?: number;
   maxDepth?: number;
   suspend: SuspendHolder;
-  keepalive?: LeaseKeepalive;
+  keepalive: LeaseKeepalive;
   claimVersion: number;
 }
 
@@ -363,24 +353,21 @@ export const makeCtx = ({
     }
   };
 
-  // undefined while the child still runs; without `settle` a failed or canceled child throws.
+  // A spawn commits with the memo that names it, and every Store read is read-your-writes, so a
+  // memoized child that is missing was deleted (purged under a parent that later came back via
+  // retry). It can never settle, so it counts as failed rather than parking the parent forever.
   const childResult = (
     row: RunRow | undefined,
     settle: boolean,
   ): ChildResult<unknown> | undefined => {
     if (row?.status === "done") return { status: "done", output: row.output };
-    if (row?.status !== "failed" && row?.status !== "canceled") return undefined;
-    if (!settle) {
-      throw new StepFailedError(
-        row.error?.code ?? "CHILD_FAILED",
-        row.error?.message ?? "child did not complete",
-      );
-    }
-    if (row.status === "canceled") return { status: "canceled" };
-    return {
-      status: "failed",
-      error: row.error ?? { code: "CHILD_FAILED", message: "child did not complete" },
-    };
+    if (row && !NON_SUCCESS_TERMINAL_STATUSES.includes(row.status)) return undefined;
+    const error = row
+      ? (row.error ?? { code: "CHILD_FAILED", message: "child did not complete" })
+      : { code: "CHILD_GONE", message: "child run was deleted before the parent joined it" };
+    if (!settle) throw new StepFailedError(error.code, error.message);
+    if (row?.status === "canceled") return { status: "canceled" };
+    return { status: "failed", error };
   };
 
   const outputOf = (result: ChildResult<unknown>): Logged => ({
@@ -390,8 +377,7 @@ export const makeCtx = ({
   const pendingFor = (name: string): DeliveredSignal | undefined =>
     snap.signals.find((s) => s.name === name && !consumed.has(s.id));
 
-  // Validate a consumed payload against its declared schema; `consumed` stops a later wait in this
-  // invocation from draining the same signal.
+  // `consumed` stops a later wait in this invocation from draining the same signal.
   const validated = async (pending: DeliveredSignal): Promise<DeliveredSignal> => {
     consumed.add(pending.id);
     const schema = signals?.[pending.name];
@@ -404,8 +390,6 @@ export const makeCtx = ({
     }
   };
 
-  // Advance the cursor and fetch the memo at it. `call` is the `kind:label` of the call
-  // being made now; if a memo recorded a different call here, the flow body drifted under this run.
   const memoAt = (call: string) => {
     // A prior suspend was caught and swallowed by the flow body. Re-throw it before advancing, so
     // the suspend still reaches the engine and a `try/catch` around `ctx.*` can't strand a run.
@@ -451,7 +435,7 @@ export const makeCtx = ({
       attempts: attempt,
       call,
     });
-    await keepalive?.renew();
+    await keepalive.renew();
     obs.tracer?.span({ runId, traceId, spanId, name, startedAt, endedAt: now() });
     await obs.event("step.finished", runId, now(), { cursorKey: key });
     obs.metrics.stepFinished?.(runId, key, { durationMs: now().getTime() - startedAt.getTime() });
@@ -529,7 +513,7 @@ export const makeCtx = ({
         },
       );
       childIds.push(...childIdsOf(stored));
-      await keepalive?.renew();
+      await keepalive.renew();
     }
     // Per-mode call: the memo holds outputs or ChildResults, so a mode switch must read as drift.
     const joinCall = `${settle ? "invokeAllSettled" : "invokeAllJoin"}:${specs.length}`;
@@ -600,7 +584,6 @@ export const makeCtx = ({
     );
   }
 
-  // Unbounded wait: park until the signal arrives, then return its payload.
   const awaitSignal = async <P>(name: string): Promise<P> => {
     const call = `signal:${name}`;
     const { key, memo } = memoAt(call);
@@ -622,7 +605,6 @@ export const makeCtx = ({
     return fromLog<P>(stored);
   };
 
-  // Bounded wait: pin the deadline once, then resolve to the payload or a timeout.
   const awaitSignalUntil = async <P>(
     name: string,
     timeoutMs: number,
@@ -688,7 +670,6 @@ export const makeCtx = ({
     invoke,
     signal,
     log(message, data) {
-      // Skip entirely when nothing records it, and while replaying the already-logged durable prefix.
       if (!obs.records("run.log") || n < snap.steps.size) return;
       void Promise.resolve(obs.event("run.log", runId, now(), { message, data })).catch(() => {});
     },

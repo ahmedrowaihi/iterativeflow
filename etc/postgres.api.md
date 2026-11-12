@@ -46,8 +46,8 @@ declare const pendingWorkDdl: (schema: string) => string;
  * `(run_id, cursor_key)` is the first-writer-wins guard); `job` is the lease-CAS queue;
  * `timer` is the durable-deadline set. Ids are opaque `text` supplied by the runtime's
  * `IdGen` — the schema never assumes a UUID shape or a DB-side default, so callers are free
- * to use ULIDs/KSUIDs/etc. The `run` FK on `step` has NO cascade: runs are never deleted, so
- * the reference exists only to reject a step whose run doesn't exist.
+ * to use ULIDs/KSUIDs/etc. The `run` FKs on `step` and `signal` have NO cascade: they reject a
+ * write for a run that doesn't exist, and `deleteRuns` removes the dependants before the run.
  */
 declare const ddl: (schema: string) => string;
 /** Apply the schema DDL. Idempotent — safe to run on every boot. */
@@ -101,11 +101,11 @@ interface ProgressEvent {
   runId: string;
   type: string;
 }
-/** @internal */
+/** The {@link PgListener}'s connection lifecycle. */
 type ListenerState = "idle" | "listening" | "reconnecting" | "stopped";
 /** The shared LISTEN connection: a completion {@link Wakeup} plus a dispatch `waitForWork`. */
 interface PgListener {
-  /** Completion push for `result()` — pass as `createPgBackend(sql, { wakeup })`. */
+  /** Completion push for `result()` — wired by `createPgBackend(sql, { listener })`. */
   readonly wakeup: Wakeup;
   /** Dispatch push for the worker loop — pass as `engine.run({ waitForWork })`. Resolves on an
    *  enqueue notify, when `signal` aborts, or after `timeoutMs`. */
@@ -128,6 +128,9 @@ interface PgListener {
 interface PgListenerOpts {
   /** Schema whose channels to listen on. Must match the backend's schema. Default `workflow`. */
   schema?: string;
+  /** A failed connect or `LISTEN` — the listener retries with backoff either way. A bad credential
+   *  shows up here on every attempt. Default `console.error`. */
+  onError?: (cause: unknown) => void;
 }
 /**
  * One `LISTEN` connection multiplexing both channels for a schema. `wakeup.wait(runId)` resolves

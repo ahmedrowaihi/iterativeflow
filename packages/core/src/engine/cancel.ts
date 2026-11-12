@@ -1,5 +1,6 @@
 import type { Backend } from "#ports/outbox";
 import { isTerminal } from "#status";
+import type { TerminalStatus } from "#types";
 
 /**
  * Cancel a run and cascade to its non-terminal descendants. Cancel is sticky and clears the run's
@@ -9,16 +10,29 @@ import { isTerminal } from "#status";
  */
 export const cancelRun = async (backend: Backend, runId: string): Promise<void> => {
   const run = await backend.store.loadRunRow(runId);
-  await backend.store.markTerminal(runId, { status: "canceled" }, { cancelTimers: [runId] });
-  if (run?.parentRunId && !isTerminal(run.status)) await wakeParent(backend, run.parentRunId);
+  const won = await backend.store.markTerminal(
+    runId,
+    { status: "canceled" },
+    { cancelTimers: [runId] },
+  );
+  if (won && run?.parentRunId) await arriveAtParent(backend, run.parentRunId, "canceled");
   await cancelDescendants(backend, runId);
 };
 
-const wakeParent = async (backend: Backend, parentRunId: string): Promise<void> => {
-  const parent = await backend.store.loadRunRow(parentRunId);
-  if (!parent || isTerminal(parent.status)) return;
-  await backend.store.arriveAtJoin(parentRunId);
-  await backend.queue.enqueue(parentRunId);
+/**
+ * A child that just settled arrives at its parent's fan-out join. The parent wakes once every child
+ * has arrived, or at once on a non-success (fast-fail). Best-effort: a missed wake is caught by the
+ * reconcile sweep (a resolved-join parent with no job).
+ * @internal
+ */
+export const arriveAtParent = async (
+  backend: Backend,
+  parentRunId: string,
+  settled: TerminalStatus,
+): Promise<void> => {
+  const remaining = await backend.store.arriveAtJoin(parentRunId);
+  if (remaining === undefined) return;
+  if (settled !== "done" || remaining <= 0) await backend.queue.enqueue(parentRunId);
 };
 
 /**

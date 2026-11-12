@@ -19,13 +19,25 @@ declare const createMemoryBackend: ({ id: idGen }?: {
 }) => Backend;
 //#endregion
 //#region src/index.d.ts
-/** Standalone in-memory {@link Store} (its own backend). For isolated store conformance. */
+/**
+ * An isolated in-memory {@link Store} on its own single-port backend: it shares no state with any
+ * other port, so it is only for testing the store alone.
+ */
 declare const createMemoryStore: () => import("@iterativeflow/core/backend").Store;
-/** Standalone in-memory {@link Queue} (its own backend). For isolated queue conformance. */
+/**
+ * An isolated in-memory {@link Queue} on its own single-port backend: it shares no state with any
+ * other port, so it is only for testing the queue alone.
+ */
 declare const createMemoryQueue: () => import("@iterativeflow/core/backend").Queue;
-/** Standalone in-memory {@link Timer} (its own backend). For isolated timer conformance. */
+/**
+ * An isolated in-memory {@link Timer} on its own single-port backend: it shares no state with any
+ * other port, so it is only for testing the timer alone.
+ */
 declare const createMemoryTimer: () => import("@iterativeflow/core/backend").Timer;
-/** Standalone in-memory {@link Wakeup} (its own backend). For isolated wakeup conformance. */
+/**
+ * An isolated in-memory {@link Wakeup} on its own single-port backend: it shares no state with any
+ * other port, so it is only for testing the wakeup alone.
+ */
 declare const createMemoryWakeup: () => import("@iterativeflow/core/backend").Wakeup;
 //#endregion
 export { createMemoryBackend, createMemoryQueue, createMemoryStore, createMemoryTimer, createMemoryWakeup };

@@ -14,25 +14,28 @@ export interface MongoBackendOpts {
   id?: IdGen;
 }
 
+/** @internal */
+export const createSessionBackend = (
+  client: MongoClient,
+  session: ClientSession | undefined,
+  opts: MongoBackendOpts = {},
+): Backend => {
+  const db = client.db(opts.db ?? "iterativeflow");
+  const n: Names = names(opts.prefix ?? "");
+  const id = opts.id ?? newId;
+  return {
+    store: createMongoStore(client, db, n, id, session),
+    queue: createMongoQueue(db, n, id, session),
+    timer: createMongoTimer(db, n, session),
+    wakeup: createLocalWakeup(),
+  };
+};
+
 /**
  * The MongoDB {@link Backend}: the four ports over one `MongoClient`. The outbox commits across
  * collections in one multi-document transaction, so the deployment MUST be a replica set (even a
  * single-node one) — MongoDB requires that for transactions. Wakeup is in-process. Run
  * {@link ensureIndexes} once before use.
  */
-export const createMongoBackend = (
-  client: MongoClient,
-  opts: MongoBackendOpts = {},
-  // @internal — set by `inTx` to bind this backend's writes to a caller transaction. Not for direct use.
-  boundSession?: ClientSession,
-): Backend => {
-  const db = client.db(opts.db ?? "iterativeflow");
-  const n: Names = names(opts.prefix ?? "");
-  const id = opts.id ?? newId;
-  return {
-    store: createMongoStore(client, db, n, id, boundSession),
-    queue: createMongoQueue(db, n, id, boundSession),
-    timer: createMongoTimer(db, n),
-    wakeup: createLocalWakeup(),
-  };
-};
+export const createMongoBackend = (client: MongoClient, opts: MongoBackendOpts = {}): Backend =>
+  createSessionBackend(client, undefined, opts);

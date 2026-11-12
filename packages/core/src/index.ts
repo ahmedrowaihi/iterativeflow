@@ -43,8 +43,9 @@ export type {
   SignalSchema,
   SignalSchemas,
 } from "#engine/flow";
-export { systemClock } from "#engine/context";
-export type { Clock, Ctx, StepArg, StepPolicy } from "#engine/context";
+export { systemClock } from "#clock";
+export type { Clock } from "#clock";
+export type { Ctx, StepArg, StepPolicy } from "#engine/context";
 
 export { createEngine } from "#engine/engine";
 export type { Engine, EngineOpts, Liveness, ResultWait, RunLoopOpts } from "#engine/engine";
@@ -74,7 +75,8 @@ export type {
   TickOnceOpts,
 } from "#engine/worker";
 export { runTick, defaultRetry } from "#engine/executor";
-export type { DriftPolicy, RetryPolicy, TickResult, TickStatus, TickOpts } from "#engine/executor";
+export type { RetryPolicy, TickResult, TickStatus, TickOpts } from "#engine/executor";
+export type { DriftPolicy } from "#types";
 
 export { parseCron, nextCronAfter } from "#engine/cron";
 export { cronTag, registerCron, runDueCrons } from "#engine/schedule";

@@ -28,8 +28,8 @@ export interface Timer {
   cancel(runId: string): Promise<void>;
 
   /**
-   * The earliest pending timer due strictly AFTER `now` (sleep / retry backoff / cron), or `null`
-   * when none is pending — the serverless wake horizon. Timers due at/before `now` are drained by
+   * The earliest pending timer due strictly AFTER `now` (sleep / retry backoff), or `null` when
+   * none is pending — the timer half of the serverless wake horizon (crons are the other half). Timers due at/before `now` are drained by
    * the tick, not reported here. Must be one bounded read on the due-ordered index (min/limit-1),
    * never a scan; signals and child-joins wake by enqueue, so they are NOT covered by this.
    */

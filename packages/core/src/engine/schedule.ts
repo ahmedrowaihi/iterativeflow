@@ -1,7 +1,11 @@
+import { type Clock, systemClock } from "#clock";
 import { ACTIVE_STATUSES } from "#status";
+import type { CronOverlap } from "#types";
 import { nextCronAfter, parseCron } from "#engine/cron";
-import type { Flow } from "#engine/flow";
+import { type Flow, validateInput } from "#engine/flow";
 import type { Backend } from "#ports/outbox";
+
+const CRON_BATCH = 100;
 
 /** The tag every cron-spawned run carries, so `listRuns({ tag })` finds a cron's history. */
 export const cronTag = (name: string): string => `cron:${name}`;
@@ -13,7 +17,7 @@ export interface CronDef<I> {
   flow: Flow<I, unknown>;
   input: I;
   /** `skip` won't start a new run while a prior run of this cron is still active. Default `allow`. */
-  overlap?: "allow" | "skip";
+  overlap?: CronOverlap;
 }
 
 /**
@@ -23,16 +27,17 @@ export interface CronDef<I> {
 export const registerCron = async <I>(
   backend: Backend,
   def: CronDef<I>,
-  now: () => Date = () => new Date(),
+  now: Clock = systemClock,
 ): Promise<void> => {
   parseCron(def.schedule);
+  const input = await validateInput(def.flow, def.input);
   await backend.store.upsertCron({
     name: def.name,
     schedule: def.schedule,
     flowName: def.flow.name,
     flowVersion: def.flow.version,
-    input: def.input,
-    overlap: def.overlap,
+    input,
+    overlap: def.overlap ?? "allow",
     nextRunAt: nextCronAfter(def.schedule, now()),
   });
 };
@@ -43,11 +48,8 @@ export const registerCron = async <I>(
  * only one worker moves it forward. Run this on a slow interval or as an internal cron. Returns how
  * many occurrences this worker advanced.
  */
-export const runDueCrons = async (
-  backend: Backend,
-  now: () => Date = () => new Date(),
-): Promise<number> => {
-  const due = await backend.store.dueCrons(now(), 100);
+export const runDueCrons = async (backend: Backend, now: Clock = systemClock): Promise<number> => {
+  const due = await backend.store.dueCrons(now(), CRON_BATCH);
   let fired = 0;
   for (const c of due) {
     const next = nextCronAfter(c.schedule, now());
@@ -71,8 +73,9 @@ export const runDueCrons = async (
       input: c.input,
       idempotencyKey: `cron:${c.name}:${c.nextRunAt.getTime()}`,
       tags: [cronTag(c.name)],
+      createdAt: now(),
     });
-    if (created) await backend.queue.enqueue(runId, { priority: 0 });
+    if (created) await backend.queue.enqueue(runId);
     if (await advance()) fired += 1;
   }
   return fired;

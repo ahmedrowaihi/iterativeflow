@@ -55,6 +55,7 @@ describe.skipIf(skip)("mongodb pendingWorkPipeline — autoscaling backlog", () 
       flowName: "a",
       flowVersion: 1,
       input: {},
+      overlap: "allow",
       nextRunAt: past,
     });
     await be.queue.enqueue(await start("a"), { runAt: future });

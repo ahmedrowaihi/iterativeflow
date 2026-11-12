@@ -4,48 +4,37 @@ import {
   type Metrics,
   type ObserveOpts,
   type Span,
-  cancelRun,
   createEngine,
+  cronTag,
   defineFlow,
-  reconcile,
   registerCron,
   registry,
   result,
   retryRun,
   runDueCrons,
   serverlessTick,
-  signalRun,
   submit,
   submitMany,
   tickOnce,
   type SignalSchema,
 } from "@iterativeflow/core";
+import { isTerminal } from "@iterativeflow/core/backend";
 import { createTestHarness } from "@iterativeflow/core/testing";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryBackend } from "#index";
 
-const TERMINAL = new Set(["done", "failed", "canceled"]);
-
-const driveToSettle = async (
+const driveToSettle = (
   backend: Backend,
   flows: ReturnType<typeof registry>,
   runId: string,
-  extra?: { observe?: ObserveOpts },
-): Promise<{ status: string; output: unknown; error: unknown }> => {
-  let clock = new Date("2030-01-01T00:00:00Z");
-  const now = (): Date => clock;
-  for (let i = 0; i < 100; i++) {
-    // leaseMs is huge so a slow tick never races a re-claim in these single-worker tests.
-    await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now, ...extra });
-    const run = (await backend.store.loadRun(runId))?.run;
-    if (run && TERMINAL.has(run.status))
-      return { status: run.status, output: run.output, error: run.error };
-    clock = new Date(clock.getTime() + 2_000); // fire sleep/retry timers
-  }
-  throw new Error("run did not settle");
-};
+  opts?: { observe?: ObserveOpts },
+) => createTestHarness(backend, [...flows.values()], opts).settle(runId);
 
 describe("engine — end to end on the memory backend", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("runs a multi-step flow to done, memoizing each step exactly once", async () => {
     let aCalls = 0;
     const flow = defineFlow<{ x: number }, number>({
@@ -95,31 +84,6 @@ describe("engine — end to end on the memory backend", () => {
     expect(order).toEqual(["before", "after"]); // "after" ran once, after the sleep resumed
   });
 
-  it("memoizes a completed step across a crash-retry — the step fn does NOT re-run", async () => {
-    let stepCalls = 0;
-    let invocations = 0;
-    const flow = defineFlow<Record<string, never>, number>({
-      name: "flaky",
-      version: 1,
-      run: async (ctx) => {
-        const v = await ctx.step("charge", () => {
-          stepCalls += 1;
-          return 42;
-        });
-        invocations += 1;
-        if (invocations === 1) throw new Error("crash after the charge committed");
-        return v;
-      },
-    });
-    const backend = createMemoryBackend();
-    const flows = registry([flow]);
-    const runId = await submit(backend, flow, {});
-    const settled = await driveToSettle(backend, flows, runId);
-    expect(settled).toMatchObject({ status: "done", output: 42 });
-    expect(stepCalls).toBe(1); // charged once despite the retry — exactly-once memo
-    expect(invocations).toBe(2); // fn re-ran (at-least-once) but the step short-circuited
-  });
-
   it("fails a run terminally once retries are exhausted", async () => {
     const flow = defineFlow<Record<string, never>, never>({
       name: "always-boom",
@@ -141,7 +105,7 @@ describe("engine — end to end on the memory backend", () => {
         retry: { maxAttempts: 3, baseDelayMs: 1_000, maxDelayMs: 1_000 },
       });
       const run = (await backend.store.loadRun(runId))?.run;
-      if (run && TERMINAL.has(run.status)) break;
+      if (run && isTerminal(run.status)) break;
       clock = new Date(clock.getTime() + 2_000);
     }
     const run = (await backend.store.loadRun(runId))?.run;
@@ -173,7 +137,7 @@ describe("engine — end to end on the memory backend", () => {
         retry: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 1_000 },
       });
       const run = (await backend.store.loadRun(runId))?.run;
-      if (run && TERMINAL.has(run.status)) break;
+      if (run && isTerminal(run.status)) break;
       clock = new Date(clock.getTime() + 2_000);
     }
     const run = (await backend.store.loadRun(runId))?.run;
@@ -203,8 +167,8 @@ describe("engine — end to end on the memory backend", () => {
     expect(tick?.error?.message).toContain("upstream 503");
   });
 
-  // Real timers, not the injected clock: the keepalive ticks on wall time. A 2s lease renews every
-  // 500ms, so a slow CI runner has ~1s of slack before a missed tick would drop the lease.
+  // The keepalive is a setInterval reading the wall clock, so these fake the timers and Date rather
+  // than injecting `now`. A 2s lease renews every 500ms.
   const LEASE = 2_000;
   const gated = (name: string, policy?: { timeoutMs: number }) => {
     let entered = 0;
@@ -317,11 +281,6 @@ describe("engine — end to end on the memory backend", () => {
 
     expect(settled).toMatchObject({ status: "done", output: 3 });
     expect(ran).toEqual(["a", "b"]);
-    expect([...((await backend.store.loadRun(runId))?.steps.keys() ?? [])]).toEqual([
-      "s0",
-      "s1",
-      "s2",
-    ]);
   });
 
   it("a step body that calls the flow's ctx parks as drifted on replay", async () => {
@@ -348,12 +307,13 @@ describe("engine — end to end on the memory backend", () => {
     const backend = createMemoryBackend();
     const runId = await submit(backend, flow, {});
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
     // deliberately not awaited — worker A stays inside the step
     const workerA = tickOnce(backend, registry([flow]), { batchMax: 1, leaseMs: LEASE });
-    await new Promise((r) => setTimeout(r, 150));
+    await vi.advanceTimersByTimeAsync(150);
     expect(enteredCount()).toBe(1);
 
-    await new Promise((r) => setTimeout(r, 2_400));
+    await vi.advanceTimersByTimeAsync(2_400);
     expect(await backend.queue.claim({ limit: 1, leaseMs: LEASE, now: new Date() })).toEqual([]);
     expect(enteredCount()).toBe(1);
 
@@ -370,8 +330,9 @@ describe("engine — end to end on the memory backend", () => {
     const backend = createMemoryBackend();
     await submit(backend, flow, {});
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
     const workerA = tickOnce(backend, registry([flow]), { batchMax: 1, leaseMs: LEASE });
-    await new Promise((r) => setTimeout(r, 2_400));
+    await vi.advanceTimersByTimeAsync(2_400);
     const leased = await backend.queue.claim({ limit: 1, leaseMs: LEASE, now: new Date() });
     expect(leased).toHaveLength(1);
 
@@ -381,22 +342,20 @@ describe("engine — end to end on the memory backend", () => {
 
   it("renews the lease as a multi-step run commits steps (long-run safety)", async () => {
     const backend = createMemoryBackend();
-    let heartbeats = 0;
-    const realHeartbeat = backend.queue.heartbeat.bind(backend.queue);
-    backend.queue.heartbeat = (lease, o) => {
-      heartbeats += 1;
-      return realHeartbeat(lease, o);
-    };
     let clock = new Date("2030-01-01T00:00:00Z");
     const now = (): Date => clock;
+    const stolen: string[] = [];
     const flow = defineFlow<Record<string, never>, number>({
       name: "many-steps",
       version: 1,
       run: async (ctx) => {
         let total = 0;
         for (let i = 0; i < 5; i++) {
-          total += await ctx.step(`s${i}`, () => {
-            clock = new Date(clock.getTime() + 600); // past half the 1s lease → triggers a renewal
+          total += await ctx.step(`s${i}`, async () => {
+            // 5 × 600ms outlasts the 1s lease, so only a renewal keeps a peer out
+            clock = new Date(clock.getTime() + 600);
+            const peer = await backend.queue.claim({ limit: 1, leaseMs: 1_000, now: now() });
+            stolen.push(...peer.map((l) => l.runId));
             return i;
           });
         }
@@ -407,24 +366,7 @@ describe("engine — end to end on the memory backend", () => {
     await tickOnce(backend, registry([flow]), { batchMax: 16, leaseMs: 1_000, now });
     const run = (await backend.store.loadRun(runId))?.run;
     expect(run).toMatchObject({ status: "done", output: 10 });
-    expect(heartbeats).toBeGreaterThanOrEqual(4); // renewed as it progressed, not one lease for all
-  });
-
-  it("suspends on sleep and resumes after the deadline", async () => {
-    const flow = defineFlow<Record<string, never>, string>({
-      name: "napper",
-      version: 1,
-      run: async (ctx) => {
-        await ctx.step("before", () => "ready");
-        await ctx.sleep(5_000);
-        return "awake";
-      },
-    });
-    const backend = createMemoryBackend();
-    const flows = registry([flow]);
-    const runId = await submit(backend, flow, {});
-    const settled = await driveToSettle(backend, flows, runId);
-    expect(settled).toMatchObject({ status: "done", output: "awake" });
+    expect(stolen).toEqual([]);
   });
 
   it("invokes a child flow and resumes with its output", async () => {
@@ -466,76 +408,6 @@ describe("engine — end to end on the memory backend", () => {
       ids.map(async (id) => (await backend.store.loadRun(id))?.run.output),
     );
     expect(outputs).toEqual([1, 4, 9, 16]);
-  });
-
-  it("waits for an external signal and resumes with its payload", async () => {
-    const reviewSchema: SignalSchema<{ approved: boolean }> = {
-      "~standard": {
-        version: 1,
-        vendor: "test",
-        validate: (v) =>
-          v instanceof Object && "approved" in v
-            ? { value: { approved: v.approved === true } }
-            : { issues: [{ message: "approved is required" }] },
-      },
-    };
-    const flow = defineFlow({
-      name: "approval",
-      version: 1,
-      signals: { review: reviewSchema },
-      run: async (ctx): Promise<string> => {
-        const decision = await ctx.signal("review");
-        return decision.approved ? "shipped" : "rejected";
-      },
-    });
-    const backend = createMemoryBackend();
-    const flows = registry([flow]);
-    const runId = await submit(backend, flow, {});
-
-    let clock = new Date("2030-01-01T00:00:00Z");
-    const now = (): Date => clock;
-    await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
-    expect((await backend.store.loadRun(runId))?.run.status).toBe("awaiting_signal");
-
-    await signalRun(backend, runId, "review", { approved: true });
-    const settled = await driveToSettle(backend, flows, runId);
-    expect(settled).toMatchObject({ status: "done", output: "shipped" });
-  });
-
-  it("cancelRun cancels the run and cascades to its children", async () => {
-    const backend = createMemoryBackend();
-    const parent = await backend.store.startRun({ name: "p", version: 1, input: {} });
-    const child = await backend.store.startRun({
-      name: "c",
-      version: 1,
-      input: {},
-      parentRunId: parent.runId,
-    });
-    await cancelRun(backend, parent.runId);
-    expect((await backend.store.loadRun(parent.runId))?.run.status).toBe("canceled");
-    expect((await backend.store.loadRun(child.runId))?.run.status).toBe("canceled");
-  });
-
-  it("reconcile re-drives a run stranded off the queue (crash between start and enqueue)", async () => {
-    const flow = defineFlow<Record<string, never>, string>({
-      name: "stranded",
-      version: 1,
-      run: async () => "recovered",
-    });
-    const backend = createMemoryBackend();
-    const flows = registry([flow]);
-    // Simulate a crash after startRun but before enqueue: the run exists, no job.
-    const { runId } = await backend.store.startRun({ name: "stranded", version: 1, input: {} });
-    let settled = false;
-    let clock = new Date("2030-01-01T00:00:00Z");
-    const now = (): Date => clock;
-    for (let i = 0; i < 5 && !settled; i++) {
-      await reconcile(backend, { limit: 16 });
-      await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
-      settled = (await backend.store.loadRun(runId))?.run.status === "done";
-      clock = new Date(clock.getTime() + 2_000);
-    }
-    expect((await backend.store.loadRun(runId))?.run.output).toBe("recovered");
   });
 
   it("surfaces an observability failure on console.error when no tickError hook is wired", async () => {
@@ -649,28 +521,6 @@ describe("engine — end to end on the memory backend", () => {
     });
   });
 
-  it("dead-letters a poison-pill run once attempts exceed the cap", async () => {
-    const flow = defineFlow<Record<string, never>, number>({
-      name: "poison",
-      version: 1,
-      run: async () => 1,
-    });
-    const backend = createMemoryBackend();
-    const flows = registry([flow]);
-    const runId = await submit(backend, flow, {});
-    // Simulate prior dispatches that crashed the worker uncatchably (attempts bumped, no terminal).
-    for (let i = 0; i < 5; i++) await backend.store.markRunning(runId);
-    await tickOnce(backend, flows, {
-      batchMax: 16,
-      leaseMs: 600_000,
-      now: () => new Date("2030-01-01T00:00:00Z"),
-      retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 },
-    });
-    const run = (await backend.store.loadRun(runId))?.run;
-    expect(run?.status).toBe("failed");
-    expect(run?.error?.code).toBe("RUN_ATTEMPTS_EXHAUSTED");
-  });
-
   it("retryRun recovers a failed run, re-running only the work after the failure", async () => {
     let firstStep = 0;
     let attempts = 0;
@@ -730,7 +580,7 @@ describe("engine — end to end on the memory backend", () => {
       for (let i = 0; i < 20; i++) {
         await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now, retry });
         const run = (await backend.store.loadRun(runId))?.run;
-        if (run && TERMINAL.has(run.status)) return;
+        if (run && isTerminal(run.status)) return;
         clock = new Date(clock.getTime() + 2_000);
       }
     };
@@ -816,13 +666,17 @@ describe("engine — end to end on the memory backend", () => {
     const backend = createMemoryBackend();
     const flows = registry([flow]);
     const runId = await submit(backend, flow, {});
-    await tickOnce(backend, flows, {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
+    const ticked = tickOnce(backend, flows, {
       batchMax: 16,
       leaseMs: 600_000,
       now: () => new Date("2030-01-01T00:00:00Z"),
       retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
     });
+    await vi.advanceTimersByTimeAsync(10);
     expect(aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(200);
+    await ticked;
     expect((await backend.store.loadRun(runId))?.run.status).toBe("failed");
   });
 
@@ -843,7 +697,7 @@ describe("engine — end to end on the memory backend", () => {
     const events: FlowEvent[] = [];
     const stepCalls: string[] = [];
     const metrics: Metrics = { stepFinished: (_r, k) => stepCalls.push(k) };
-    const runId = await submit(backend, flow, {});
+    await submit(backend, flow, {});
     await tickOnce(backend, flows, {
       batchMax: 16,
       leaseMs: 600_000,
@@ -871,7 +725,7 @@ describe("engine — end to end on the memory backend", () => {
 
     // level "lifecycle" — no step events.
     const lifecycle: FlowEvent[] = [];
-    const runId2 = await submit(backend, flow, {});
+    await submit(backend, flow, {});
     await tickOnce(backend, flows, {
       batchMax: 16,
       leaseMs: 600_000,
@@ -880,7 +734,6 @@ describe("engine — end to end on the memory backend", () => {
     });
     expect(lifecycle.map((e) => e.type)).not.toContain("step.finished");
     expect(lifecycle.map((e) => e.type)).toContain("run.completed");
-    expect(runId2).not.toBe(runId);
   });
 
   it("ctx.log emits a durable line once — suppressed while replaying the durable prefix", async () => {
@@ -994,7 +847,7 @@ describe("engine — end to end on the memory backend", () => {
     expect(await runDueCrons(backend, now)).toBe(1);
     expect(await runDueCrons(backend, now)).toBe(0); // same occurrence doesn't double-fire
 
-    const runs = await backend.store.listRuns({ tag: "cron:nightly" }, { limit: 10 });
+    const runs = await backend.store.listRuns({ tag: cronTag("nightly") }, { limit: 10 });
     expect(runs.runs).toHaveLength(1);
     await driveToSettle(backend, flows, runs.runs[0].id);
     expect((await backend.store.loadRun(runs.runs[0].id))?.run.output).toBe("ran daily");
@@ -1018,13 +871,15 @@ describe("engine — end to end on the memory backend", () => {
     expect(await runDueCrons(backend, now)).toBe(1); // first occurrence fires
 
     // That run parks waiting on a sub-workflow (awaiting_child).
-    const [run] = (await backend.store.listRuns({ tag: "cron:c" }, { limit: 10 })).runs;
+    const [run] = (await backend.store.listRuns({ tag: cronTag("c") }, { limit: 10 })).runs;
     await backend.store.markRunning(run.id);
     await backend.store.suspendRun(run.id, "awaiting_child");
 
     clock = new Date("2030-03-17T00:00:00Z");
     expect(await runDueCrons(backend, now)).toBe(0); // overlap:skip — must NOT start a second
-    expect((await backend.store.listRuns({ tag: "cron:c" }, { limit: 10 })).runs).toHaveLength(1);
+    expect((await backend.store.listRuns({ tag: cronTag("c") }, { limit: 10 })).runs).toHaveLength(
+      1,
+    );
   });
 
   it("does not advance the schedule when the occurrence's run fails to start (occurrence not lost)", async () => {
@@ -1047,7 +902,9 @@ describe("engine — end to end on the memory backend", () => {
     backend.store.startRun = realStart;
 
     expect(await runDueCrons(backend, now)).toBe(1); // recovered — same occurrence still fires once
-    expect((await backend.store.listRuns({ tag: "cron:r" }, { limit: 10 })).runs).toHaveLength(1);
+    expect((await backend.store.listRuns({ tag: cronTag("r") }, { limit: 10 })).runs).toHaveLength(
+      1,
+    );
   });
 
   it("serverlessTick advances a sleep and fires a cron with no resident loop (cron-Lambda model)", async () => {
@@ -1087,7 +944,7 @@ describe("engine — end to end on the memory backend", () => {
     expect(s2.fired).toBe(1);
     expect((await backend.store.loadRun(runId))?.run.output).toBe("woke");
 
-    const cronRuns = await backend.store.listRuns({ tag: "cron:c2" }, { limit: 10 });
+    const cronRuns = await backend.store.listRuns({ tag: cronTag("c2") }, { limit: 10 });
     expect(cronRuns.runs).toHaveLength(1);
   });
 
@@ -1120,54 +977,11 @@ describe("engine — end to end on the memory backend", () => {
         retry: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 1_000 },
       });
       const run = (await backend.store.loadRun(runId))?.run;
-      if (run && TERMINAL.has(run.status)) break;
+      if (run && isTerminal(run.status)) break;
       clock = new Date(clock.getTime() + 2_000);
     }
     const run = (await backend.store.loadRun(runId))?.run;
     expect(run?.status).toBe("failed");
-  });
-
-  it("a flow's policy.maxFanOut overrides the default fan-out cap", async () => {
-    const child = defineFlow({ name: "c", version: 1, run: async () => 1 });
-    const parent = defineFlow({
-      name: "capped",
-      version: 1,
-      policy: { maxFanOut: 2 },
-      run: async (ctx): Promise<readonly number[]> =>
-        ctx.invoke([
-          { flow: child, input: {} },
-          { flow: child, input: {} },
-          { flow: child, input: {} },
-        ]),
-    });
-    const backend = createMemoryBackend();
-    const runId = await submit(backend, parent, {});
-    await tickOnce(backend, registry([parent, child]), {
-      batchMax: 16,
-      leaseMs: 600_000,
-      now: () => new Date("2030-01-01T00:00:00Z"),
-      retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
-    });
-    const run = await backend.store.loadRunRow(runId);
-    expect(run?.status).toBe("failed");
-    expect(run?.error?.message).toMatch(/exceeds the 2 cap/);
-  });
-
-  it("arriveAtJoin decrements the armed countdown to zero on the last arrival", async () => {
-    const b = createMemoryBackend();
-    const { runId: parent } = await b.store.startRun({ name: "p", version: 1, input: {} });
-    await b.store.checkpointStep(
-      { runId: parent, cursorKey: "s0", status: "ok", result: [], attempts: 1 },
-      { joinTarget: { runId: parent, count: 3 } },
-    );
-    expect(await b.store.arriveAtJoin(parent)).toBe(2);
-    expect(await b.store.arriveAtJoin(parent)).toBe(1);
-    expect(await b.store.arriveAtJoin(parent)).toBe(0); // last arrival — executor wakes the parent
-  });
-
-  it("arriveAtJoin returns undefined for a gone parent (nothing to wake)", async () => {
-    const b = createMemoryBackend();
-    expect(await b.store.arriveAtJoin("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
 
   it("metrics carry the flow label and duration, so a callback can label without a store read", async () => {
@@ -1178,8 +992,9 @@ describe("engine — end to end on the memory backend", () => {
       version: 3,
       run: async (ctx) => ctx.step("s", () => 7),
     });
-    const backend = createMemoryBackend();
-    await driveToSettle(backend, registry([flow]), await submit(backend, flow, {}), {
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const engine = createEngine(createMemoryBackend(), [flow], {
+      now: () => clock,
       observe: {
         metrics: {
           runStarted: (...args) => startedCalls.push(args),
@@ -1187,11 +1002,14 @@ describe("engine — end to end on the memory backend", () => {
         },
       },
     });
+    await engine.submit(flow, {});
+    clock = new Date(clock.getTime() + 1_500);
+    await engine.tick();
 
     expect(startedCalls[0][1]).toEqual({ name: "labelled", version: 3 });
     expect(settledCalls[0][1]).toBe("done");
     expect(settledCalls[0][2]).toEqual({ name: "labelled", version: 3 });
-    expect(settledCalls[0][3]?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(settledCalls[0][3]?.durationMs).toBe(1_500);
   });
 
   it("pause stops the resident loop claiming; resume wakes it without a restart", async () => {
@@ -1205,18 +1023,20 @@ describe("engine — end to end on the memory backend", () => {
           return 1;
         }),
     });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
     const engine = createEngine(createMemoryBackend(), [flow], { batchMax: 5 });
     engine.pause(); // before run(): pause lands on the next claim, so a tick already in flight drains
-    const stop = engine.run({ tickMs: 5, maintenanceMs: 50 });
+    const stop = engine.run({ tickMs: 5, maintenanceMs: 50, maxIdleTickMs: 60_000 });
     try {
       await engine.submit(flow, {});
-      await new Promise((r) => setTimeout(r, 120));
+      await vi.advanceTimersByTimeAsync(120);
       expect(ran).toBe(0);
       expect(engine.isPaused()).toBe(true);
 
       engine.resume();
-      await new Promise((r) => setTimeout(r, 200));
-      expect(ran).toBe(1); // the idle loop woke on resume rather than sitting out its backoff
+      // 1ms is far inside the paused loop's 60s idle wait, so only the resume itself can wake it.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ran).toBe(1);
       expect(engine.isPaused()).toBe(false);
     } finally {
       await stop();

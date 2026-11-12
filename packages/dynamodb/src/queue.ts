@@ -5,16 +5,44 @@ import {
   type QueryCommandInput,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { ClaimOpts, EnqueueRequest, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
-import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
+import {
+  type ClaimOpts,
+  type EnqueueRequest,
+  type IdGen,
+  type Lease,
+  type Queue,
+  distinctEnqueues,
+  queueDepthOf,
+  shardAdmits,
+} from "@iterativeflow/core/backend";
 import type { Doc } from "#client";
-import { type JobItem, parseJob } from "#codec";
+import { type JobItem, num, parseJob } from "#codec";
 import { runNames, storedPriorities } from "#run-names";
 import { JOB_GSI_PK, key } from "#schema";
 import { enqueueParams } from "#statements";
 
 // Bounded so a large wake list can't open thousands of sockets at once.
 const ENQUEUE_CONCURRENCY = 25;
+
+// The due/unleased predicate is a post-read filter, so a backlog of leased or future jobs can fill
+// every ≤1MB page and bury the due ones. Capping the pages bounds one claim's read cost; a claim
+// that comes back short is retried by the next tick.
+const CLAIM_PAGE_CAP = 10;
+
+const shardFilter = async (
+  doc: Doc,
+  table: string,
+  jobs: JobItem[],
+  names: readonly string[] | undefined,
+): Promise<JobItem[]> => {
+  if (names === undefined) return jobs;
+  const nameById = await runNames(
+    doc,
+    table,
+    jobs.map((j) => j.runId),
+  );
+  return jobs.filter((j) => shardAdmits(names, nameById.get(j.runId)));
+};
 
 /** @internal */
 export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => {
@@ -43,13 +71,9 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       const t = at(now);
-      // Query only the JOB partition on GSI1 (ordered priority#runAt) — never a full-table Scan.
-      // The lease/runAt predicate is a post-read filter, so a backlog of leased/future jobs can
-      // fill the ≤1MB page and bury due ones; page until we hold `limit`. PAGE_CAP bounds the reads.
-      const PAGE_CAP = 10;
-      const candidates: JobItem[] = [];
+      const allowed: JobItem[] = [];
       let ExclusiveStartKey: QueryCommandInput["ExclusiveStartKey"];
-      for (let page = 0; page < PAGE_CAP; page++) {
+      for (let page = 0; page < CLAIM_PAGE_CAP; page++) {
         const res = await doc.send(
           new QueryCommand({
             TableName: table,
@@ -61,24 +85,11 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
             ExclusiveStartKey,
           }),
         );
-        candidates.push(...(res.Items ?? []).map(parseJob));
+        allowed.push(...(await shardFilter(doc, table, (res.Items ?? []).map(parseJob), names)));
         ExclusiveStartKey = res.LastEvaluatedKey;
-        // GSI is priority#runAt-ordered, so once we hold `limit`, later pages can't rank higher.
-        if (!ExclusiveStartKey || candidates.length >= limit) break;
-      }
-      let allowed = candidates;
-      if (names !== undefined) {
-        const wanted = new Set(names);
-        if (wanted.size === 0) return [];
-        const nameById = await runNames(
-          doc,
-          table,
-          candidates.map((j) => j.runId),
-        );
-        allowed = candidates.filter((j) => {
-          const name = nameById.get(j.runId);
-          return name === undefined || wanted.has(name);
-        });
+        // GSI is priority#runAt-ordered, so once we hold `limit` admitted jobs, later pages can't
+        // rank higher. Count only after the shard filter, or other shards' jobs starve this claim.
+        if (!ExclusiveStartKey || allowed.length >= limit) break;
       }
       const leases: Lease[] = [];
       for (const j of allowed) {
@@ -103,7 +114,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
             runId: j.runId,
             token,
             expiresAt: new Date(expires),
-            version: Number(res.Attributes?.version ?? j.version ?? 0),
+            version: num(res.Attributes, "version"),
           });
         } catch (e) {
           if (!(e instanceof ConditionalCheckFailedException)) throw e; // lost the race — another worker leased it
@@ -186,22 +197,7 @@ export const createDynamoQueue = (doc: Doc, table: string, id: IdGen): Queue => 
         jobs.push(...(res.Items ?? []).map(parseJob));
         ExclusiveStartKey = res.LastEvaluatedKey;
       } while (ExclusiveStartKey);
-      if (names === undefined) return queueDepthOf(jobs, t);
-      const wanted = new Set(names);
-      if (wanted.size === 0) return queueDepthOf([], t);
-      const nameById = await runNames(
-        doc,
-        table,
-        jobs.map((j) => j.runId),
-      );
-      // a run-less job is unownable, so it passes every name filter (see Queue.claim)
-      return queueDepthOf(
-        jobs.filter((j) => {
-          const name = nameById.get(j.runId);
-          return name === undefined || wanted.has(name);
-        }),
-        t,
-      );
+      return queueDepthOf(await shardFilter(doc, table, jobs, names), t);
     },
   };
 };

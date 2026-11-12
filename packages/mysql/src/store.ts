@@ -4,40 +4,44 @@ import {
   type RunSpec,
   type StartResult,
   type Store,
+  type RunSelection,
+  type SelectionSqlOpts,
   type SuspendStatus,
-  ACTIVE_STATUSES,
-  NON_SUCCESS_TERMINAL_STATUSES,
-  RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
   isTerminal,
+  listSelection,
   orphanedRunsSql,
-  purgeWhereSql,
-  runSetWhereSql,
-  statusList,
+  cancelSelection,
+  purgeSelection,
+  resetsAttempts,
+  retrySelection,
+  runSelectionSql,
+  sqlStatusTuple,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 import { STEP_COLUMNS, int, j, mapCron, mapRun, mapSignal, mapStep, runStatus, text } from "#codec";
 import type { Tables } from "#schema";
-import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
+import {
+  applyOutbox,
+  enqueueManyStmt,
+  enqueueStmt,
+  inList,
+  insertRunStmt,
+  wroteUnlessDuplicate,
+} from "#statements";
 import type { Sql, SqlParam } from "#sql";
 
-const sqlTuple = (statuses: readonly string[]): string =>
-  `(${statuses.map((s) => `'${s}'`).join(",")})`;
-const TERMINAL = sqlTuple(TERMINAL_STATUSES);
-const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
-const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
-
-const MS_PURGE = {
-  placeholder: () => "?",
-  time: (at: Date) => at.getTime(),
-  statusTuple: sqlTuple,
-  tag: (p: string) => `JSON_CONTAINS(tags, JSON_QUOTE(${p}))`,
-};
-
-const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
+const TERMINAL = sqlStatusTuple(TERMINAL_STATUSES);
 
 /** @internal */
 export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
+  const selectionSql: SelectionSqlOpts<number> = {
+    placeholder: () => "?",
+    time: (at) => at.getTime(),
+    tag: (p) => `JSON_CONTAINS(tags, JSON_QUOTE(${p}))`,
+    run: t.run,
+  };
+
   const loadStep = async (exec: Sql, runId: string, cursorKey: string) => {
     const rows = await exec.query(
       `SELECT ${STEP_COLUMNS} FROM ${t.step} WHERE run_id = ? AND cursor_key = ?`,
@@ -51,55 +55,34 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
   const startOne = async (exec: Sql, spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     if (spec.idempotencyKey) {
-      const ins = await exec.exec(
-        `INSERT IGNORE INTO ${t.run}
-           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          runId,
-          spec.name,
-          spec.version,
-          j(spec.input),
-          spec.idempotencyKey,
-          j(spec.tags),
-          spec.parentRunId ?? null,
-          spec.parentCursorKey ?? null,
-          spec.depth ?? 0,
-          spec.priority ?? 0,
-          (spec.createdAt ?? new Date()).getTime(),
-        ],
-      );
-      if (ins.affectedRows === 1) return { runId, created: true, status: "pending" };
+      if (await wroteUnlessDuplicate(insertRunStmt(exec, t, runId, spec))) {
+        return { runId, created: true, status: "pending" };
+      }
       const hit = await exec.query(
         `SELECT id, status FROM ${t.run} WHERE name = ? AND version = ? AND idempotency_key = ?`,
         [spec.name, spec.version, spec.idempotencyKey],
       );
       return { runId: text(hit[0], "id"), created: false, status: runStatus(hit[0]) };
     }
-    await exec.exec(
-      `INSERT INTO ${t.run}
-         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        runId,
-        spec.name,
-        spec.version,
-        j(spec.input),
-        j(spec.tags),
-        spec.parentRunId ?? null,
-        spec.parentCursorKey ?? null,
-        spec.depth ?? 0,
-        spec.priority ?? 0,
-        (spec.createdAt ?? new Date()).getTime(),
-      ],
-    );
+    await insertRunStmt(exec, t, runId, spec);
     return { runId, created: true, status: "pending" };
   };
 
+  const lockSelected = async (tx: Sql, sel: RunSelection, limit: number): Promise<string[]> => {
+    const q = runSelectionSql(sel, selectionSql);
+    if (!q) return [];
+    const rows = await tx.query(`SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`, [
+      ...q.params,
+      limit,
+    ]);
+    return rows.map((r) => text(r, "id"));
+  };
+
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
-    const q = purgeWhereSql(filter, MS_PURGE);
+    const q = runSelectionSql(purgeSelection(filter), selectionSql);
     if (!q) return 0;
-    // See the Postgres store: the sort only earns its place when there is an age cutoff.
+    // Oldest-first only matters for an age sweep; without a cutoff the sort would force a full read
+    // before LIMIT could bound it. `seq` is insertion order, so it tracks created_at.
     const order = filter.before === undefined ? "" : " ORDER BY seq";
     const params = [...q.params, limit];
     return sql.tx(async (tx) => {
@@ -107,7 +90,7 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
         await tx.query(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
-             ${order} LIMIT ?`,
+             ${order} LIMIT ? FOR UPDATE`,
           params,
         )
       ).map((r) => text(r, "id"));
@@ -185,11 +168,13 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
 
     async postSignal(runId, name, payload, opts) {
       return sql.tx(async (tx) => {
-        const res = await tx.exec(
-          `INSERT IGNORE INTO ${t.signal} (id, run_id, name, payload, idem_key) VALUES (?, ?, ?, ?, ?)`,
-          [id(), runId, name, j(payload), opts?.idempotencyKey ?? null],
+        const delivered = await wroteUnlessDuplicate(
+          tx.exec(
+            `INSERT INTO ${t.signal} (id, run_id, name, payload, idem_key) VALUES (?, ?, ?, ?, ?)`,
+            [id(), runId, name, j(payload), opts?.idempotencyKey ?? null],
+          ),
         );
-        if (res.affectedRows === 0) return { delivered: false };
+        if (!delivered) return { delivered: false };
         await enqueueStmt(tx, t, runId);
         return { delivered: true };
       });
@@ -231,19 +216,21 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
             }
           }
         }
-        const ins = await tx.exec(
-          `INSERT IGNORE INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.call ?? null],
+        const first = await wroteUnlessDuplicate(
+          tx.exec(
+            `INSERT INTO ${t.step} (run_id, cursor_key, status, result, error, attempts, shape)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [c.runId, c.cursorKey, c.status, j(c.result), j(c.error), c.attempts, c.call ?? null],
+          ),
         );
-        if (ins.affectedRows === 1 && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
+        if (first && fx) await applyOutbox(tx, t, fx); // outbox rides ONLY the first write
         return loadStep(tx, c.runId, c.cursorKey);
       });
     },
 
     suspendRun(runId, status: SuspendStatus, fx) {
       return sql.tx(async (tx) => {
-        const reset = status !== "retrying" ? ", attempts = 0" : "";
+        const reset = resetsAttempts(status) ? ", attempts = 0" : "";
         const res = await tx.exec(
           `UPDATE ${t.run} SET status = ?${reset} WHERE id = ? AND status NOT IN ${TERMINAL}`,
           [status, runId],
@@ -261,38 +248,24 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
            WHERE id = ? AND status NOT IN ${TERMINAL}`,
           [outcome.status, j(output), j(error), runId],
         );
-        if (res.affectedRows > 0 && fx) await applyOutbox(tx, t, fx);
+        if (res.affectedRows === 0) return false;
+        if (fx) await applyOutbox(tx, t, fx);
+        return true;
       });
     },
 
     async listRuns(filter, page) {
-      const statuses = statusList(filter.status);
-      const where: string[] = [];
-      const params: SqlParam[] = [];
-      if (statuses) {
-        where.push(`status IN ${inList(statuses.length)}`);
-        params.push(...statuses);
-      }
-      if (filter.name) {
-        where.push(`name = ?`);
-        params.push(filter.name);
-      }
-      if (filter.version !== undefined) {
-        where.push(`version = ?`);
-        params.push(filter.version);
-      }
-      if (filter.tag) {
-        where.push(`JSON_CONTAINS(tags, JSON_QUOTE(?))`);
-        params.push(filter.tag);
-      }
+      const q = runSelectionSql(listSelection(filter), selectionSql);
+      if (!q) return { runs: [], cursor: undefined };
+      const params: SqlParam[] = [...q.params];
+      const where = [q.where];
       if (page.cursor) {
         where.push(`seq < ?`);
         params.push(Number(page.cursor));
       }
       params.push(page.limit);
-      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const rows = await sql.query(
-        `SELECT * FROM ${t.run} ${clause} ORDER BY seq DESC LIMIT ?`,
+        `SELECT * FROM ${t.run} WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT ?`,
         params,
       );
       const last = rows[rows.length - 1];
@@ -301,13 +274,9 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     async cancelRuns(filter, limit) {
-      const q = runSetWhereSql(filter, ACTIVE_STATUSES, "cancelRuns", MS_PURGE);
-      if (!q) return 0;
-      const params = [...q.params, limit];
+      const sel = cancelSelection(filter);
       return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query(`SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`, params)
-        ).map((r) => text(r, "id"));
+        const ids = await lockSelected(tx, sel, limit);
         if (ids.length === 0) return 0;
         const inIds = inList(ids.length);
         await tx.exec(`DELETE FROM ${t.timer} WHERE run_id IN ${inIds}`, ids);
@@ -317,13 +286,9 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     async retryRuns(filter, limit) {
-      const q = runSetWhereSql(filter, ["failed"], "retryRuns", MS_PURGE);
-      if (!q) return 0;
-      const params = [...q.params, limit];
+      const sel = retrySelection(filter);
       return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query(`SELECT id FROM ${t.run} WHERE ${q.where} LIMIT ? FOR UPDATE`, params)
-        ).map((r) => text(r, "id"));
+        const ids = await lockSelected(tx, sel, limit);
         if (ids.length === 0) return 0;
         const inIds = inList(ids.length);
         await tx.exec(
@@ -357,9 +322,6 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           run: t.run,
           job: t.job,
           timer: t.timer,
-          reconcilable: RECONCILABLE,
-          terminal: TERMINAL,
-          nonSuccessTerminal: NON_SUCCESS_TERMINAL,
           order: "r.seq",
           limit: "?",
         }),
@@ -369,8 +331,6 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
     },
 
     deleteRuns,
-
-    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     retryRun(runId) {
       return sql.tx(async (tx) => {
@@ -404,10 +364,17 @@ export const createMysqlStore = (sql: Sql, t: Tables, id: IdGen): Store => {
           spec.flowName,
           spec.flowVersion,
           j(spec.input),
-          spec.overlap ?? "allow",
+          spec.overlap,
           spec.nextRunAt.getTime(),
         ],
       );
+    },
+
+    async nextCronAt() {
+      const rows = await sql.query(
+        `SELECT next_run_at FROM ${t.cron} ORDER BY next_run_at LIMIT 1`,
+      );
+      return rows[0] ? new Date(int(rows[0], "next_run_at")) : null;
     },
 
     async dueCrons(now, limit) {

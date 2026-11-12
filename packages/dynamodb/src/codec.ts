@@ -37,8 +37,8 @@ export const str = (item: DocItem, name: string): string => {
 };
 
 /** @internal */
-export const num = (item: DocItem, name: string): number => {
-  const v = item[name];
+export const num = (item: DocItem | undefined, name: string): number => {
+  const v = item?.[name];
   if (!Number.isFinite(v)) throw new Error(`dynamodb: attribute "${name}" is not a number`);
   return v;
 };
@@ -52,12 +52,6 @@ const optNum = (item: DocItem, name: string): number | undefined =>
 /** @internal */
 export const runStatusOf = (item: DocItem): RunRow["status"] =>
   decodeOneOf(RUN_STATUSES, str(item, "status"), "dynamodb: run status");
-
-let counter = 0;
-// Process-monotonic order token (Postgres uses a bigint IDENTITY); a multi-process deployment
-// would source it from a Dynamo atomic counter.
-/** @internal */
-export const nextSeq = (): number => ++counter;
 
 export interface RunItem {
   id: string;

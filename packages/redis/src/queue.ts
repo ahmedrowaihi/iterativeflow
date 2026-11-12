@@ -1,5 +1,10 @@
 import type { ClaimOpts, IdGen, Lease, Queue } from "@iterativeflow/core/backend";
-import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
+import {
+  distinctEnqueues,
+  enqueueFields,
+  queueDepthOf,
+  shardAdmits,
+} from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { JOB, type Keys, RUN } from "#keys";
 import { ENQUEUE_FN, luaRunner, replyNumber, replyRows } from "#scripts";
@@ -16,6 +21,11 @@ end
 
 // Bounds a script's ARGV (3 per run) so one huge batch can't hit the multibulk limit or stall the server.
 const ENQUEUE_CHUNK = 1000;
+
+// Leased and other-shard jobs stay in the due ZSET at their runAt, so the claim pages past them
+// until its candidate window fills; the scan cap bounds one script's run time on a huge ineligible
+// backlog (past it a claim comes back short rather than stalling the server).
+const CLAIM_SCAN_CAP = 10_000;
 
 const CLAIM = `
 local nowMs = tonumber(ARGV[1])
@@ -34,23 +44,28 @@ if nameCount >= 0 then
 end
 local tokenBase = 9 + math.max(nameCount, 0)
 
-local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', nowMs, 'LIMIT', 0, window)
 local due = {}
-for _, runId in ipairs(ids) do
-  local jobKey = jobPre .. runId .. jobSuf
-  local f = redis.call('HMGET', jobKey, '${JOB.runAt}', '${JOB.priority}', '${JOB.version}', '${JOB.leaseExpires}')
-  local runAt = tonumber(f[1])
-  local leaseExpires = tonumber(f[4])
-  if runAt ~= nil and runAt <= nowMs and (leaseExpires == nil or leaseExpires <= nowMs) then
-    local keep = true
-    if wanted ~= nil then
-      local name = redis.call('HGET', runPre .. runId .. runSuf, '${RUN.name}')
-      keep = name == false or wanted[name] == true
-    end
-    if keep then
-      due[#due + 1] = { runId = runId, priority = tonumber(f[2]) or 0, runAt = runAt, version = tonumber(f[3]) or 0, key = jobKey }
+local offset = 0
+while #due < window and offset < ${CLAIM_SCAN_CAP} do
+  local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', nowMs, 'LIMIT', offset, window)
+  for _, runId in ipairs(ids) do
+    local jobKey = jobPre .. runId .. jobSuf
+    local f = redis.call('HMGET', jobKey, '${JOB.runAt}', '${JOB.priority}', '${JOB.version}', '${JOB.leaseExpires}')
+    local runAt = tonumber(f[1])
+    local leaseExpires = tonumber(f[4])
+    if runAt ~= nil and runAt <= nowMs and (leaseExpires == nil or leaseExpires <= nowMs) then
+      local keep = true
+      if wanted ~= nil then
+        local name = redis.call('HGET', runPre .. runId .. runSuf, '${RUN.name}')
+        keep = name == false or wanted[name] == true
+      end
+      if keep then
+        due[#due + 1] = { runId = runId, priority = tonumber(f[2]) or 0, runAt = runAt, version = tonumber(f[3]) or 0, key = jobKey }
+      end
     end
   end
+  if #ids < window then break end
+  offset = offset + #ids
 end
 table.sort(due, function(a, b)
   if a.priority ~= b.priority then return a.priority < b.priority end
@@ -104,35 +119,30 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
   const [runPrefix, runSuffix] = keys.runAffix;
   const run = luaRunner(client);
 
-  return {
-    enqueue(runId, opts) {
-      return this.enqueueMany([{ runId, opts }]);
-    },
+  // An unset priority goes over as "", which the Lua reads as "fall back to the run's own".
+  const enqueueMany: Queue["enqueueMany"] = async (requests) => {
+    const args = distinctEnqueues(requests).map(([runId, opts]) => [
+      runId,
+      enqueueFields(opts, undefined).runAtMs,
+      opts?.priority ?? "",
+    ]);
+    const chunks = [];
+    for (let i = 0; i < args.length; i += ENQUEUE_CHUNK) {
+      chunks.push(
+        run(
+          ENQUEUE_MANY,
+          [keys.queue],
+          [jobPrefix, jobSuffix, runPrefix, runSuffix, ...args.slice(i, i + ENQUEUE_CHUNK).flat()],
+        ),
+      );
+    }
+    await Promise.all(chunks);
+  };
 
-    async enqueueMany(requests) {
-      const args = distinctEnqueues(requests).map(([runId, opts]) => [
-        runId,
-        opts?.runAt ? opts.runAt.getTime() : 0,
-        opts?.priority ?? "",
-      ]);
-      const chunks = [];
-      for (let i = 0; i < args.length; i += ENQUEUE_CHUNK) {
-        chunks.push(
-          run(
-            ENQUEUE_MANY,
-            [keys.queue],
-            [
-              jobPrefix,
-              jobSuffix,
-              runPrefix,
-              runSuffix,
-              ...args.slice(i, i + ENQUEUE_CHUNK).flat(),
-            ],
-          ),
-        );
-      }
-      await Promise.all(chunks);
-    },
+  return {
+    enqueue: (runId, opts) => enqueueMany([{ runId, opts }]),
+
+    enqueueMany,
 
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       if (names?.length === 0) return [];
@@ -186,20 +196,17 @@ export const createRedisQueue = (client: RedisClient, keys: Keys, id: IdGen): Qu
     async depth(now, names) {
       const nowMs = ms(now);
       if (names?.length === 0) return queueDepthOf([], nowMs);
-      const wanted = names && new Set(names);
       const runIds = await client.zrange(keys.queue, 0, -1);
       if (runIds.length === 0) return queueDepthOf([], nowMs);
       const [fields, runNames] = await Promise.all([
         Promise.all(
           runIds.map((runId) => client.hmget(keys.job(runId), JOB.runAt, JOB.leaseExpires)),
         ),
-        wanted ? Promise.all(runIds.map((runId) => client.hget(keys.run(runId), RUN.name))) : [],
+        names ? Promise.all(runIds.map((runId) => client.hget(keys.run(runId), RUN.name))) : [],
       ]);
       const jobs: { runAt: number; leaseExpires?: number }[] = [];
       for (let i = 0; i < runIds.length; i++) {
-        // a run-less job is unownable, so it passes every name filter (see Queue.claim)
-        const name = runNames[i];
-        if (wanted && name !== null && !wanted.has(name)) continue;
+        if (!shardAdmits(names, runNames[i] ?? undefined)) continue;
         const [runAt, leaseExpires] = fields[i];
         if (runAt === null) continue;
         jobs.push({

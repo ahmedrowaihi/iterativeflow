@@ -4,20 +4,24 @@ import {
   type RunSpec,
   type StartResult,
   type Store,
+  type RunSelection,
+  type SelectionSqlOpts,
   type SuspendStatus,
-  ACTIVE_STATUSES,
-  NON_SUCCESS_TERMINAL_STATUSES,
-  RECONCILABLE_STATUSES,
   TERMINAL_STATUSES,
+  listSelection,
   orphanedRunsSql,
-  purgeWhereSql,
-  runSetWhereSql,
-  statusList,
+  cancelSelection,
+  purgeSelection,
+  resetsAttempts,
+  retrySelection,
+  runSelectionSql,
+  sqlStatusTuple,
   zeroRunStats,
 } from "@iterativeflow/core/backend";
 import {
   STEP_COLUMNS,
   bigintText,
+  date,
   int,
   j,
   mapCron,
@@ -28,25 +32,20 @@ import {
   text,
 } from "#codec";
 import { type Tables, tables } from "#schema";
-import { applyOutbox, enqueueManyStmt, enqueueStmt } from "#statements";
+import { applyOutbox, enqueueManyStmt, enqueueStmt, insertRunStmt } from "#statements";
 import type { Sql, SqlParam } from "#sql";
 
-const sqlTuple = (statuses: readonly string[]): string =>
-  `(${statuses.map((s) => `'${s}'`).join(",")})`;
-const TERMINAL = sqlTuple(TERMINAL_STATUSES);
-const RECONCILABLE = sqlTuple(RECONCILABLE_STATUSES);
-const NON_SUCCESS_TERMINAL = sqlTuple(NON_SUCCESS_TERMINAL_STATUSES);
-
-const PG_PURGE = {
-  placeholder: (n: number) => `$${n}`,
-  time: (at: Date) => at,
-  statusTuple: sqlTuple,
-  tag: (p: string) => `${p} = ANY(tags)`,
-};
+const TERMINAL = sqlStatusTuple(TERMINAL_STATUSES);
 
 /** @internal */
 export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const t: Tables = tables(schema);
+  const selectionSql: SelectionSqlOpts<Date> = {
+    placeholder: (n) => `$${n}`,
+    time: (at) => at,
+    tag: (p) => `${p} = ANY(tags)`,
+    run: t.run,
+  };
 
   const loadStep = async (exec: Sql, runId: string, cursorKey: string) => {
     const rows = await exec.query(
@@ -61,26 +60,13 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
   const startOne = async (exec: Sql, spec: RunSpec): Promise<StartResult> => {
     const runId = id();
     if (spec.idempotencyKey) {
-      const ins = await exec.query(
-        `INSERT INTO ${t.run}
-           (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, created_at, priority)
-         VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
-         ON CONFLICT (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL
-         DO NOTHING
-         RETURNING id`,
-        [
-          runId,
-          spec.name,
-          spec.version,
-          j(spec.input),
-          spec.idempotencyKey,
-          spec.tags ?? null,
-          spec.parentRunId ?? null,
-          spec.parentCursorKey ?? null,
-          spec.depth ?? 0,
-          spec.createdAt ?? new Date(),
-          spec.priority ?? 0,
-        ],
+      const ins = await insertRunStmt(
+        exec,
+        t,
+        runId,
+        spec,
+        `ON CONFLICT (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL
+         DO NOTHING RETURNING id`,
       );
       if (ins[0]) return { runId: text(ins[0], "id"), created: true, status: "pending" };
       const hit = await exec.query(
@@ -94,28 +80,23 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         );
       return { runId: text(row, "id"), created: false, status: runStatus(row) };
     }
-    await exec.query(
-      `INSERT INTO ${t.run}
-         (id, name, version, status, input, tags, parent_run_id, parent_cursor_key, depth, created_at, priority)
-       VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9, $10)`,
-      [
-        runId,
-        spec.name,
-        spec.version,
-        j(spec.input),
-        spec.tags ?? null,
-        spec.parentRunId ?? null,
-        spec.parentCursorKey ?? null,
-        spec.depth ?? 0,
-        spec.createdAt ?? new Date(),
-        spec.priority ?? 0,
-      ],
-    );
+    await insertRunStmt(exec, t, runId, spec, "");
     return { runId, created: true, status: "pending" };
   };
 
+  const lockSelected = async (tx: Sql, sel: RunSelection, limit: number): Promise<string[]> => {
+    const q = runSelectionSql(sel, selectionSql);
+    if (!q) return [];
+    const params = [...q.params, limit];
+    const rows = await tx.query(
+      `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT $${params.length} FOR UPDATE`,
+      params,
+    );
+    return rows.map((r) => text(r, "id"));
+  };
+
   const deleteRuns = async (filter: PurgeFilter, limit: number): Promise<number> => {
-    const q = purgeWhereSql(filter, PG_PURGE);
+    const q = runSelectionSql(purgeSelection(filter), selectionSql);
     if (!q) return 0;
     // Oldest-first only matters for an age sweep; without a cutoff the whole matched set goes
     // eventually, and the sort would force a full read before LIMIT could bound it.
@@ -126,7 +107,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
         await tx.query(
           `SELECT id FROM ${t.run}
              WHERE ${q.where}
-             ${order} LIMIT $${params.length}`,
+             ${order} LIMIT $${params.length} FOR UPDATE`,
           params,
         )
       ).map((r) => text(r, "id"));
@@ -255,7 +236,7 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
 
     suspendRun(runId, status: SuspendStatus, fx) {
       return sql.tx(async (tx) => {
-        const reset = status !== "retrying" ? ", attempts = 0" : "";
+        const reset = resetsAttempts(status) ? ", attempts = 0" : "";
         const rows = await tx.query(
           `UPDATE ${t.run} SET status = $2${reset} WHERE id = $1 AND status NOT IN ${TERMINAL} RETURNING 1`,
           [runId, status],
@@ -274,38 +255,24 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
            RETURNING 1`,
           [runId, outcome.status, j(output), j(error)],
         );
-        if (rows[0] && fx) await applyOutbox(tx, t, fx);
+        if (!rows[0]) return false;
+        if (fx) await applyOutbox(tx, t, fx);
+        return true;
       });
     },
 
     async listRuns(filter, page) {
-      const statuses = statusList(filter.status);
-      const where: string[] = [];
-      const params: SqlParam[] = [];
-      if (statuses) {
-        params.push(statuses);
-        where.push(`status = ANY($${params.length}::text[])`);
-      }
-      if (filter.name) {
-        params.push(filter.name);
-        where.push(`name = $${params.length}`);
-      }
-      if (filter.version !== undefined) {
-        params.push(filter.version);
-        where.push(`version = $${params.length}`);
-      }
-      if (filter.tag) {
-        params.push(filter.tag);
-        where.push(`$${params.length} = ANY(tags)`);
-      }
+      const q = runSelectionSql(listSelection(filter), selectionSql);
+      if (!q) return { runs: [], cursor: undefined };
+      const params: SqlParam[] = [...q.params];
+      const where = [q.where];
       if (page.cursor) {
         params.push(page.cursor);
         where.push(`seq < $${params.length}::bigint`);
       }
       params.push(page.limit);
-      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const rows = await sql.query(
-        `SELECT * FROM ${t.run} ${clause} ORDER BY seq DESC LIMIT $${params.length}`,
+        `SELECT * FROM ${t.run} WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT $${params.length}`,
         params,
       );
       const last = rows[rows.length - 1];
@@ -314,16 +281,9 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async cancelRuns(filter, limit) {
-      const q = runSetWhereSql(filter, ACTIVE_STATUSES, "cancelRuns", PG_PURGE);
-      if (!q) return 0;
-      const params = [...q.params, limit];
+      const sel = cancelSelection(filter);
       return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query(
-            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT $${params.length} FOR UPDATE`,
-            params,
-          )
-        ).map((r) => text(r, "id"));
+        const ids = await lockSelected(tx, sel, limit);
         if (ids.length === 0) return 0;
         await tx.query(`DELETE FROM ${t.timer} WHERE run_id = ANY($1)`, [ids]);
         await tx.query(`UPDATE ${t.run} SET status = 'canceled' WHERE id = ANY($1)`, [ids]);
@@ -332,16 +292,9 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     async retryRuns(filter, limit) {
-      const q = runSetWhereSql(filter, ["failed"], "retryRuns", PG_PURGE);
-      if (!q) return 0;
-      const params = [...q.params, limit];
+      const sel = retrySelection(filter);
       return sql.tx(async (tx) => {
-        const ids = (
-          await tx.query(
-            `SELECT id FROM ${t.run} WHERE ${q.where} LIMIT $${params.length} FOR UPDATE`,
-            params,
-          )
-        ).map((r) => text(r, "id"));
+        const ids = await lockSelected(tx, sel, limit);
         if (ids.length === 0) return 0;
         await tx.query(
           `UPDATE ${t.run} SET status = 'pending', error = NULL, attempts = 0 WHERE id = ANY($1)`,
@@ -376,9 +329,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           run: t.run,
           job: t.job,
           timer: t.timer,
-          reconcilable: RECONCILABLE,
-          terminal: TERMINAL,
-          nonSuccessTerminal: NON_SUCCESS_TERMINAL,
           order: "r.seq",
           limit: "$1",
         }),
@@ -388,8 +338,6 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
     },
 
     deleteRuns,
-
-    deleteRunsOlderThan: (before, limit) => deleteRuns({ before }, limit),
 
     retryRun(runId) {
       return sql.tx(async (tx) => {
@@ -423,10 +371,17 @@ export const createPgStore = (sql: Sql, schema: string, id: IdGen): Store => {
           spec.flowName,
           spec.flowVersion,
           j(spec.input),
-          spec.overlap ?? "allow",
+          spec.overlap,
           spec.nextRunAt,
         ],
       );
+    },
+
+    async nextCronAt() {
+      const rows = await sql.query(
+        `SELECT next_run_at FROM ${t.cron} ORDER BY next_run_at LIMIT 1`,
+      );
+      return rows[0] ? date(rows[0], "next_run_at") : null;
     },
 
     async dueCrons(now, limit) {

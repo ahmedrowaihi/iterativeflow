@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: corepack enable
-      # Suites start their own Postgres + DynamoDB Local via testcontainers (Docker is available
+      # Backend suites start their own databases via testcontainers (Docker is available
       # on hosted runners), so no service containers or SKIP_TESTCONTAINERS here.
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck

@@ -1,17 +1,35 @@
 import { type CancellationReason, TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import type { EnqueueOpts, Outbox, RunSpec, SpawnRequest } from "@iterativeflow/core/backend";
-import { enc, nextSeq } from "#codec";
+import {
+  type EnqueueOpts,
+  FAN_OUT_CHUNK,
+  type Outbox,
+  type RunSpec,
+  type SpawnRequest,
+  enqueueFields,
+} from "@iterativeflow/core/backend";
+import { enc } from "#codec";
 import { JOB_GSI_PK, RUN_GSI2_PK, TIMER_GSI_PK, childGsiPk, key, pad } from "#schema";
 
 /** @internal */
 export type TxItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
 
-// Dynamo's hard TransactWriteItems cap. The checkpoint gate reserves 2 entries and each spawn costs
-// 2, so a chunk of FAN_OUT_CHUNK (40) children fits with margin; core chunks fan-out to that fixed
-// size, so a checkpoint always fits and an over-budget checkpoint is a loud invariant violation.
+// Dynamo's hard TransactWriteItems cap.
 /** @internal */
 export const MAX_TX_ITEMS = 100;
+const CHECKPOINT_GATE_ITEMS = 3;
+const SPAWN_TX_ITEMS = 2;
+if (SPAWN_TX_ITEMS * FAN_OUT_CHUNK + CHECKPOINT_GATE_ITEMS > MAX_TX_ITEMS) {
+  throw new Error(
+    `FAN_OUT_CHUNK ${FAN_OUT_CHUNK} overflows DynamoDB's ${MAX_TX_ITEMS}-item transaction cap`,
+  );
+}
+
+let counter = 0;
+// Process-monotonic order token (Postgres uses a bigint IDENTITY); a multi-process deployment
+// would source it from a Dynamo atomic counter.
+/** @internal */
+export const nextSeq = (): number => ++counter;
 
 /** @internal */
 export const buildRunItem = (spec: RunSpec, runId: string) => {
@@ -47,8 +65,6 @@ export const buildRunItem = (spec: RunSpec, runId: string) => {
   };
 };
 
-const runAtMs = (opts?: EnqueueOpts): number => (opts?.runAt ? opts.runAt.getTime() : 0);
-
 /** @internal */
 export const enqueueParams = (
   table: string,
@@ -56,7 +72,7 @@ export const enqueueParams = (
   opts: EnqueueOpts | undefined,
   runPriority: number | undefined,
 ) => {
-  const priority = opts?.priority ?? runPriority ?? 0;
+  const { runAtMs, priority } = enqueueFields(opts, runPriority);
   return {
     TableName: table,
     Key: key.job(runId),
@@ -66,36 +82,27 @@ export const enqueueParams = (
     ExpressionAttributeValues: {
       ":type": "job",
       ":runId": runId,
-      ":runAt": runAtMs(opts),
+      ":runAt": runAtMs,
       ":priority": priority,
       ":gpk": JOB_GSI_PK,
-      ":gsk": `${pad(priority)}#${pad(runAtMs(opts))}`,
+      ":gsk": `${pad(priority)}#${pad(runAtMs)}`,
       ":one": 1,
     },
   };
 };
 
-const enqueueTx = (
-  table: string,
-  runId: string,
-  opts?: EnqueueOpts,
-  runPriority?: number,
-): TxItem => ({
-  Update: enqueueParams(table, runId, opts, runPriority),
+/** @internal */
+export const timerItem = (runId: string, fireAt: Date) => ({
+  ...key.timer(runId),
+  type: "timer",
+  runId,
+  fireAt: fireAt.getTime(),
+  gsi1pk: TIMER_GSI_PK,
+  gsi1sk: pad(fireAt.getTime()),
 });
 
 const scheduleTx = (table: string, runId: string, fireAt: Date): TxItem => ({
-  Put: {
-    TableName: table,
-    Item: {
-      ...key.timer(runId),
-      type: "timer",
-      runId,
-      fireAt: fireAt.getTime(),
-      gsi1pk: TIMER_GSI_PK,
-      gsi1sk: pad(fireAt.getTime()),
-    },
-  },
+  Put: { TableName: table, Item: timerItem(runId, fireAt) },
 });
 
 const cancelTimerTx = (table: string, runId: string): TxItem => ({
@@ -123,18 +130,12 @@ export const spawnTx = (table: string, s: SpawnRequest): [TxItem, TxItem] => [
       ConditionExpression: "attribute_not_exists(pk)",
     },
   },
-  enqueueTx(table, s.runId, s.enqueue, s.spec.priority),
+  { Update: enqueueParams(table, s.runId, undefined, s.spec.priority) },
 ];
 
 /** @internal */
-export const outboxParts = (
-  table: string,
-  fx: Outbox | undefined,
-  priorities: ReadonlyMap<string, number>,
-) => {
+export const outboxParts = (table: string, fx: Outbox | undefined) => {
   const nonSpawn: TxItem[] = [];
-  for (const e of fx?.enqueue ?? [])
-    nonSpawn.push(enqueueTx(table, e.runId, e.opts, priorities.get(e.runId)));
   for (const t of fx?.timers ?? []) nonSpawn.push(scheduleTx(table, t.runId, t.fireAt));
   for (const id of fx?.cancelTimers ?? []) nonSpawn.push(cancelTimerTx(table, id));
   for (const s of fx?.consumeSignals ?? []) nonSpawn.push(consumeSignalTx(table, s));

@@ -1,5 +1,6 @@
 import { NON_SUCCESS_TERMINAL_STATUSES, RECONCILABLE_STATUSES, isTerminal } from "#status";
-import type { RunStatus } from "#types";
+import { sqlStatusTuple } from "#selection";
+import { TERMINAL_STATUSES, type RunStatus } from "#types";
 
 /** The minimal run shape the orphan check reads — satisfied by both `RunRow` and a backend's raw row. */
 export interface OrphanRun {
@@ -45,21 +46,21 @@ export const isOrphaned = (r: OrphanRun, v: OrphanView): boolean => {
   return false;
 };
 
-/** Dialect specifics for {@link orphanedRunsSql} — table identifiers and status tuples are already
- *  rendered (schema/prefix applied, `('done',…)`), so the builder stays dialect-neutral. */
+/** Dialect specifics for {@link orphanedRunsSql}: table identifiers already rendered (schema/prefix
+ *  applied), so the builder stays dialect-neutral. */
 export interface OrphanSqlOpts {
   run: string;
   job: string;
   timer: string;
-  /** Status sets rendered as SQL tuples, e.g. `('done','failed','canceled')`. */
-  reconcilable: string;
-  terminal: string;
-  nonSuccessTerminal: string;
   /** Insertion-order column to page by, e.g. `r.seq` (Postgres/MySQL) or `r.rowid` (SQLite). */
   order: string;
   /** Bind placeholder for the `LIMIT`, e.g. `$1` (Postgres) or `?` (SQLite/MySQL). */
   limit: string;
 }
+
+const RECONCILABLE = sqlStatusTuple(RECONCILABLE_STATUSES);
+const TERMINAL = sqlStatusTuple(TERMINAL_STATUSES);
+const NON_SUCCESS_TERMINAL = sqlStatusTuple(NON_SUCCESS_TERMINAL_STATUSES);
 
 /**
  * The SQL form of {@link isOrphaned}: the same three-case predicate as one UNION query, for the SQL
@@ -70,7 +71,7 @@ export const orphanedRunsSql = (o: OrphanSqlOpts): string =>
   `SELECT id FROM (
      -- crash-stranded
      SELECT r.id AS id, ${o.order} AS ord FROM ${o.run} r
-     WHERE r.status IN ${o.reconcilable}
+     WHERE r.status IN ${RECONCILABLE}
        AND NOT EXISTS (SELECT 1 FROM ${o.job} j WHERE j.run_id = r.id)
        AND NOT EXISTS (SELECT 1 FROM ${o.timer} tm WHERE tm.run_id = r.id)
      UNION
@@ -81,15 +82,15 @@ export const orphanedRunsSql = (o: OrphanSqlOpts): string =>
        AND EXISTS (SELECT 1 FROM ${o.run} c WHERE c.parent_run_id = r.id)
        AND (
          EXISTS (SELECT 1 FROM ${o.run} c
-                 WHERE c.parent_run_id = r.id AND c.status IN ${o.nonSuccessTerminal})
+                 WHERE c.parent_run_id = r.id AND c.status IN ${NON_SUCCESS_TERMINAL})
          OR NOT EXISTS (SELECT 1 FROM ${o.run} c
-                        WHERE c.parent_run_id = r.id AND c.status NOT IN ${o.terminal})
+                        WHERE c.parent_run_id = r.id AND c.status NOT IN ${TERMINAL})
        )
      UNION
      -- orphaned child of a failed/canceled parent
      SELECT r.id AS id, ${o.order} AS ord FROM ${o.run} r
      JOIN ${o.run} p ON p.id = r.parent_run_id
-     WHERE r.status NOT IN ${o.terminal} AND p.status IN ${o.nonSuccessTerminal}
+     WHERE r.status NOT IN ${TERMINAL} AND p.status IN ${NON_SUCCESS_TERMINAL}
    ) q
    ORDER BY q.ord
    LIMIT ${o.limit}`;

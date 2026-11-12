@@ -26,6 +26,7 @@ export const EVENT_TYPES = [
   "run.log",
 ] as const;
 
+/** Type guard for an event type read back from storage. */
 export const isEventType = (s: string): s is EventType => EVENT_TYPES.some((t) => t === s);
 
 /** The data each event kind carries, so a sink can rely on one shape per `type`. */
@@ -98,8 +99,12 @@ export interface Metrics {
 
 /** @internal */
 export const reportError = (metrics: Metrics | undefined, cause: unknown): void => {
-  if (metrics?.tickError) metrics.tickError(cause);
-  else console.error("iterativeflow:", cause);
+  try {
+    if (metrics?.tickError) return metrics.tickError(cause);
+  } catch (e) {
+    console.error("iterativeflow: tickError threw", e);
+  }
+  console.error("iterativeflow:", cause);
 };
 
 /** Observability wiring passed to the worker. All optional — omit for zero overhead. */
@@ -125,17 +130,39 @@ export interface Observer {
   readonly tracer?: Tracer;
 }
 
+// Observability is never load-bearing: a throwing sink, tracer or metrics callback must not reach the
+// executor, where it would be caught as a flow error and skip the parent-wake and ack that follow a
+// terminal write.
+const guardMetrics = (m: Metrics): Metrics => {
+  const safe =
+    <A extends unknown[]>(fn: ((...args: A) => void) | undefined) =>
+    (...args: A): void => {
+      try {
+        fn?.(...args);
+      } catch (e) {
+        reportError(m, e);
+      }
+    };
+  return {
+    runStarted: safe(m.runStarted),
+    runSettled: safe(m.runSettled),
+    runSuspended: safe(m.runSuspended),
+    redeployParked: safe(m.redeployParked),
+    stepFinished: safe(m.stepFinished),
+    tickError: m.tickError,
+  } satisfies Record<keyof Metrics, Metrics[keyof Metrics]>;
+};
+
+/** @internal */
 export const makeObserver = (opts?: ObserveOpts): Observer => {
   const level = opts?.level ?? "all";
   const sink = opts?.sink;
   const records = (type: EventType): boolean =>
     !!sink && level !== "off" && !(level === "lifecycle" && !LIFECYCLE.has(type));
-  const metrics = opts?.metrics ?? {};
+  const metrics = guardMetrics(opts?.metrics ?? {});
   const tracer = opts?.tracer;
   return {
     async event(type, runId, at, data) {
-      // Observability is never load-bearing: a throwing sink must not reach the executor, where it
-      // would be caught as a flow error and skip the parent-wake and ack that follow a terminal write.
       if (!sink || !records(type)) return;
       try {
         await sink.record({ runId, type, at, data });

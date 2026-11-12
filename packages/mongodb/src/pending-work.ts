@@ -1,5 +1,7 @@
 import type { Document } from "mongodb";
 import { names } from "#collections";
+import { claimableJobs } from "#queue";
+import { dueTimers } from "#timer";
 
 /**
  * Aggregation pipeline that returns the autoscaling backlog — claimable jobs + due timers + due crons —
@@ -17,17 +19,12 @@ export const pendingWorkPipeline = (
   const at = now instanceof Date ? now.getTime() : now;
   const n = names(opts.prefix ?? "");
   return [
-    {
-      $match: {
-        run_at: { $lte: at },
-        $or: [{ lease_expires: null }, { lease_expires: { $lte: at } }],
-      },
-    },
+    { $match: claimableJobs(at) },
     { $project: { _id: 1 } },
     {
       $unionWith: {
         coll: n.timers,
-        pipeline: [{ $match: { fire_at: { $lte: at } } }, { $project: { _id: 1 } }],
+        pipeline: [{ $match: dueTimers(at) }, { $project: { _id: 1 } }],
       },
     },
     {

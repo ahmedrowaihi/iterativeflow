@@ -42,8 +42,7 @@ export const int = (row: SqlRow, name: string): number => {
   return n;
 };
 
-/** @internal */
-export const optText = (row: SqlRow, name: string): string | undefined =>
+const optText = (row: SqlRow, name: string): string | undefined =>
   column(row, name) === null ? undefined : text(row, name);
 
 /** @internal */

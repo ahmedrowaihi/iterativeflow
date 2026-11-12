@@ -5,7 +5,7 @@
 ## index.d.mts
 
 ```ts
-import { Backend } from "@iterativeflow/core";
+import { Engine } from "@iterativeflow/core";
 //#region src/verify.d.ts
 /**
  * Verify a signed webhook and reduce it to a provider-neutral identity. Uses Web Crypto (no
@@ -17,7 +17,7 @@ import { Backend } from "@iterativeflow/core";
 type HeaderInput = Headers | Record<string, string | string[] | undefined>;
 /**
  * A verified webhook, normalized across providers. `id` is unique per delivery (GitHub's
- * `X-GitHub-Delivery`, Svix's `svix-id`) — use it as the idempotency key so a redelivery lands
+ * `X-GitHub-Delivery`) — use it as the idempotency key so a redelivery lands
  * once. `type` is the event name (GitHub's `X-GitHub-Event`).
  */
 interface WebhookEvent<T = unknown> {
@@ -102,19 +102,16 @@ interface BridgeResult {
   }>;
 }
 /** A verified-and-delivered webhook handler — the return of {@link webhookSignalBridge}. */
-type WebhookSignalBridge = (input: {
-  body: string;
-  headers: HeaderInput;
-}) => Promise<BridgeResult>;
+type WebhookSignalBridge = (input: VerifyInput) => Promise<BridgeResult>;
 /**
  * Bridge signed webhooks to durable signals: verify the payload, correlate the event to the parked
  * runs it concerns, and deliver each as a signal (atomic delivery + re-enqueue, best-effort wakeup,
- * idempotent on the delivery id). This is the inbound edge that lets a flow `await ctx.signal(...)`
+ * idempotent on the delivery id, subject to the engine's `maxPayloadBytes`). This is the inbound edge that lets a flow `await ctx.signal(...)`
  * on an external event — a `/qa run` comment, a preview deploy, a payment, a human approval.
  *
  * @throws {import("#verify").WebhookError} when verification fails — reject the request as untrusted.
  */
-declare function webhookSignalBridge(backend: Backend, opts: WebhookSignalBridgeOptions): WebhookSignalBridge;
+declare function webhookSignalBridge(engine: Pick<Engine, "signal">, opts: WebhookSignalBridgeOptions): WebhookSignalBridge;
 //#endregion
 export { type BridgeResult, type Correlate, type HeaderInput, type HmacVerifierOptions, type SignalDelivery, type VerifyInput, WebhookError, type WebhookErrorCode, type WebhookEvent, type WebhookSignalBridge, type WebhookSignalBridgeOptions, type WebhookVerifier, github, hmacVerifier, webhookSignalBridge };
 ```

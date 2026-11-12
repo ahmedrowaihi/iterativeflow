@@ -1,20 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import {
-  claimFilterConformance,
-  shardedClaimConformance,
-  cronConformance,
-  engineConformance,
-  outboxConformance,
-  pendingWorkConformance,
-  queueConformance,
-  reconcileConformance,
-  signalConformance,
-  storeConformance,
-  timerConformance,
-  wakeupConformance,
-} from "@iterativeflow/conformance";
-import { type Backend, defineFlow, registry, submit, tickOnce } from "@iterativeflow/core";
+import { backendConformance } from "@iterativeflow/conformance";
+import { type Backend, defineFlow, submit } from "@iterativeflow/core";
 import { type Sql, applySchema, createPgBackend, inTx, pgPool } from "@iterativeflow/postgres";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -49,46 +35,10 @@ describe.skipIf(skip)("postgres backend", () => {
   };
 
   // The exact same suites the memory backend passes — one spec, every implementation.
-  storeConformance("postgres", async () => (await makeBackend()).store);
-  queueConformance("postgres", async () => (await makeBackend()).queue);
-  claimFilterConformance("postgres", () => makeBackend());
-  shardedClaimConformance("postgres", () => makeBackend());
-  pendingWorkConformance("postgres", () => makeBackend());
-  timerConformance("postgres", async () => (await makeBackend()).timer);
-  wakeupConformance("postgres", async () => (await makeBackend()).wakeup);
-  outboxConformance("postgres", () => makeBackend());
-  signalConformance("postgres", () => makeBackend());
-  reconcileConformance("postgres", () => makeBackend());
-  cronConformance("postgres", async () => (await makeBackend()).store);
-  engineConformance("postgres", () => makeBackend());
+  backendConformance("postgres", () => makeBackend(), { concurrentWriters: true });
 
   // These need REAL multi-connection concurrency — memory (single-threaded) can't prove them.
   describe("atomicity + concurrency", () => {
-    it("concurrent first-writer-wins: N parallel checkpoints on one key spawn exactly one child", async () => {
-      const backend = await makeBackend();
-      const { runId } = await backend.store.startRun({ name: "p", version: 1, input: {} });
-      const childIds = Array.from({ length: 8 }, () => randomUUID());
-
-      const results = await Promise.all(
-        childIds.map((cid) =>
-          backend.store
-            .checkpointStep(
-              { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
-              { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
-            )
-            .then((o) => o.result),
-        ),
-      );
-
-      expect(new Set(results).size).toBe(1); // every racer agrees on ONE winner
-      const winner = results[0];
-      const created = (await Promise.all(childIds.map((cid) => backend.store.loadRun(cid)))).filter(
-        Boolean,
-      );
-      expect(created).toHaveLength(1); // losers' childIds were never created
-      expect(created[0]?.run.id).toBe(winner);
-    });
-
     it("a failing outbox rolls back the step — the write is atomic, not torn", async () => {
       await makeBackend(); // truncate
       const clean = createPgBackend(sql());
@@ -108,7 +58,14 @@ describe.skipIf(skip)("postgres backend", () => {
       await expect(
         faulty.store.checkpointStep(
           { runId, cursorKey: "x", status: "ok", result: 1, attempts: 1 },
-          { enqueue: [{ runId }] },
+          {
+            spawn: [
+              {
+                runId: "44444444-4444-4444-4444-444444444444",
+                spec: { name: "c", version: 1, input: {} },
+              },
+            ],
+          },
         ),
       ).rejects.toThrow();
       const snap = await clean.store.loadRun(runId);
@@ -171,62 +128,6 @@ describe.skipIf(skip)("postgres backend", () => {
       });
       expect(await orderCount()).toBe(1);
       expect(await backend.store.loadRunRow(id)).toBeDefined();
-    });
-
-    it("concurrent claims lease each run to exactly one worker (SKIP LOCKED)", async () => {
-      const backend = await makeBackend();
-      for (let i = 0; i < 20; i++) {
-        await backend.store.startRun({ name: "f", version: 1, input: { i } });
-      }
-      const jobs = await pool.query('SELECT id FROM "workflow".run');
-      for (const r of jobs.rows) await backend.queue.enqueue(r.id);
-      const now = new Date("2030-01-01T00:00:00Z");
-      // Four workers claim concurrently; no run may be leased twice.
-      const batches = await Promise.all(
-        Array.from({ length: 4 }, () => backend.queue.claim({ limit: 10, leaseMs: 1000, now })),
-      );
-      const claimed = batches.flat().map((l) => l.runId);
-      expect(claimed).toHaveLength(20); // all leased, none dropped
-      expect(new Set(claimed).size).toBe(20); // and none leased twice
-    });
-  });
-
-  // The whole durable executor, driven on real Postgres — steps, sleep, retry, invoke.
-  describe("engine end-to-end", () => {
-    const TERMINAL = new Set(["done", "failed", "canceled"]);
-
-    const driveToSettle = async (
-      backend: Backend,
-      flows: ReturnType<typeof registry>,
-      runId: string,
-    ): Promise<{ status: string; output: unknown }> => {
-      let clock = new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      for (let i = 0; i < 100; i++) {
-        await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
-        const run = (await backend.store.loadRun(runId))?.run;
-        if (run && TERMINAL.has(run.status)) return { status: run.status, output: run.output };
-        clock = new Date(clock.getTime() + 2_000);
-      }
-      throw new Error("run did not settle");
-    };
-
-    it("invokes a child flow across the outbox and resumes with its output", async () => {
-      const backend = await makeBackend();
-      const child = defineFlow<{ n: number }, number>({
-        name: "pg-child",
-        version: 1,
-        run: async (_ctx, input) => input.n * 10,
-      });
-      const parent = defineFlow<{ n: number }, number>({
-        name: "pg-parent",
-        version: 1,
-        run: async (ctx, input) => (await ctx.invoke(child, { n: input.n })) + 1,
-      });
-      const flows = registry([parent, child]);
-      const runId = await submit(backend, parent, { n: 5 });
-      const settled = await driveToSettle(backend, flows, runId);
-      expect(settled).toMatchObject({ status: "done", output: 51 }); // (5*10)+1
     });
   });
 });

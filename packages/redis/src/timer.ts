@@ -1,4 +1,4 @@
-import type { Timer, TimerDueOpts } from "@iterativeflow/core/backend";
+import { type Timer, type TimerDueOpts, shardAdmits } from "@iterativeflow/core/backend";
 import type { RedisClient } from "#client";
 import { type Keys, RUN } from "#keys";
 import { luaRunner, replyList } from "#scripts";
@@ -44,15 +44,13 @@ export const createRedisTimer = (client: RedisClient, keys: Keys): Timer => {
 
     async dueCount(now, names) {
       if (names?.length === 0) return 0;
-      const wanted = names && new Set(names);
-      if (!wanted) return client.zcount(keys.timers, "-inf", ms(now));
+      if (!names) return client.zcount(keys.timers, "-inf", ms(now));
       const due = await client.zrangebyscore(keys.timers, "-inf", ms(now));
       if (due.length === 0) return 0;
       const runNames = await Promise.all(
         due.map((runId) => client.hget(keys.run(runId), RUN.name)),
       );
-      // a run-less timer is unownable, so it passes every name filter (see Queue.claim)
-      return runNames.filter((name) => name === null || wanted.has(name)).length;
+      return runNames.filter((name) => shardAdmits(names, name ?? undefined)).length;
     },
   };
 };

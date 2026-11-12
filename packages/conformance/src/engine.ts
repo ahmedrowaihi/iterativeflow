@@ -4,9 +4,14 @@ import {
   type Flow,
   type RetryPolicy,
   cancelRun,
+  cronTag,
   defineFlow,
+  StepFailedError,
   reconcile,
+  registerCron,
+  retryRun,
   registry,
+  runDueCrons,
   runTick,
   serverlessTick,
   signalRun,
@@ -16,6 +21,7 @@ import {
 } from "@iterativeflow/core";
 import { isTerminal } from "@iterativeflow/core/backend";
 import { describe, expect, it } from "vitest";
+import { T0, at } from "#clock";
 
 const okSchema: SignalSchema<{ ok: boolean }> = {
   "~standard": {
@@ -49,6 +55,29 @@ export const engineConformance = (
   describe(`engine conformance (${label})`, () => {
     const base = { batchMax: 16, leaseMs: 600_000 };
 
+    const fastRetry = (maxAttempts: number): RetryPolicy => ({
+      maxAttempts,
+      baseDelayMs: 1,
+      maxDelayMs: 1,
+    });
+
+    const tickUntil = async (
+      backend: Backend,
+      flows: ReturnType<typeof registry>,
+      done: () => Promise<boolean>,
+      retry?: RetryPolicy,
+      start: Date = T0,
+    ): Promise<void> => {
+      let clock = start;
+      const now = (): Date => clock;
+      for (let i = 0; i < 200; i++) {
+        await tickOnce(backend, flows, { ...base, now, retry });
+        if (await done()) return;
+        clock = new Date(clock.getTime() + 60_000);
+      }
+      throw new Error("condition never held");
+    };
+
     const drive = async (
       backend: Backend,
       flows: ReturnType<typeof registry>,
@@ -56,15 +85,14 @@ export const engineConformance = (
       retry?: RetryPolicy,
       start?: Date,
     ): Promise<{ status: string; output?: unknown; error?: { code?: string } }> => {
-      let clock = start ?? new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      for (let i = 0; i < 200; i++) {
-        await tickOnce(backend, flows, { ...base, now, retry });
-        const run = await backend.store.loadRunRow(runId);
-        if (run && isTerminal(run.status)) return run;
-        clock = new Date(clock.getTime() + 60_000);
-      }
-      throw new Error("run did not settle");
+      let run = await backend.store.loadRunRow(runId);
+      const settled = async (): Promise<boolean> => {
+        run = await backend.store.loadRunRow(runId);
+        return run !== undefined && isTerminal(run.status);
+      };
+      await tickUntil(backend, flows, settled, retry, start);
+      if (!run) throw new Error(`run ${runId} vanished`);
+      return run;
     };
 
     it("a run dispatched far more than maxAttempts times (many sleeps) completes", async () => {
@@ -78,11 +106,7 @@ export const engineConformance = (
         },
       });
       const runId = await submit(backend, flow, {});
-      const run = await drive(backend, registry([flow]), runId, {
-        maxAttempts: 3,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const run = await drive(backend, registry([flow]), runId, fastRetry(3));
       expect(run).toMatchObject({ status: "done", output: "settled" });
     });
 
@@ -105,21 +129,20 @@ export const engineConformance = (
 
     it("a genuinely failing step still dead-letters after its retry budget", async () => {
       const backend = await makeBackend();
+      let calls = 0;
       const flow = defineFlow({
         name: "always-throws",
         version: 1,
         run: async (ctx): Promise<number> =>
           ctx.step("boom", () => {
+            calls += 1;
             throw new Error("nope");
           }),
       });
       const runId = await submit(backend, flow, {});
-      const run = await drive(backend, registry([flow]), runId, {
-        maxAttempts: 2,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const run = await drive(backend, registry([flow]), runId, fastRetry(2));
       expect(run.status).toBe("failed");
+      expect(calls).toBe(2);
     });
 
     it("dead-letters a poison-pill (uncatchable-crash) run once attempts exceed the cap", async () => {
@@ -127,11 +150,7 @@ export const engineConformance = (
       const flow = defineFlow({ name: "poison", version: 1, run: async () => 1 });
       const runId = await submit(backend, flow, {});
       for (let i = 0; i < 5; i++) await backend.store.markRunning(runId);
-      await tickOnce(backend, registry([flow]), {
-        ...base,
-        now: () => new Date("2030-01-01T00:00:00Z"),
-        retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 },
-      });
+      await tickOnce(backend, registry([flow]), { ...base, now: () => T0, retry: fastRetry(3) });
       const run = await backend.store.loadRunRow(runId);
       expect(run?.status).toBe("failed");
       expect(run?.error?.code).toBe("RUN_ATTEMPTS_EXHAUSTED");
@@ -150,7 +169,7 @@ export const engineConformance = (
       });
       const flows = registry([flow]);
       const runId = await submit(backend, flow, {});
-      await tickOnce(backend, flows, { ...base, now: () => new Date("2030-01-01T00:00:00Z") });
+      await tickOnce(backend, flows, { ...base, now: () => T0 });
       expect((await backend.store.loadRunRow(runId))?.status).toBe("awaiting_signal");
       await signalRun(backend, runId, "go", { ok: true });
       const run = await drive(backend, flows, runId);
@@ -179,21 +198,49 @@ export const engineConformance = (
       });
       const flows = registry([parent, child, grandchild]);
       const parentId = await submit(backend, parent, {});
-      let clock = new Date("2030-01-01T00:00:00Z");
-      for (let i = 0; i < 10; i++) {
-        await tickOnce(backend, flows, { ...base, now: () => clock });
-        clock = new Date(clock.getTime() + 1000);
-      }
+      const grandkidSleeping = async (): Promise<boolean> => {
+        const [kid] = await backend.store.childrenOf(parentId);
+        const [grandkid] = kid ? await backend.store.childrenOf(kid.id) : [];
+        return grandkid?.status === "sleeping";
+      };
+      await tickUntil(backend, flows, grandkidSleeping);
       await cancelRun(backend, parentId);
       const kids = await backend.store.childrenOf(parentId);
-      expect(kids.length).toBeGreaterThan(0);
-      const childId = kids[0].id;
-      const grandkids = await backend.store.childrenOf(childId);
+      expect(kids).toHaveLength(1);
+      const grandkids = await backend.store.childrenOf(kids[0].id);
+      expect(grandkids).toHaveLength(1);
       expect((await backend.store.loadRunRow(parentId))?.status).toBe("canceled");
-      expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
-      if (grandkids[0]) {
-        expect((await backend.store.loadRunRow(grandkids[0].id))?.status).toBe("canceled");
-      }
+      expect((await backend.store.loadRunRow(kids[0].id))?.status).toBe("canceled");
+      expect((await backend.store.loadRunRow(grandkids[0].id))?.status).toBe("canceled");
+    });
+
+    it("a retried parent whose finished child was purged fails the join instead of waiting forever", async () => {
+      const backend = await makeBackend();
+      let fail = true;
+      const child = defineFlow<Record<string, never>, number>({
+        name: "gone-child",
+        version: 1,
+        run: async () => 1,
+      });
+      const parent = defineFlow<Record<string, never>, number>({
+        name: "gone-parent",
+        version: 1,
+        run: async (ctx) => {
+          const v = await ctx.invoke(child, {});
+          if (fail) throw new StepFailedError("BOOM", "fail after the child finished");
+          return v;
+        },
+      });
+      const flows = registry([parent, child]);
+      const runId = await submit(backend, parent, {});
+      expect(await drive(backend, flows, runId)).toMatchObject({ status: "failed" });
+      expect(await backend.store.deleteRuns({ name: "gone-child" }, 10)).toBe(1);
+      fail = false;
+      expect(await retryRun(backend, runId)).toBe(true);
+      expect(await drive(backend, flows, runId)).toMatchObject({
+        status: "failed",
+        error: { code: "CHILD_GONE" },
+      });
     });
 
     it("a child of an already-terminated parent cancels itself on dispatch (crash-safe cascade)", async () => {
@@ -223,16 +270,13 @@ export const engineConformance = (
         parentCursorKey: "s0",
       });
       await backend.queue.enqueue(childId);
-      await tickOnce(backend, registry([orphan]), {
-        ...base,
-        now: () => new Date("2030-01-01T00:00:00Z"),
-      });
+      await tickOnce(backend, registry([orphan]), { ...base, now: () => T0 });
       expect((await backend.store.loadRunRow(childId))?.status).toBe("canceled");
     });
 
     it("reconcile cancels a sleeping child left behind by a dead parent", async () => {
       const backend = await makeBackend();
-      const now = (): Date => new Date("2030-01-01T00:00:00Z");
+      const now = (): Date => T0;
       const orphan = defineFlow({
         name: "orphan2",
         version: 1,
@@ -288,22 +332,24 @@ export const engineConformance = (
       expect(run).toMatchObject({ status: "done", output: [2, 4, 6] });
     });
 
-    it("rejects a fan-out beyond the cap", async () => {
+    it("rejects a fan-out beyond the flow's maxFanOut and spawns none of it", async () => {
       const backend = await makeBackend();
       const noop = defineFlow({ name: "noop", version: 1, run: async () => 1 });
       const parent = defineFlow({
         name: "toobig",
         version: 1,
+        policy: { maxFanOut: 3 },
         run: async (ctx): Promise<readonly number[]> =>
-          ctx.invoke(Array.from({ length: 10_001 }, () => ({ flow: noop, input: {} }))),
+          ctx.invoke(Array.from({ length: 4 }, () => ({ flow: noop, input: {} }))),
       });
       const runId = await submit(backend, parent, {});
       await tickOnce(backend, registry([parent, noop]), {
         ...base,
-        now: () => new Date("2030-01-01T00:00:00Z"),
-        retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+        now: () => T0,
+        retry: fastRetry(1),
       });
       expect((await backend.store.loadRunRow(runId))?.status).toBe("failed");
+      expect(await backend.store.childrenOf(runId)).toHaveLength(0);
     });
 
     it("caps invoke recursion at the depth limit and persists each run's depth", async () => {
@@ -316,11 +362,7 @@ export const engineConformance = (
         run: async (ctx, n: number): Promise<number> => ctx.invoke(recurse, n + 1),
       });
       const runId = await submit(backend, recurse, 0);
-      const top = await drive(backend, registry([recurse]), runId, {
-        maxAttempts: 1,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const top = await drive(backend, registry([recurse]), runId, fastRetry(1));
       expect(top.status).toBe("failed");
       // The tree stops growing at the cap: the deepest descendant is the one that hit it.
       let cur = runId;
@@ -335,23 +377,50 @@ export const engineConformance = (
       expect(deepest?.error?.message).toContain("depth");
     });
 
-    it("fans out a batch larger than one spawn chunk (crosses chunk boundaries)", async () => {
+    // Wide enough that the engine spawns it across several checkpoints; the chunk tests below
+    // assert they actually observed a later chunk, so a chunk size >= WIDE fails them loudly.
+    const WIDE = 100;
+    const inc = defineFlow({
+      name: "inc",
+      version: 1,
+      run: async (_ctx, n: number): Promise<number> => n + 1,
+    });
+    const wide = defineFlow({
+      name: "wide",
+      version: 1,
+      run: async (ctx): Promise<readonly number[]> =>
+        ctx.invoke(Array.from({ length: WIDE }, (_v, n) => ({ flow: inc, input: n }))),
+    });
+    const wideOutput = Array.from({ length: WIDE }, (_v, n) => n + 1);
+
+    type Commit = ReturnType<Backend["store"]["checkpointStep"]>;
+    const onFinalSpawnChunk = (real: Backend, around: (commit: () => Commit) => Commit) => {
+      let spawned = 0;
+      let fired = false;
+      const backend: Backend = {
+        ...real,
+        store: {
+          ...real.store,
+          checkpointStep: async (c, fx) => {
+            const commit = (): Commit => real.store.checkpointStep(c, fx);
+            const n = fx?.spawn?.length ?? 0;
+            if (fired || n === 0) return commit();
+            spawned += n;
+            // `spawned > n`: an earlier chunk already committed, so this one is a later chunk.
+            if (spawned < WIDE || spawned === n) return commit();
+            fired = true;
+            return around(commit);
+          },
+        },
+      };
+      return { backend, fired: () => fired };
+    };
+
+    it("fans out a batch spanning several spawn checkpoints and joins it in order", async () => {
       const backend = await makeBackend();
-      const inc = defineFlow({
-        name: "inc",
-        version: 1,
-        run: async (_ctx, n: number): Promise<number> => n + 1,
-      });
-      const parent = defineFlow({
-        name: "wide",
-        version: 1,
-        run: async (ctx): Promise<readonly number[]> =>
-          ctx.invoke(Array.from({ length: 45 }, (_v, n) => ({ flow: inc, input: n }))),
-      });
-      const runId = await submit(backend, parent, {});
-      const run = await drive(backend, registry([parent, inc]), runId);
-      expect(run.status).toBe("done");
-      expect(run.output).toEqual(Array.from({ length: 45 }, (_v, n) => n + 1));
+      const runId = await submit(backend, wide, {});
+      const run = await drive(backend, registry([wide, inc]), runId);
+      expect(run).toMatchObject({ status: "done", output: wideOutput });
     });
 
     it("fast-fails a fan-out and cancels the running siblings when one child fails", async () => {
@@ -381,11 +450,7 @@ export const engineConformance = (
           ]),
       });
       const runId = await submit(backend, parent, {});
-      const run = await drive(backend, registry([parent, boom, slow]), runId, {
-        maxAttempts: 1,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const run = await drive(backend, registry([parent, boom, slow]), runId, fastRetry(1));
       expect(run.status).toBe("failed");
       const kids = await backend.store.childrenOf(runId);
       expect(kids).toHaveLength(2);
@@ -421,11 +486,7 @@ export const engineConformance = (
           ),
       });
       const runId = await submit(backend, parent, {});
-      const run = await drive(backend, registry([parent, ok, boom]), runId, {
-        maxAttempts: 1,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const run = await drive(backend, registry([parent, ok, boom]), runId, fastRetry(1));
       expect(run).toMatchObject({
         status: "done",
         output: [
@@ -450,7 +511,7 @@ export const engineConformance = (
     const parkOnChild = async (backend: Backend, parent: AnyFlow) => {
       const flows = registry([parent, waiter]);
       const runId = await submit(backend, parent, {});
-      const now = () => new Date("2030-01-01T00:00:00Z");
+      const now = () => T0;
       await tickOnce(backend, flows, { ...base, now });
       await tickOnce(backend, flows, { ...base, now });
       expect((await backend.store.loadRunRow(runId))?.status).toBe("awaiting_child");
@@ -487,70 +548,35 @@ export const engineConformance = (
       });
     });
 
-    const wide = (inc: Flow<number, number>) =>
-      defineFlow({
-        name: "wide-chunks",
-        version: 1,
-        run: async (ctx): Promise<readonly number[]> =>
-          ctx.invoke(Array.from({ length: 45 }, (_v, n) => ({ flow: inc, input: n }))),
-      });
-    const inc = defineFlow({
-      name: "inc-chunk",
-      version: 1,
-      run: async (_ctx, n: number): Promise<number> => n + 1,
-    });
-    const secondChunk = (call?: string): boolean => call?.startsWith("invokeAll:1:") ?? false;
-
-    it("a crash right after a spawn chunk commits spawns no child twice", async () => {
+    it("a crash right after a later spawn chunk commits spawns no child twice", async () => {
       const real = await makeBackend();
-      let crashed = false;
-      const backend: Backend = {
-        ...real,
-        store: {
-          ...real.store,
-          checkpointStep: async (c, fx) => {
-            const stored = await real.store.checkpointStep(c, fx);
-            if (!crashed && secondChunk(c.call)) {
-              crashed = true;
-              throw new Error("worker died after the commit");
-            }
-            return stored;
-          },
-        },
-      };
-      const parent = wide(inc);
-      const runId = await submit(backend, parent, {});
-      const run = await drive(backend, registry([parent, inc]), runId);
-      expect(crashed).toBe(true);
-      expect(run.output).toEqual(Array.from({ length: 45 }, (_v, n) => n + 1));
-      expect(await backend.store.childrenOf(runId)).toHaveLength(45);
+      const { backend, fired } = onFinalSpawnChunk(real, async (commit) => {
+        await commit();
+        throw new Error("worker died after the commit");
+      });
+      const runId = await submit(backend, wide, {});
+      const run = await drive(backend, registry([wide, inc]), runId);
+      expect(fired()).toBe(true);
+      expect(run.output).toEqual(wideOutput);
+      expect(await backend.store.childrenOf(runId)).toHaveLength(WIDE);
     });
 
     it("a parent canceled between spawn chunks leaves no child running", async () => {
       const real = await makeBackend();
-      const parent = wide(inc);
-      const runId = await submit(real, parent, {});
-      let canceled = false;
-      const backend: Backend = {
-        ...real,
-        store: {
-          ...real.store,
-          checkpointStep: async (c, fx) => {
-            if (!canceled && secondChunk(c.call)) {
-              canceled = true;
-              await cancelRun(real, runId);
-            }
-            return real.store.checkpointStep(c, fx);
-          },
-        },
+      const runId = await submit(real, wide, {});
+      const { backend, fired } = onFinalSpawnChunk(real, async (commit) => {
+        await cancelRun(real, runId);
+        return commit();
+      });
+      const kidsSettled = async (): Promise<boolean> => {
+        const kids = await backend.store.childrenOf(runId);
+        return kids.length > 0 && kids.every((k) => isTerminal(k.status));
       };
-      const flows = registry([parent, inc]);
-      const now = () => new Date("2030-01-01T00:00:00Z");
-      for (let i = 0; i < 10; i++) await tickOnce(backend, flows, { ...base, now });
-      expect(canceled).toBe(true);
+      await tickUntil(backend, registry([wide, inc]), kidsSettled);
+      expect(fired()).toBe(true);
       expect((await backend.store.loadRunRow(runId))?.status).toBe("canceled");
       const kids = await backend.store.childrenOf(runId);
-      expect(kids.length).toBeGreaterThan(0);
+      expect(kids).toHaveLength(WIDE);
       expect(kids.every((k) => k.status === "canceled")).toBe(true);
     });
 
@@ -567,7 +593,7 @@ export const engineConformance = (
         run: async (ctx): Promise<number> => ctx.invoke(quick, {}),
       });
       const flows = registry([parent, quick]);
-      const now = () => new Date("2030-01-01T00:00:00Z");
+      const now = () => T0;
       let raced = false;
       // The parent reads its child as still pending, and the child finishes (waking the leased
       // parent) before the parent parks — the wake must survive the parent's own ack.
@@ -595,7 +621,6 @@ export const engineConformance = (
 
     it("a re-enqueue with no priority keeps the run's own priority", async () => {
       const backend = await makeBackend();
-      const at = (ms: number): Date => new Date(Date.UTC(2030, 0, 1) + ms);
       const low = (await backend.store.startRun({ name: "p", version: 1, input: {}, priority: 10 }))
         .runId;
       const urgent = (
@@ -648,9 +673,9 @@ export const engineConformance = (
       const backend = await makeBackend();
       const v1 = defineFlow({ name: "wf", version: 1, run: async (): Promise<string> => "v1" });
       const v2 = defineFlow({ name: "wf", version: 2, run: async (): Promise<string> => "v2" });
-      const fast: RetryPolicy = { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 };
+      const fast = fastRetry(3);
       const runId = await submit(backend, v2, {});
-      let clock = new Date("2030-01-01T00:00:00Z");
+      let clock = T0;
       const now = (): Date => clock;
       // A worker running only v1 shares the "wf" name, so it claims the v2 run but can't advance it.
       await tickOnce(backend, registry([v1]), { ...base, now, retry: fast });
@@ -677,14 +702,12 @@ export const engineConformance = (
         },
       });
       const flows = registry([flow]);
-      const t0 = new Date("2030-01-01T00:00:00Z");
       const runId = await submit(backend, flow, {});
-      await tickOnce(backend, flows, { ...base, now: () => t0 });
+      await tickOnce(backend, flows, { ...base, now: () => T0 });
       expect((await backend.store.loadRunRow(runId))?.status).toBe("awaiting_signal");
       // Collision: at the exact deadline the timeout timer is due AND a signal sits in the inbox.
-      const deadline = new Date(t0.getTime() + 5_000);
       await signalRun(backend, runId, "go", "ok");
-      const run = await drive(backend, flows, runId, undefined, deadline);
+      const run = await drive(backend, flows, runId, undefined, at(5_000));
       expect(run).toMatchObject({ status: "done", output: "signal:ok" });
     });
 
@@ -700,10 +723,7 @@ export const engineConformance = (
         },
       });
       const runId = await submit(backend, flow, {});
-      await tickOnce(backend, registry([flow]), {
-        ...base,
-        now: () => new Date("2030-01-01T00:00:00Z"),
-      });
+      await tickOnce(backend, registry([flow]), { ...base, now: () => T0 });
       const run = await drive(backend, registry([flow]), runId);
       expect(run).toMatchObject({ status: "done", output: "timeout" });
     });
@@ -726,13 +746,10 @@ export const engineConformance = (
         },
       });
       const runId = await submit(backend, flow, {});
-      const run = await drive(backend, registry([flow]), runId, {
-        maxAttempts: 5,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-      });
+      const run = await drive(backend, registry([flow]), runId, fastRetry(5));
       expect(run).toMatchObject({ status: "done", output: 42 });
       expect(stepCalls).toBe(1);
+      expect(invocations).toBe(2);
     });
 
     it("reconcile re-drives a run stranded off the queue (crash between start and enqueue)", async () => {
@@ -742,32 +759,19 @@ export const engineConformance = (
         version: 1,
         run: async (): Promise<string> => "recovered",
       });
-      const flows = registry([flow]);
       const { runId } = await backend.store.startRun({ name: "stranded", version: 1, input: {} });
-      let clock = new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      for (let i = 0; i < 10; i++) {
-        await reconcile(backend, { limit: 16 });
-        await tickOnce(backend, flows, { ...base, now });
-        const r = await backend.store.loadRunRow(runId);
-        if (r && isTerminal(r.status)) break;
-        clock = new Date(clock.getTime() + 60_000);
-      }
-      expect(await backend.store.loadRunRow(runId)).toMatchObject({
-        status: "done",
-        output: "recovered",
-      });
+      await reconcile(backend, { limit: 16 });
+      const run = await drive(backend, registry([flow]), runId);
+      expect(run).toMatchObject({ status: "done", output: "recovered" });
     });
 
     it("a reclaimed run fences the crashed worker — its stale ack and duplicate commit don't corrupt the new owner", async () => {
       const { store, queue } = await makeBackend();
       const { runId } = await store.startRun({ name: "f", version: 1, input: {} });
       await queue.enqueue(runId);
-      const t0 = new Date("2030-01-01T00:00:00Z");
-      const [a] = await queue.claim({ limit: 1, leaseMs: 1_000, now: t0 });
+      const [a] = await queue.claim({ limit: 1, leaseMs: 1_000, now: T0 });
       // A's lease expires; B reclaims and commits real progress.
-      const t1 = new Date(t0.getTime() + 2_000);
-      const [b] = await queue.claim({ limit: 1, leaseMs: 600_000, now: t1 });
+      const [b] = await queue.claim({ limit: 1, leaseMs: 600_000, now: at(2_000) });
       expect(b?.runId).toBe(runId);
       await store.checkpointStep({
         runId,
@@ -785,11 +789,11 @@ export const engineConformance = (
         attempts: 1,
       });
       expect(late.result).toBe("B");
-      await queue.ack(a!, { now: new Date(t1.getTime() + 1_000) });
+      await queue.ack(a!, { now: at(3_000) });
       expect((await store.loadRun(runId))?.steps.get("s0")?.result).toBe("B");
       // B's lease survived A's stale ack — a heartbeat still renews it.
       await expect(
-        queue.heartbeat(b!, { leaseMs: 600_000, now: new Date(t1.getTime() + 1_000) }),
+        queue.heartbeat(b!, { leaseMs: 600_000, now: at(3_000) }),
       ).resolves.toBeDefined();
     });
 
@@ -809,49 +813,94 @@ export const engineConformance = (
       const { store, queue } = backend;
       const { runId } = await store.startRun({ name: "cancelable", version: 1, input: {} });
       await queue.enqueue(runId);
-      const t0 = new Date("2030-01-01T00:00:00Z");
-      const [lease] = await queue.claim({ limit: 1, leaseMs: 600_000, now: t0 });
+      const [lease] = await queue.claim({ limit: 1, leaseMs: 600_000, now: T0 });
       // Cancel arrives while the worker holds a live lease, before its tick observes the run.
       await cancelRun(backend, runId);
-      const result = await runTick(backend, flows, lease!, { ...base, now: () => t0 });
+      const result = await runTick(backend, flows, lease!, { ...base, now: () => T0 });
       expect(result.status).toBe("already_terminal");
       expect((await store.loadRunRow(runId))?.status).toBe("canceled");
       expect(bodyRan).toBe(0);
-      const after = await queue.claim({
-        limit: 1,
-        leaseMs: 1_000,
-        now: new Date(t0.getTime() + 1_000),
-      });
-      expect(after).toHaveLength(0);
+      expect(await queue.claim({ limit: 1, leaseMs: 1_000, now: at(1_000) })).toHaveLength(0);
     });
 
     it("two disjoint worker registries drive their own flows to completion against one backend", async () => {
       const backend = await makeBackend();
       const a = defineFlow({ name: "sa", version: 1, run: async (): Promise<string> => "a-done" });
       const b = defineFlow({ name: "sb", version: 1, run: async (): Promise<string> => "b-done" });
-      const podA = registry([a]);
-      const podB = registry([b]);
       const idA = await submit(backend, a, {});
       const idB = await submit(backend, b, {});
-      let clock = new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      for (let i = 0; i < 10; i++) {
-        // Two registries share one backend; each claims only the flow it registered (name shard).
-        await tickOnce(backend, podA, { ...base, now });
-        await tickOnce(backend, podB, { ...base, now });
-        const ra = await backend.store.loadRunRow(idA);
-        const rb = await backend.store.loadRunRow(idB);
-        if (ra && rb && isTerminal(ra.status) && isTerminal(rb.status)) break;
-        clock = new Date(clock.getTime() + 60_000);
-      }
-      expect(await backend.store.loadRunRow(idA)).toMatchObject({
+      expect(await drive(backend, registry([a]), idA)).toMatchObject({
         status: "done",
         output: "a-done",
       });
-      expect(await backend.store.loadRunRow(idB)).toMatchObject({
+      expect((await backend.store.loadRunRow(idB))?.status).toBe("pending");
+      expect(await drive(backend, registry([b]), idB)).toMatchObject({
         status: "done",
         output: "b-done",
       });
+    });
+
+    it("a skip-overlap cron starts no second run while its first is still live", async () => {
+      const backend = await makeBackend();
+      const slow = defineFlow<Record<string, never>, string>({
+        name: "cron-slow",
+        version: 1,
+        run: async (ctx) => {
+          await ctx.sleep(3_600_000);
+          return "ok";
+        },
+      });
+      const def = { name: "every-min", schedule: "* * * * *", flow: slow, input: {} };
+      await registerCron(backend, { ...def, overlap: "skip" }, () => T0);
+      expect(await runDueCrons(backend, () => at(60_000))).toBe(1);
+      await tickOnce(backend, registry([slow]), {
+        batchMax: 10,
+        leaseMs: 60_000,
+        now: () => at(60_000),
+      });
+      await runDueCrons(backend, () => at(120_000));
+      const { runs } = await backend.store.listRuns({ tag: cronTag("every-min") }, { limit: 10 });
+      expect(runs.map((r) => r.status)).toEqual(["sleeping"]);
+      const [cron] = await backend.store.listCrons();
+      expect(cron?.nextRunAt.getTime()).toBeGreaterThan(at(120_000).getTime());
+    });
+
+    it("serverlessTick reports wake-now while due timers are left over", async () => {
+      const backend = await makeBackend();
+      const nap = defineFlow<Record<string, never>, string>({
+        name: "overdue-nap",
+        version: 1,
+        run: async (ctx) => {
+          await ctx.sleep(1_000);
+          return "woke";
+        },
+      });
+      const flows = registry([nap]);
+      for (let i = 0; i < 3; i++) await submit(backend, nap, {});
+      await tickOnce(backend, flows, { batchMax: 10, leaseMs: 60_000, now: () => T0 });
+      const swept = await serverlessTick(backend, flows, {
+        batchMax: 1,
+        leaseMs: 60_000,
+        now: () => at(5_000),
+      });
+      expect(swept.nextWakeAt?.getTime()).toBe(at(5_000).getTime());
+    });
+
+    it("serverlessTick reports the next cron fire as its wake horizon", async () => {
+      const backend = await makeBackend();
+      const noop = defineFlow<Record<string, never>, number>({
+        name: "cron-noop",
+        version: 1,
+        run: async () => 1,
+      });
+      const def = { name: "hourly", schedule: "0 * * * *", flow: noop, input: {} };
+      await registerCron(backend, def, () => T0);
+      const swept = await serverlessTick(backend, registry([noop]), {
+        batchMax: 10,
+        leaseMs: 60_000,
+        now: () => T0,
+      });
+      expect(swept.nextWakeAt?.getTime()).toBe(at(3_600_000).getTime());
     });
 
     it("serverlessTick advances a durable sleep and reports the next wake horizon (no resident loop)", async () => {
@@ -865,7 +914,7 @@ export const engineConformance = (
         },
       });
       const flows = registry([flow]);
-      let clock = new Date("2030-01-01T00:00:00Z");
+      let clock = T0;
       const now = (): Date => clock;
       const runId = await submit(backend, flow, {});
       const s1 = await serverlessTick(backend, flows, { ...base, now });

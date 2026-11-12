@@ -1,4 +1,8 @@
-import { assertSqlIdentifier } from "@iterativeflow/core/backend";
+import {
+  TERMINAL_STATUSES,
+  assertSqlIdentifier,
+  sqlStatusTuple,
+} from "@iterativeflow/core/backend";
 import { text } from "#codec";
 import type { Sql } from "#sql";
 
@@ -50,9 +54,10 @@ CREATE INDEX IF NOT EXISTS ${t.run}_parent ON ${t.run} (parent_run_id) WHERE par
 CREATE UNIQUE INDEX IF NOT EXISTS ${t.run}_idem
   ON ${t.run} (name, version, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ${t.run}_status ON ${t.run} (status);
--- See the Postgres schema: status belongs in the key, not just the partial predicate.
+-- status in the key, not only the partial predicate: the predicate decides membership, the key
+-- lets a filtered purge seek one terminal status.
 CREATE INDEX IF NOT EXISTS ${t.run}_purge ON ${t.run} (name, status, created_at)
-  WHERE status IN ('done','failed','canceled');
+  WHERE status IN ${sqlStatusTuple(TERMINAL_STATUSES)};
 
 CREATE TABLE IF NOT EXISTS ${t.step} (
   run_id     TEXT NOT NULL REFERENCES ${t.run}(id),

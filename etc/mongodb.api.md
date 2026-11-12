@@ -22,7 +22,7 @@ interface MongoBackendOpts {
  * single-node one) — MongoDB requires that for transactions. Wakeup is in-process. Run
  * {@link ensureIndexes} once before use.
  */
-declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts, boundSession?: ClientSession) => Backend;
+declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts) => Backend;
 //#endregion
 //#region src/collections.d.ts
 /**
@@ -30,8 +30,8 @@ declare const createMongoBackend: (client: MongoClient, opts?: MongoBackendOpts,
  * once before use. `ord` is a per-document ObjectId giving a total insertion order (Mongo has no
  * auto-increment); the idempotency and signal-dedup indexes are partial
  * (`partialFilterExpression`) so unkeyed docs never
- * collide. `steps` use a composite string `_id` (`runId:cursorKey`) so a duplicate insert is a clean
- * first-writer-wins conflict.
+ * collide. `steps` use a composite string `_id` (`runId:cursorKey`) so a checkpoint upserts on its
+ * key and the first writer wins.
  */
 declare const ensureIndexes: (db: Db, prefix?: string) => Promise<void>;
 //#endregion
@@ -58,8 +58,10 @@ declare const pendingWorkPipeline: (now: Date | number, opts?: {
  * so a failed request never leaves an orphan run or a dangling job. Requires a replica set (MongoDB
  * transactions do).
  *
- * Only the write path joins the transaction: reads via the bound backend (e.g. `store.loadRun`) do
- * NOT observe the transaction's own uncommitted writes — unlike a SQL read-your-own-write.
+ * Run starts, enqueues, timer schedule/cancel and the Store's transactional writes (signals, status
+ * changes, checkpoints, bulk cancel/retry) join the transaction. Reads via the bound backend (e.g.
+ * `store.loadRun`) do NOT observe the transaction's own uncommitted writes — unlike a SQL
+ * read-your-own-write.
  *
  * @example
  * await inTx(client, async (backend, session) => {

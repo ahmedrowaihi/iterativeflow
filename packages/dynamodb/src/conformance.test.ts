@@ -1,28 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { BatchWriteCommand, ScanCommand, type ScanCommandInput } from "@aws-sdk/lib-dynamodb";
-import {
-  claimFilterConformance,
-  shardedClaimConformance,
-  cronConformance,
-  engineConformance,
-  outboxConformance,
-  pendingWorkConformance,
-  queueConformance,
-  reconcileConformance,
-  signalConformance,
-  storeConformance,
-  timerConformance,
-  wakeupConformance,
-} from "@iterativeflow/conformance";
-import {
-  type Backend,
-  defineFlow,
-  registry,
-  serverlessTick,
-  submit,
-  tickOnce,
-} from "@iterativeflow/core";
+import { backendConformance } from "@iterativeflow/conformance";
+import type { Backend } from "@iterativeflow/core";
 import {
   DEFAULT_TABLE,
   REQUIRED_IAM_ACTIONS,
@@ -92,51 +72,15 @@ describe.skipIf(skip)("dynamodb backend", () => {
   };
 
   // The exact same suites the memory + postgres backends pass — one spec, every implementation.
-  storeConformance("dynamodb", async () => (await makeBackend()).store);
-  queueConformance("dynamodb", async () => (await makeBackend()).queue);
-  claimFilterConformance("dynamodb", () => makeBackend());
-  shardedClaimConformance("dynamodb", () => makeBackend());
-  pendingWorkConformance("dynamodb", () => makeBackend());
-  timerConformance("dynamodb", async () => (await makeBackend()).timer);
-  wakeupConformance("dynamodb", async () => (await makeBackend()).wakeup);
-  outboxConformance("dynamodb", () => makeBackend());
-  signalConformance("dynamodb", () => makeBackend());
-  reconcileConformance("dynamodb", () => makeBackend());
-  cronConformance("dynamodb", async () => (await makeBackend()).store);
-  engineConformance("dynamodb", () => makeBackend());
+  backendConformance("dynamodb", () => makeBackend(), { concurrentWriters: true });
 
   // These need REAL concurrency + a real TransactWriteItems — memory (single-threaded) can't prove them.
   describe("atomicity + concurrency", () => {
-    it("concurrent first-writer-wins: N parallel checkpoints on one key spawn exactly one child", async () => {
-      const backend = await makeBackend();
-      const { runId } = await backend.store.startRun({ name: "p", version: 1, input: {} });
-      const childIds = Array.from({ length: 8 }, () => randomUUID());
-
-      const results = await Promise.all(
-        childIds.map((cid) =>
-          backend.store
-            .checkpointStep(
-              { runId, cursorKey: "spawn", status: "ok", result: cid, attempts: 1 },
-              { spawn: [{ runId: cid, spec: { name: "c", version: 1, input: {} } }] },
-            )
-            .then((o) => o.result),
-        ),
-      );
-
-      expect(new Set(results).size).toBe(1); // every racer agrees on ONE winner
-      const winner = results[0];
-      const created = (await Promise.all(childIds.map((cid) => backend.store.loadRun(cid)))).filter(
-        Boolean,
-      );
-      expect(created).toHaveLength(1); // losers' childIds were never created
-      expect(created[0]?.run.id).toBe(winner);
-    });
-
     it("a failing outbox rolls back the step — the write is atomic, not torn", async () => {
       const clean = await makeBackend();
       const { runId } = await clean.store.startRun({ name: "f", version: 1, input: {} });
 
-      // Reject the checkpoint's TransactWriteItems (it carries a JOB# enqueue). A non-atomic
+      // Reject the checkpoint's TransactWriteItems (its spawn carries a JOB# enqueue). A non-atomic
       // backend would have already written the step; an atomic one writes nothing.
       const faultyLow = connect();
       const faulty = docClient(faultyLow);
@@ -152,7 +96,7 @@ describe.skipIf(skip)("dynamodb backend", () => {
       await expect(
         faultyBackend.store.checkpointStep(
           { runId, cursorKey: "x", status: "ok", result: 1, attempts: 1 },
-          { enqueue: [{ runId }] },
+          { spawn: [{ runId: randomUUID(), spec: { name: "c", version: 1, input: {} } }] },
         ),
       ).rejects.toThrow();
       faultyLow.destroy();
@@ -200,89 +144,9 @@ describe.skipIf(skip)("dynamodb backend", () => {
         ),
       ).rejects.toThrow(/transaction budget/);
     });
-
-    it("concurrent claims lease each run to exactly one worker", async () => {
-      const backend = await makeBackend();
-      const ids: string[] = [];
-      for (let i = 0; i < 20; i++) {
-        const { runId } = await backend.store.startRun({ name: "f", version: 1, input: { i } });
-        ids.push(runId);
-      }
-      for (const runId of ids) await backend.queue.enqueue(runId);
-      const now = new Date("2030-01-01T00:00:00Z");
-      const batches = await Promise.all(
-        Array.from({ length: 4 }, () => backend.queue.claim({ limit: 10, leaseMs: 1000, now })),
-      );
-      const claimed = batches.flat().map((l) => l.runId);
-      expect(claimed).toHaveLength(20); // all leased, none dropped
-      expect(new Set(claimed).size).toBe(20); // and none leased twice
-    });
   });
 
-  // The whole durable executor, driven on real DynamoDB — steps, sleep, retry, invoke.
-  describe("engine end-to-end", () => {
-    const TERMINAL = new Set(["done", "failed", "canceled"]);
-
-    const driveToSettle = async (
-      backend: Backend,
-      flows: ReturnType<typeof registry>,
-      runId: string,
-    ): Promise<{ status: string; output: unknown }> => {
-      let clock = new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      for (let i = 0; i < 100; i++) {
-        await tickOnce(backend, flows, { batchMax: 16, leaseMs: 600_000, now });
-        const run = (await backend.store.loadRun(runId))?.run;
-        if (run && TERMINAL.has(run.status)) return { status: run.status, output: run.output };
-        clock = new Date(clock.getTime() + 2_000);
-      }
-      throw new Error("run did not settle");
-    };
-
-    it("invokes a child flow across the outbox and resumes with its output", async () => {
-      const backend = await makeBackend();
-      const child = defineFlow<{ n: number }, number>({
-        name: "ddb-child",
-        version: 1,
-        run: async (_ctx, input) => input.n * 10,
-      });
-      const parent = defineFlow<{ n: number }, number>({
-        name: "ddb-parent",
-        version: 1,
-        run: async (ctx, input) => (await ctx.invoke(child, { n: input.n })) + 1,
-      });
-      const flows = registry([parent, child]);
-      const runId = await submit(backend, parent, { n: 5 });
-      const settled = await driveToSettle(backend, flows, runId);
-      expect(settled).toMatchObject({ status: "done", output: 51 }); // (5*10)+1
-    });
-
-    it("serverlessTick advances a durable sleep across invocations (the cron-Lambda model)", async () => {
-      const backend = await makeBackend();
-      const flow = defineFlow<Record<string, never>, string>({
-        name: "ddb-nap",
-        version: 1,
-        run: async (ctx) => {
-          await ctx.sleep(60_000);
-          return "woke";
-        },
-      });
-      const flows = registry([flow]);
-      let clock = new Date("2030-01-01T00:00:00Z");
-      const now = (): Date => clock;
-      const opts = { batchMax: 16, leaseMs: 600_000, now };
-
-      const runId = await submit(backend, flow, {});
-      const s1 = await serverlessTick(backend, flows, opts);
-      expect(s1.results.map((r) => r.status)).toContain("sleeping");
-      // A later invocation, past the deadline, drains the timer and resumes — no loop between them.
-      clock = new Date(clock.getTime() + 61_000);
-      await serverlessTick(backend, flows, opts);
-      expect((await backend.store.loadRun(runId))?.run.output).toBe("woke");
-    });
-  });
-
-  it("tableSpec matches what ensureTable provisions, and names the required IAM actions", () => {
+  it("tableSpec matches what ensureTable provisions, and names the required IAM actions", async () => {
     const spec = tableSpec("mytable");
     expect(spec.TableName).toBe("mytable");
     expect(spec.KeySchema).toEqual([
@@ -290,7 +154,43 @@ describe.skipIf(skip)("dynamodb backend", () => {
       { AttributeName: "sk", KeyType: "RANGE" },
     ]);
     expect(spec.GlobalSecondaryIndexes?.[0].IndexName).toBe("gsi1");
-    expect(REQUIRED_IAM_ACTIONS).toContain("dynamodb:TransactWriteItems");
-    expect(REQUIRED_IAM_ACTIONS).toContain("dynamodb:ConditionCheckItem");
+
+    const sent = new Set<string>();
+    const recording = docClient(low);
+    recording.middlewareStack.add(
+      (next, context) => async (args) => {
+        // The document client hands its commands to the low-level client, so this sees the wire
+        // operation name (`GetItemCommand`), which is the IAM action plus a suffix.
+        sent.add(`dynamodb:${String(context.commandName).replace(/Command$/, "")}`);
+        const input: object = args.input;
+        const items =
+          "TransactItems" in input && Array.isArray(input.TransactItems) ? input.TransactItems : [];
+        if (items.some((i) => "ConditionCheck" in i)) {
+          sent.add("dynamodb:ConditionCheckItem");
+        }
+        return next(args);
+      },
+      { step: "initialize", name: "iam-recorder" },
+    );
+    await clearTable();
+    const b = createDynamoBackend(recording, { table: TABLE });
+    const { runId } = await b.store.startRun({ name: "f", version: 1, input: {} });
+    await b.store.startRun({ name: "f", version: 1, input: {}, idempotencyKey: "k" });
+    await b.store.loadRunRow(runId);
+    await b.store.loadRunRows([runId]);
+    await b.queue.enqueue(runId);
+    const [lease] = await b.queue.claim({ limit: 1, leaseMs: 60_000 });
+    await b.store.checkpointStep(
+      { runId, cursorKey: "s", status: "ok", result: 1, attempts: 1 },
+      { requireVersion: lease.version },
+    );
+    await b.queue.ack(lease);
+    await b.timer.schedule(runId, new Date());
+    await b.timer.cancel(runId);
+    await b.store.markTerminal(runId, { status: "done", output: 1 });
+    await b.store.listRuns({}, { limit: 10 });
+    await b.store.orphanedRuns(10);
+    await b.store.deleteRuns({ before: new Date(Date.now() + 60_000) }, 10);
+    expect([...sent].sort()).toEqual([...REQUIRED_IAM_ACTIONS].sort());
   });
 });

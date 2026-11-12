@@ -2,13 +2,43 @@ import {
   type EnqueueOpts,
   type EnqueueRequest,
   type Outbox,
+  type RunSpec,
   distinctEnqueues,
 } from "@iterativeflow/core/backend";
 import { j } from "#codec";
 import type { Tables } from "#schema";
-import type { Sql } from "#sql";
+import type { Sql, SqlRow } from "#sql";
 
-const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
+/** @internal */
+export const inList = (n: number): string => `(${Array.from({ length: n }, () => "?").join(",")})`;
+
+/** @internal */
+export const insertRunStmt = (
+  sql: Sql,
+  t: Tables,
+  runId: string,
+  spec: RunSpec,
+  onConflict: string,
+): Promise<SqlRow[]> =>
+  sql.query(
+    `INSERT INTO ${t.run}
+       (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+     ${onConflict}`,
+    [
+      runId,
+      spec.name,
+      spec.version,
+      j(spec.input),
+      spec.idempotencyKey || null,
+      j(spec.tags),
+      spec.parentRunId ?? null,
+      spec.parentCursorKey ?? null,
+      spec.depth ?? 0,
+      spec.priority ?? 0,
+      (spec.createdAt ?? new Date()).getTime(),
+    ],
+  );
 
 // 4 binds per row, under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
 const ENQUEUE_ROWS_PER_STATEMENT = 249;
@@ -62,31 +92,14 @@ export const scheduleStmt = async (
 /** @internal */
 export const applyOutbox = async (sql: Sql, t: Tables, fx: Outbox): Promise<void> => {
   for (const s of fx.spawn ?? []) {
-    await sql.query(
-      `INSERT INTO ${t.run}
-         (id, name, version, status, input, idempotency_key, tags, parent_run_id, parent_cursor_key, depth, priority, created_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO NOTHING`,
-      [
-        s.runId,
-        s.spec.name,
-        s.spec.version,
-        j(s.spec.input),
-        s.spec.idempotencyKey ?? null,
-        j(s.spec.tags),
-        s.spec.parentRunId ?? null,
-        s.spec.parentCursorKey ?? null,
-        s.spec.depth ?? 0,
-        s.spec.priority ?? 0,
-        (s.spec.createdAt ?? new Date()).getTime(),
-      ],
-    );
+    await insertRunStmt(sql, t, s.runId, s.spec, "ON CONFLICT(id) DO NOTHING");
   }
-  const enqueues = [
-    ...(fx.spawn ?? []).map((s) => ({ runId: s.runId, opts: s.enqueue })),
-    ...(fx.enqueue ?? []),
-  ];
-  if (enqueues.length) await enqueueManyStmt(sql, t, enqueues);
+  if (fx.spawn?.length)
+    await enqueueManyStmt(
+      sql,
+      t,
+      fx.spawn.map((s) => ({ runId: s.runId })),
+    );
   for (const tm of fx.timers ?? []) await scheduleStmt(sql, t, tm.runId, tm.fireAt);
   if (fx.cancelTimers?.length) {
     await sql.query(

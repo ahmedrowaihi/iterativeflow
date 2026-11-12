@@ -1,6 +1,7 @@
 import { type Backend, type IdGen, createLocalWakeup, newId } from "@iterativeflow/core/backend";
 import type { PgListener } from "#notify";
 import { createPgQueue } from "#queue";
+import { DEFAULT_SCHEMA } from "#schema";
 import { createPgStore } from "#store";
 import type { Sql } from "#sql";
 import { createPgTimer } from "#timer";
@@ -24,7 +25,7 @@ export interface PgBackendOpts {
  * transactional domain the seam requires. Pass a pool via {@link pgPool} (or any {@link Sql}).
  */
 export const createPgBackend = (sql: Sql, opts: PgBackendOpts = {}): Backend => {
-  const schema = opts.schema ?? "workflow";
+  const schema = opts.schema ?? DEFAULT_SCHEMA;
   const id = opts.id ?? newId;
   const queue = createPgQueue(sql, schema, id);
   return {

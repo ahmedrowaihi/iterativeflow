@@ -1,13 +1,15 @@
-import type {
-  ClaimOpts,
-  EnqueueOpts,
-  EnqueueRequest,
-  IdGen,
-  Lease,
-  Queue,
+import {
+  type ClaimOpts,
+  type EnqueueOpts,
+  type EnqueueRequest,
+  type IdGen,
+  type Lease,
+  type Queue,
+  distinctEnqueues,
+  enqueueFields,
+  queueDepthOf,
 } from "@iterativeflow/core/backend";
-import { distinctEnqueues, queueDepthOf } from "@iterativeflow/core/backend";
-import type { ClientSession, Collection, Db, UpdateFilter } from "mongodb";
+import type { ClientSession, Collection, Db, Filter, UpdateFilter } from "mongodb";
 import type { RunDoc } from "#codec";
 import type { Names } from "#collections";
 
@@ -21,16 +23,23 @@ export interface JobDoc {
   lease_expires?: number;
 }
 
+const unleasedAt = (at: number): Filter<JobDoc> => ({
+  $or: [{ lease_expires: { $exists: false } }, { lease_expires: { $lte: at } }],
+});
+
+/** @internal */
+export const claimableJobs = (at: number): Filter<JobDoc> => ({
+  run_at: { $lte: at },
+  ...unleasedAt(at),
+});
+
 const jobUpdate = (
   opts: EnqueueOpts | undefined,
   runPriority: number | undefined,
-): UpdateFilter<JobDoc> => ({
-  $set: {
-    run_at: opts?.runAt ? opts.runAt.getTime() : 0,
-    priority: opts?.priority ?? runPriority ?? 0,
-  },
-  $inc: { version: 1 },
-});
+): UpdateFilter<JobDoc> => {
+  const { runAtMs, priority } = enqueueFields(opts, runPriority);
+  return { $set: { run_at: runAtMs, priority }, $inc: { version: 1 } };
+};
 
 /** @internal */
 export const enqueueJobs = async (
@@ -85,30 +94,37 @@ export const createMongoQueue = (
     async claim({ limit, leaseMs, now, names }: ClaimOpts) {
       if (names?.length === 0) return [];
       const t = ms(now);
-      const unleased = [{ lease_expires: { $exists: false } }, { lease_expires: { $lte: t } }];
-      let candidates = await jobs
-        .find({ run_at: { $lte: t }, $or: unleased })
-        .sort({ priority: 1, run_at: 1 })
-        .limit(limit)
+      // The name filter runs before the limit: limiting first lets other shards' higher-ranked
+      // jobs fill every page and starve this one. A run-less job passes (see ClaimOpts.names).
+      const shard = names
+        ? [
+            {
+              $lookup: {
+                from: n.runs,
+                localField: "_id",
+                foreignField: "_id",
+                pipeline: [{ $project: { name: 1 } }],
+                as: "run",
+              },
+            },
+            { $match: { $or: [{ run: { $size: 0 } }, { "run.name": { $in: [...names] } }] } },
+          ]
+        : [];
+      const candidates = await jobs
+        .aggregate<Pick<JobDoc, "_id">>([
+          { $match: claimableJobs(t) },
+          { $sort: { priority: 1, run_at: 1 } },
+          ...shard,
+          { $limit: limit },
+          { $project: { _id: 1 } },
+        ])
         .toArray();
-      if (names) {
-        const wanted = new Set(names);
-        const present = await runs
-          .find({ _id: { $in: candidates.map((c) => c._id) } })
-          .project<{ _id: string; name: string }>({ name: 1 })
-          .toArray();
-        const nameById = new Map(present.map((r) => [r._id, r.name]));
-        candidates = candidates.filter((c) => {
-          const name = nameById.get(c._id);
-          return name === undefined || wanted.has(name);
-        });
-      }
       const leases: Lease[] = [];
       for (const cand of candidates) {
         const token = `${id()}:${cand._id}`;
         const expires = t + leaseMs;
         const won = await jobs.findOneAndUpdate(
-          { _id: cand._id, $or: unleased },
+          { _id: cand._id, ...unleasedAt(t) },
           { $set: { lease_token: token, lease_expires: expires } },
           { returnDocument: "before" },
         );
@@ -150,6 +166,7 @@ export const createMongoQueue = (
     },
 
     async depth(now, names) {
+      if (names?.length === 0) return queueDepthOf([], ms(now));
       let all = await jobs
         .find({})
         .project<{ _id: string; run_at: number; lease_expires?: number }>({
@@ -157,7 +174,6 @@ export const createMongoQueue = (
           lease_expires: 1,
         })
         .toArray();
-      if (names?.length === 0) return queueDepthOf([], ms(now));
       if (names) {
         // a run-less job is unownable, so it passes every name filter (see Queue.claim)
         const rejected = await runs

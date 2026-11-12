@@ -8,6 +8,16 @@ export interface StartedMongo {
   client: MongoClient;
 }
 
+// Transactions need a primary, and election takes a moment after replSetInitiate.
+const awaitPrimary = async (client: MongoClient): Promise<void> => {
+  for (let i = 0; i < 40; i++) {
+    const hello = await client.db("admin").command({ hello: 1 });
+    if (hello.isWritablePrimary) return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error("mongo test container: no writable primary after replSetInitiate");
+};
+
 /** @internal */
 export const startMongo = async (db: string): Promise<StartedMongo> => {
   const container = await new GenericContainer("mongo:7")
@@ -18,16 +28,8 @@ export const startMongo = async (db: string): Promise<StartedMongo> => {
   const uri = `mongodb://${container.getHost()}:${container.getMappedPort(27017)}/?directConnection=true`;
   const client = new MongoClient(uri);
   await client.connect();
-  await client
-    .db("admin")
-    .command({ replSetInitiate: {} })
-    .catch(() => undefined);
-  // transactions need a primary, and election takes a moment after replSetInitiate
-  for (let i = 0; i < 40; i++) {
-    const hello = await client.db("admin").command({ hello: 1 });
-    if (hello.isWritablePrimary) break;
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  await client.db("admin").command({ replSetInitiate: {} });
+  await awaitPrimary(client);
   await ensureIndexes(client.db(db));
   return { container, client };
 };

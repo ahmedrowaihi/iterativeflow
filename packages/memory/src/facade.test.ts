@@ -1,8 +1,7 @@
 import { type Contract, createEngine, defineFlow } from "@iterativeflow/core";
-import { describe, expect, it } from "vitest";
+import { isTerminal } from "@iterativeflow/core/backend";
+import { describe, expect, it, vi } from "vitest";
 import { createMemoryBackend } from "#index";
-
-const TERMINAL = new Set(["done", "failed", "canceled"]);
 
 describe("createEngine — the cohesive facade", () => {
   it("drives submit → tick → status/result through one object", async () => {
@@ -18,7 +17,7 @@ describe("createEngine — the cohesive facade", () => {
     const runId = await engine.submit(flow, { x: 21 });
     for (let i = 0; i < 5; i++) {
       const snap = await engine.status(runId);
-      if (snap && TERMINAL.has(snap.run.status)) break;
+      if (snap && isTerminal(snap.run.status)) break;
       await engine.tick();
     }
     const res = await engine.result(runId, { timeoutMs: 1_000 });
@@ -76,7 +75,7 @@ describe("createEngine — the cohesive facade", () => {
     await expect(engine.submit(flow, { blob: "ok" })).resolves.toBeTruthy();
   });
 
-  it("a throwing background tick surfaces to tickError, never an unhandled rejection", async () => {
+  it("a throwing background tick surfaces to tickError, never an unhandled rejection (real event loop)", async () => {
     const flow = defineFlow<Record<string, never>, string>({
       name: "x",
       version: 1,
@@ -99,7 +98,7 @@ describe("createEngine — the cohesive facade", () => {
     process.on("unhandledRejection", onRej);
     try {
       const stop = engine.run({ tickMs: 5, maintenanceMs: 1_000 });
-      await new Promise((r) => setTimeout(r, 40));
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0), { timeout: 2_000 });
       await stop();
     } finally {
       process.off("unhandledRejection", onRej);
@@ -124,31 +123,55 @@ describe("createEngine — the cohesive facade", () => {
   });
 
   it("exposes cancel and retry through the facade", async () => {
+    let fail = true;
     const flow = defineFlow<Record<string, never>, string>({
-      name: "cancelable",
+      name: "flaky",
       version: 1,
-      run: async () => "done",
+      run: async (ctx) =>
+        ctx.step("s", () => {
+          if (fail) throw new Error("boom");
+          return "done";
+        }),
     });
-    const engine = createEngine(createMemoryBackend(), [flow]);
-    const runId = await engine.submit(flow, {});
-    await engine.cancel(runId);
-    expect((await engine.status(runId))?.run.status).toBe("canceled");
+    const engine = createEngine(createMemoryBackend(), [flow], {
+      retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+    });
+    const canceled = await engine.submit(flow, {});
+    await engine.cancel(canceled);
+    expect((await engine.status(canceled))?.run.status).toBe("canceled");
+    expect(await engine.retry(canceled)).toBe(false);
+
+    const failed = await engine.submit(flow, {});
+    await engine.tick();
+    expect((await engine.status(failed))?.run.status).toBe("failed");
+    fail = false;
+    expect(await engine.retry(failed)).toBe(true);
+    await engine.tick();
+    expect(await engine.result(failed, { timeoutMs: 1_000 })).toMatchObject({
+      status: "done",
+      output: "done",
+    });
   });
 
-  it("the resident loop drains a backlog larger than one batch (self-tuning claim)", async () => {
+  it("the resident loop drains a backlog larger than one batch before its first idle wait elapses", async () => {
     const flow = defineFlow<{ n: number }, number>({
       name: "sq",
       version: 1,
       run: async (ctx, input) => ctx.step("s", () => input.n * input.n),
     });
-    // batchMax 3 with 12 runs → the loop must re-claim on a full batch (drain), not one-per-tick.
-    const engine = createEngine(createMemoryBackend(), [flow], { batchMax: 3 });
-    const handles = await Promise.all(
-      Array.from({ length: 12 }, (_v, n) => engine.submit(flow, { n })),
-    );
-    const stop = engine.run({ tickMs: 50 });
-    const results = await Promise.all(handles.map((h) => engine.result(h, { timeoutMs: 5_000 })));
-    await stop();
-    expect(results.map((r) => r.output)).toEqual(Array.from({ length: 12 }, (_v, n) => n * n));
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
+    try {
+      const engine = createEngine(createMemoryBackend(), [flow], { batchMax: 3 });
+      const handles = await Promise.all(
+        Array.from({ length: 12 }, (_v, n) => engine.submit(flow, { n })),
+      );
+      const stop = engine.run({ tickMs: 50 });
+      await vi.advanceTimersByTimeAsync(49);
+      const runs = await Promise.all(handles.map(async (h) => (await engine.status(h))?.run));
+      await stop();
+      expect(runs.map((r) => r?.output)).toEqual(Array.from({ length: 12 }, (_v, n) => n * n));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

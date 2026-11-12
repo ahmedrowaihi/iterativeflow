@@ -1,4 +1,10 @@
-import { RUN_STATUSES, TERMINAL_STATUSES, type RunStatus, type TerminalStatus } from "#types";
+import {
+  RUN_STATUSES,
+  TERMINAL_STATUSES,
+  type RunStatus,
+  type SuspendStatus,
+  type TerminalStatus,
+} from "#types";
 
 export { TERMINAL_STATUSES };
 
@@ -22,6 +28,12 @@ export const ACTIVE_STATUSES: readonly RunStatus[] = RUN_STATUSES.filter((s) => 
 export const RECONCILABLE_STATUSES: readonly RunStatus[] = ACTIVE_STATUSES.filter(
   (s) => s !== "awaiting_signal" && s !== "awaiting_child",
 );
+
+/**
+ * Whether parking in `status` zeroes the run's attempt count: every forward-progress park does, so the
+ * poison-pill cap counts only no-progress re-claims; a `retrying` backoff keeps it.
+ */
+export const resetsAttempts = (status: SuspendStatus): boolean => status !== "retrying";
 
 /** Type guard for an untrusted string (query params, external input). */
 export const isRunStatus = (s: string): s is RunStatus => RUN_STATUSES.some((r) => r === s);

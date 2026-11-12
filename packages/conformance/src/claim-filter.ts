@@ -44,5 +44,36 @@ export const claimFilterConformance = (
       const leased = await queue.claim({ limit: 10, leaseMs: 1000, names: ["flow-a"], now: at(0) });
       expect(leased.map((l) => l.runId).sort()).toEqual([a.runId, "orphan-run"].sort());
     });
+
+    // More jobs ahead in the queue than the claim limit is what starves a backend that picks
+    // candidates before it filters them.
+    const AHEAD = 40;
+
+    it("other shards' jobs queued ahead never starve this shard's claim", async () => {
+      const { store, queue } = await makeBackend();
+      for (let i = 0; i < AHEAD; i++) {
+        const b = await store.startRun({ name: "flow-b", version: 1, input: { i } });
+        await queue.enqueue(b.runId, { runAt: at(-1000) });
+      }
+      const a = await store.startRun({ name: "flow-a", version: 1, input: {} });
+      await queue.enqueue(a.runId);
+      const leased = await queue.claim({ limit: 2, leaseMs: 1000, names: ["flow-a"], now: at(0) });
+      expect(leased.map((l) => l.runId)).toEqual([a.runId]);
+    });
+
+    it("leased jobs queued ahead never starve a claim", async () => {
+      const { store, queue } = await makeBackend();
+      for (let i = 0; i < AHEAD; i++) {
+        const b = await store.startRun({ name: "flow-b", version: 1, input: { i } });
+        await queue.enqueue(b.runId, { runAt: at(-1000) });
+      }
+      expect(
+        await queue.claim({ limit: AHEAD, leaseMs: 60_000, names: ["flow-b"], now: at(0) }),
+      ).toHaveLength(AHEAD);
+      const a = await store.startRun({ name: "flow-a", version: 1, input: {} });
+      await queue.enqueue(a.runId);
+      const leased = await queue.claim({ limit: 1, leaseMs: 1000, now: at(0) });
+      expect(leased.map((l) => l.runId)).toEqual([a.runId]);
+    });
   });
 };

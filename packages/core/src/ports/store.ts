@@ -25,7 +25,7 @@ export interface StartResult {
 
 /**
  * Durable checkpoint store — one of the four v2 ports. The core speaks only to this
- * interface; backends (in-memory, Postgres, DynamoDB) implement it with the best
+ * interface; each backend implements it with the best
  * primitive available. Every implementation must pass `storeConformance`.
  *
  * Design invariant: **one durable write per step** (`checkpointStep`). There is no
@@ -42,10 +42,9 @@ export interface Store {
 
   /**
    * Insert many runs, each created idempotently (per-spec idempotency key), results aligned 1:1
-   * with `specs` — a batch may mix created + already-existing runs. Memory and Postgres commit the
-   * whole batch in one transaction (all-or-none). DynamoDB commits in atomic chunks bounded by the
-   * `TransactWriteItems` 100-item cap, so a batch larger than the cap spans chunks and a crash
-   * between them can land it partially — the reconciler and idempotency keys make a re-submit safe.
+   * with `specs` — a batch may mix created + already-existing runs. All-or-none is NOT promised: a
+   * backend commits the batch in as few atomic writes as its substrate allows, so a failure can land
+   * part of it. Idempotency keys make re-submitting the whole batch safe.
    */
   startManyRuns(specs: readonly RunSpec[]): Promise<StartResult[]>;
 
@@ -69,7 +68,7 @@ export interface Store {
    * A child arriving at its parent's fan-out join: atomically decrement `parentRunId`'s join
    * countdown ({@link Outbox.joinTarget}) and return the new value, or `undefined` if the parent is
    * already gone (nothing to wake). The executor wakes the parent when this reaches zero (all
-   * children arrived); a missed wake is caught by the reconcile `lostParentWake` sweep, so this only
+   * children arrived); a missed wake is caught by the reconcile sweep (a resolved-join parent with no job), so this only
    * reduces parent wakes from O(children) to O(1) — it never gates correctness.
    */
   arriveAtJoin(parentRunId: string): Promise<number | undefined>;
@@ -103,7 +102,7 @@ export interface Store {
    * a race the winner's value comes back, which may differ from what this caller passed in
    * (e.g. the winning `ctx.invoke`'s childId).
    *
-   * When `fx` is given, its spawns/enqueues/timers commit atomically with the checkpoint
+   * When `fx` is given, its spawns/timers commit atomically with the checkpoint
    * — and ONLY when the checkpoint is the first writer. On an idempotent hit the outbox is
    * skipped (the original write already committed the original outbox), so a replayed
    * `ctx.invoke` never double-spawns.
@@ -111,8 +110,9 @@ export interface Store {
   checkpointStep(c: StepCheckpoint, fx?: Outbox): Promise<CheckpointResult>;
 
   /**
-   * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on
-   * an external signal), or `retrying` (backing off before re-dispatch). `fx` commits the
+   * Suspend a running run: `sleeping` (waiting on a timer), `awaiting_signal` (waiting on an external
+   * signal), `awaiting_child` (waiting on a fan-out join), `retrying` (backing off before re-dispatch)
+   * or `parked` (waiting for a redeploy). `fx` commits the
    * wake mechanism atomically with the status change — a sleep sets status + its timer in
    * one write, so a crash can't strand a run `sleeping` with no timer to wake it. A no-op
    * on a run that is already terminal.
@@ -125,12 +125,14 @@ export interface Store {
 
   /**
    * Take the run terminal. A no-op on a run that is already terminal: an outcome is final, so a late
-   * cancel cannot erase a finished run's output or error. `fx` commits atomically with
-   * the status write (e.g. clearing a pending wake timer). The fan-out parent-wake is NOT part of
+   * cancel cannot erase a finished run's output or error. Returns whether THIS call made the run
+   * terminal — `false` on the no-op, so a caller that lost the race skips its follow-ups (events, the
+   * parent-arrive). `fx` commits atomically with the status write (e.g. clearing a pending wake timer),
+   * and only when it returns `true`. The fan-out parent-wake is NOT part of
    * this write — the executor decrements the parent's join countdown ({@link arriveAtJoin}) and
-   * enqueues it afterward, best-effort, backstopped by the reconcile `lostParentWake` sweep.
+   * enqueues it afterward, best-effort, backstopped by the reconcile sweep (a resolved-join parent with no job).
    */
-  markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<void>;
+  markTerminal(runId: string, outcome: TerminalOutcome, fx?: Outbox): Promise<boolean>;
 
   /** List runs newest-first, filtered and paged. The ops/dashboard read surface. */
   listRuns(filter: RunFilter, page: Page): Promise<RunPage>;
@@ -159,18 +161,13 @@ export interface Store {
   runStats(): Promise<Record<RunStatus, number>>;
 
   /**
-   * Delete up to `limit` TERMINAL runs (done/failed/canceled) created before `before`, together with
-   * their steps, signals, and events — the retention sweep. Live runs are never touched. Returns how
-   * many runs were deleted. Deleting a parent whose (also-terminal) children outlive it leaves those
-   * children's `parentRunId` dangling, which is harmless — `childrenOf` simply stops finding the parent.
-   */
-  deleteRunsOlderThan(before: Date, limit: number): Promise<number>;
-
-  /**
-   * The same sweep, narrowed: delete up to `limit` TERMINAL runs matching `filter` (age, flow name,
-   * flow version, terminal status), with their steps, signals, and events. Clearing the wreckage of a
-   * mass cancel without waiting out the retention window is what this is for. The terminal guard holds
-   * whatever the filter says, so live runs stay untouchable. Throws on a filter with no predicate.
+   * The retention sweep: delete up to `limit` TERMINAL runs matching `filter` (age, flow name, flow
+   * version, terminal status), with their steps, signals, and events. The terminal guard holds whatever
+   * the filter says, so live runs stay untouchable — and it holds at delete time, so a run retried
+   * mid-sweep survives. A child whose parent is still live is never deleted either: the parent re-reads
+   * every child when it joins. Returns how many runs were deleted. Throws on a filter with no predicate.
+   * A terminal parent's children may still be deleted; if the parent is later retried, its join
+   * reports each missing child as failed (`CHILD_GONE`).
    */
   deleteRuns(filter: PurgeFilter, limit: number): Promise<number>;
 
@@ -202,6 +199,11 @@ export interface Store {
 
   /** Remove a cron. Returns whether a row was there — a row outlives its deregistration in code. */
   removeCron(name: string): Promise<boolean>;
+
+  /** The earliest `nextRunAt` across every cron (overdue ones included), or `null` with none
+   *  registered — the cron half of the serverless wake horizon. One bounded read on a due-ordered
+   *  index, never a scan. */
+  nextCronAt(): Promise<Date | null>;
 
   /** Crons whose `nextRunAt` has passed — candidates to fire this cycle. */
   dueCrons(now: Date, limit: number): Promise<readonly CronRow[]>;

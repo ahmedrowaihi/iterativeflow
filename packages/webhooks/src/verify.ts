@@ -10,7 +10,7 @@ export type HeaderInput = Headers | Record<string, string | string[] | undefined
 
 /**
  * A verified webhook, normalized across providers. `id` is unique per delivery (GitHub's
- * `X-GitHub-Delivery`, Svix's `svix-id`) — use it as the idempotency key so a redelivery lands
+ * `X-GitHub-Delivery`) — use it as the idempotency key so a redelivery lands
  * once. `type` is the event name (GitHub's `X-GitHub-Event`).
  */
 export interface WebhookEvent<T = unknown> {

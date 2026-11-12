@@ -28,7 +28,8 @@ export interface TestHarness {
    *  {@link TestHarness.advanceToNextWake} move it. */
   now(): Date;
 
-  /** Run ticks until a tick claims nothing, without moving the clock. Returns how many runs executed. */
+  /** Fire due crons and run ticks until nothing is left to do, without moving the clock. Returns how
+   *  many runs executed. */
   drain(): Promise<number>;
 
   /** Move the clock forward by `ms`, then drain. Returns how many runs executed. */
@@ -36,7 +37,7 @@ export interface TestHarness {
 
   /**
    * Drain, then jump to the next durable deadline — the earliest pending sleep, retry backoff or
-   * cron — and drain again. Draining first is what makes the deadline knowable: a freshly submitted
+   * cron fire — and drain again. Draining first is what makes the deadline knowable: a freshly submitted
    * run has no timer until it executes far enough to park. `false` when nothing is scheduled after
    * that, which means no amount of waiting would advance the engine. The clock never moves
    * backwards, so a deadline already in the past just drains.
@@ -84,8 +85,9 @@ export const createTestHarness = (
   const drain = async (): Promise<number> => {
     let executed = 0;
     for (let i = 0; i < MAX_TICKS_PER_DRAIN; i++) {
+      const fired = await engine.runCrons();
       const results = await engine.tick();
-      if (results.length === 0) return executed;
+      if (results.length === 0 && fired === 0) return executed;
       executed += results.length;
     }
     throw new Error(
@@ -133,7 +135,9 @@ export const createTestHarness = (
           : engine.result(handle);
       }
       if (run.status === "parked") throw new Error(`settle: ${await stallReason(handle)}`);
-      const next = await engine.nextWakeAt();
+      // Only a timer can be this run's own wake; a registered cron always has a next fire, so
+      // counting it would walk a stalled run through cron after cron instead of reporting the stall.
+      const next = await backend.timer.nextDueAt(at);
       if (!next) throw new Error(`settle: ${await stallReason(handle)}`);
       await advanceTo(next);
     }

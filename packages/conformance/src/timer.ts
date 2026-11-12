@@ -25,7 +25,7 @@ export const timerConformance = (label: string, makeTimer: () => Timer | Promise
     it("reschedule is an upsert — the latest fireAt wins", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(1000));
-      await tm.schedule("r1", at(5000)); // pushed later
+      await tm.schedule("r1", at(5000));
       expect(await tm.dueBatch({ now: at(2000), limit: 10 })).toEqual([]);
       expect(await tm.dueBatch({ now: at(5000), limit: 10 })).toEqual(["r1"]);
     });
@@ -33,7 +33,7 @@ export const timerConformance = (label: string, makeTimer: () => Timer | Promise
     it("reschedule EARLIER also wins — upsert, not a LEAST(fire_at) merge", async () => {
       const tm = await makeTimer();
       await tm.schedule("r1", at(5000));
-      await tm.schedule("r1", at(1000)); // pulled earlier
+      await tm.schedule("r1", at(1000));
       expect(await tm.dueBatch({ now: at(1000), limit: 10 })).toEqual(["r1"]);
     });
 
@@ -73,7 +73,7 @@ export const timerConformance = (label: string, makeTimer: () => Timer | Promise
       const tm = await makeTimer();
       await tm.schedule("r1", at(5000));
       expect(await tm.nextDueAt(at(0))).toEqual(at(5000));
-      await tm.schedule("r1", at(1000)); // pulled earlier
+      await tm.schedule("r1", at(1000));
       expect(await tm.nextDueAt(at(0))).toEqual(at(1000));
       await tm.cancel("r1");
       expect(await tm.nextDueAt(at(0))).toBeNull();

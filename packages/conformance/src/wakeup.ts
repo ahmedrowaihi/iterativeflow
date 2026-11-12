@@ -10,35 +10,40 @@ export const wakeupConformance = (
   label: string,
   makeWakeup: () => Wakeup | Promise<Wakeup>,
 ): void => {
+  // The Wakeup port is real-time by nature. Tolerances are a wide fraction of each wait so timer
+  // jitter can't flake them, while a broken waiter (never woken, woken by anything, latched) still fails.
+  const LONG_MS = 30_000;
+  const TICK_MS = 300;
+  const UNRELATED_WAIT_MS = 2_000;
+  const elapsedSince = (start: number): number => Date.now() - start;
+
   describe(`Wakeup conformance — ${label}`, () => {
     it("signal wakes a pending waiter early", async () => {
       const w = await makeWakeup();
-      let resolved = false;
-      const p = w.wait("r1", 5000).then(() => {
-        resolved = true;
-      });
+      const start = Date.now();
+      const p = w.wait("r1", LONG_MS);
       await w.signal("r1");
       await p;
-      expect(resolved).toBe(true);
+      expect(elapsedSince(start)).toBeLessThan(LONG_MS / 10);
     });
 
     it("wait resolves on timeout when no signal arrives (the poll tick)", async () => {
       const w = await makeWakeup();
       const start = Date.now();
-      await w.wait("r1", 25);
-      expect(Date.now() - start).toBeGreaterThanOrEqual(20);
+      await w.wait("r1", TICK_MS);
+      expect(elapsedSince(start)).toBeGreaterThanOrEqual(TICK_MS / 2);
     });
 
     it("a signal for another run does not wake the waiter early", async () => {
       const w = await makeWakeup();
       let resolved = false;
-      const p = w.wait("r1", 60).then(() => {
+      const p = w.wait("r1", UNRELATED_WAIT_MS).then(() => {
         resolved = true;
       });
       await w.signal("r2");
-      await new Promise((r) => setTimeout(r, 15));
-      expect(resolved).toBe(false); // still waiting on r1
-      await p; // eventually times out
+      await new Promise((r) => setTimeout(r, UNRELATED_WAIT_MS / 10));
+      expect(resolved).toBe(false);
+      await p;
       expect(resolved).toBe(true);
     });
 
@@ -49,23 +54,19 @@ export const wakeupConformance = (
 
     it("is edge-triggered — a signal before any waiter does not latch", async () => {
       const w = await makeWakeup();
-      await w.signal("r1"); // fired with no waiter — must not be remembered
+      await w.signal("r1");
       const start = Date.now();
-      await w.wait("r1", 25); // must still wait the tick, not resolve instantly
-      expect(Date.now() - start).toBeGreaterThanOrEqual(20);
+      await w.wait("r1", TICK_MS);
+      expect(elapsedSince(start)).toBeGreaterThanOrEqual(TICK_MS / 2);
     });
 
     it("multiple waiters on the same run all wake on one signal", async () => {
       const w = await makeWakeup();
-      let woke = 0;
-      const ps = [w.wait("r1", 5000), w.wait("r1", 5000)].map((p) =>
-        p.then(() => {
-          woke += 1;
-        }),
-      );
+      const start = Date.now();
+      const ps = [w.wait("r1", LONG_MS), w.wait("r1", LONG_MS)];
       await w.signal("r1");
       await Promise.all(ps);
-      expect(woke).toBe(2);
+      expect(elapsedSince(start)).toBeLessThan(LONG_MS / 10);
     });
   });
 };

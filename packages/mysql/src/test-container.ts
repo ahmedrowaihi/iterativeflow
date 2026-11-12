@@ -26,11 +26,12 @@ export const startMysql = async (): Promise<StartedMysql> => {
   });
   // MySQL logs "ready" during its init temp-server phase then restarts, so the first connections
   // can drop — ping until the real server is stable before applying the schema.
-  for (let i = 0; i < 40; i++) {
+  for (let i = 1; ; i++) {
     try {
       await pool.query("SELECT 1");
       break;
-    } catch {
+    } catch (e) {
+      if (i === 40) throw e;
       await new Promise((r) => setTimeout(r, 2000));
     }
   }

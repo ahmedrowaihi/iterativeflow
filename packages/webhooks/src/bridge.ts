@@ -1,5 +1,5 @@
-import { type Backend, signalRun } from "@iterativeflow/core";
-import type { HeaderInput, WebhookEvent, WebhookVerifier } from "#verify";
+import type { Engine } from "@iterativeflow/core";
+import type { VerifyInput, WebhookEvent, WebhookVerifier } from "#verify";
 
 /**
  * One signal to deliver to one parked run. A single webhook can fan out to several — e.g. a PR
@@ -36,21 +36,18 @@ export interface BridgeResult {
 }
 
 /** A verified-and-delivered webhook handler — the return of {@link webhookSignalBridge}. */
-export type WebhookSignalBridge = (input: {
-  body: string;
-  headers: HeaderInput;
-}) => Promise<BridgeResult>;
+export type WebhookSignalBridge = (input: VerifyInput) => Promise<BridgeResult>;
 
 /**
  * Bridge signed webhooks to durable signals: verify the payload, correlate the event to the parked
  * runs it concerns, and deliver each as a signal (atomic delivery + re-enqueue, best-effort wakeup,
- * idempotent on the delivery id). This is the inbound edge that lets a flow `await ctx.signal(...)`
+ * idempotent on the delivery id, subject to the engine's `maxPayloadBytes`). This is the inbound edge that lets a flow `await ctx.signal(...)`
  * on an external event — a `/qa run` comment, a preview deploy, a payment, a human approval.
  *
  * @throws {import("#verify").WebhookError} when verification fails — reject the request as untrusted.
  */
 export function webhookSignalBridge(
-  backend: Backend,
+  engine: Pick<Engine, "signal">,
   opts: WebhookSignalBridgeOptions,
 ): WebhookSignalBridge {
   return async ({ body, headers }) => {
@@ -60,7 +57,7 @@ export function webhookSignalBridge(
       targets.map(async (t) => ({
         runId: t.runId,
         name: t.name,
-        delivered: await signalRun(backend, t.runId, t.name, t.payload, {
+        delivered: await engine.signal(t.runId, t.name, t.payload, {
           idempotencyKey: t.idempotencyKey ?? `${event.id}:${t.runId}:${t.name}`,
         }),
       })),
